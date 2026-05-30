@@ -47,7 +47,7 @@ for (let i = 0; i < args.length; i++) {
 
 if (showHelp) {
   console.log(`
-7coder — Fixed & fully working Claude Code style assistant
+7coder — Claude Code style assistant
 
 Usage:
   node index.js → Interactive REPL (multi-line + /btw + /execute-task-now)
@@ -56,15 +56,6 @@ Usage:
   node index.js --background --prompt "task" → Background
   node index.js --danger → Bypass approvals
   node index.js --permission-mode=auto → Auto approval
-
-New in this version:
-  • Dream Mode (auto after 5h idle if DREAM_ALLOW=true)
-  • Plan Mode tool
-  • 64 spinner words
-  • /btw <note> (small-model sub-agent summarizes + injects)
-  • Full MCP support
-  • auto_debug_tool — launches + tests GUI/CLI apps/scripts like a real user, auto-fixes until clean
-  • bickering_tool — 2 small-model PM sub-agents debate until agreement
 `);
   process.exit(0);
 }
