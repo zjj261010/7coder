@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 const axios = require('axios');
 const readline = require('readline');
 const path = require('path');
@@ -24,11 +25,18 @@ for (let i = 0; i < args.length; i++) {
     serverMode = true;
   } else if (arg === '--background') {
     backgroundMode = true;
+  } else if (arg.startsWith('--permission-mode=') || arg.startsWith('-m=')) {
+    const prefix = arg.startsWith('--permission-mode=') ? '--permission-mode=' : '-m=';
+    permissionModeFlag = arg.substring(prefix.length);
   } else if (arg === '--permission-mode' || arg === '-m') {
     if (i + 1 < args.length) {
       permissionModeFlag = args[i + 1];
       i++;
     }
+  } else if (arg.startsWith('--prompt=') || arg.startsWith('-p=')) {
+    const prefix = arg.startsWith('--prompt=') ? '--prompt=' : '-p=';
+    promptArg = [arg.substring(prefix.length)].concat(args.slice(i + 1)).join(' ');
+    break;
   } else if (arg === '--prompt' || arg === '-p') {
     if (i + 1 < args.length) {
       promptArg = args.slice(i + 1).join(' ');
@@ -63,9 +71,18 @@ New in this version:
 
 // ====================== SETUP ======================
 const launchDir = process.cwd();
-const appDir = path.dirname(require.main.filename);
-process.chdir(path.resolve(path.dirname(process.argv[1])));
-require('dotenv').config({ path: path.join(appDir, '.env') });
+const appDir = require.main ? path.dirname(require.main.filename) : __dirname;
+if (process.argv[1]) {
+  try {
+    process.chdir(path.resolve(path.dirname(process.argv[1])));
+  } catch (e) {}
+}
+try {
+  require('dotenv').config({ path: path.join(appDir, '.env') });
+} catch (e) {}
+try {
+  process.chdir(launchDir);
+} catch (e) {}
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_ENDPOINT = process.env.OPENAI_ENDPOINT || 'https://api.openai.com/v1';
@@ -76,7 +93,7 @@ const LIGHT_MODEL = process.env.LIGHT_MODEL || 'gpt-3.5-turbo';
 const VISION_MODEL = process.env.VISION_MODEL || null;
 const TEMPERATURE = parseFloat(process.env.TEMPERATURE) || 0.7;
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS, 10) || 2048;
-const PERMISSION_MODE = permissionModeFlag || process.env.PERMISSION_MODE || (dangerMode ? 'bypass' : 'default');
+const PERMISSION_MODE = (permissionModeFlag || process.env.PERMISSION_MODE || (dangerMode ? 'bypass' : 'default')).toLowerCase().trim();
 const ENABLE_HTTP_SERVER = process.env.ENABLE_HTTP_SERVER === 'true' || serverMode;
 const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 8000;
 const ENABLE_COMPUTER_USE = process.env.ENABLE_COMPUTER_USE === 'true';
@@ -92,8 +109,7 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
-process.chdir(launchDir);
-console.log(`✅ 7coder cd'ed to: ${launchDir}`);
+console.log(`✅ 7coder initialized at: ${launchDir}`);
 
 // ====================== SPINNER WORDS (64 fun verbs/action nouns) ======================
 const SPINNER_WORDS = [
@@ -195,7 +211,7 @@ const tools = [
 // ====================== SYSTEM PROMPT ======================
 const systemPrompt = `You are 7coder, a helpful, honest, and harmless AI coding assistant — a clean-room full replacement for Claude Code.
 You have full tool access including agent spawning, web tools, computer use, MCP, cron, tasks, and more.
-You ALWAYS create/update 7CODER.md in the project root with any findings, discoveries, or progress using the write_file tool.
+7CODER.md in the project root is automatically updated with a complete summary of what has been done. You do not need to manually write to it.
 
 Permission & Security Rules (follow strictly):
 - Modes: default (ask user), auto (light model decides), bypass (danger), denial (block).
@@ -219,7 +235,7 @@ ADDITIONAL RULES (critical):
 Anti-frustration: If user seems angry or curses, acknowledge empathetically.
 
 Use tools aggressively when needed. After tools, give clear final answer.
-Create 7CODER.md early with your findings.`;
+Review the complete summary in 7CODER.md if provided to understand what has been done.`;
 
 // ====================== HELPER FUNCTIONS (Node 13 + Windows 7 safe) ======================
 function sanitizePath(userPath) {
@@ -259,8 +275,20 @@ function recursiveReaddir(dir = '', pattern = '') {
         walk(full);
       } else {
         const rel = path.relative(launchDir, full);
-        const regexPattern = pattern ? pattern.replace(/\*/g, '.*').replace(/\?/g, '.') : '';
-        if (!pattern || entry.match(new RegExp(regexPattern))) {
+        let isMatch = false;
+        if (!pattern) {
+          isMatch = true;
+        } else {
+          try {
+            const escaped = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+            const regexStr = '^' + escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.') + '$';
+            const rx = new RegExp(regexStr, 'i');
+            isMatch = rx.test(entry);
+          } catch (e) {
+            isMatch = entry.toLowerCase().includes(pattern.toLowerCase());
+          }
+        }
+        if (isMatch) {
           results.push(rel);
         }
       }
@@ -273,6 +301,12 @@ function recursiveReaddir(dir = '', pattern = '') {
 function grepSearch(pattern, searchPath = '') {
   const results = [];
   const startDir = searchPath ? path.join(launchDir, sanitizePath(searchPath)) : launchDir;
+  let rx = null;
+  try {
+    rx = new RegExp(pattern, 'i');
+  } catch (e) {
+    rx = null;
+  }
   function walk(current) {
     let entries;
     try { entries = fs.readdirSync(current); } catch (e) { return; }
@@ -285,7 +319,8 @@ function grepSearch(pattern, searchPath = '') {
       } else {
         try {
           const content = fs.readFileSync(full, 'utf8');
-          if (new RegExp(pattern).test(content)) {
+          const matched = rx ? rx.test(content) : content.toLowerCase().includes(pattern.toLowerCase());
+          if (matched) {
             const rel = path.relative(launchDir, full);
             results.push(`${rel}: matches "${pattern}"`);
           }
@@ -412,7 +447,10 @@ async function callOpenAI(currentMessages, options = {}) {
         headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
         timeout: 4200000,
       });
-      return response.data.choices[0];
+      if (response.data && response.data.choices && response.data.choices[0]) {
+        return response.data.choices[0];
+      }
+      throw new Error('Invalid API response structure: ' + JSON.stringify(response.data));
     } catch (error) {
       let msg = error.message;
       if (error.response && error.response.data && error.response.data.error && error.response.data.error.message) {
@@ -433,7 +471,8 @@ Args: ${JSON.stringify(args)}
 Consider file edits, shell commands, web access, computer control, protected paths.`;
   try {
     const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
-    return (choice.message.content || 'MEDIUM').trim().toUpperCase();
+    const cleaned = (choice.message.content || 'MEDIUM').replace(/[*'`"“”’‘]/g, '').trim().toUpperCase();
+    return cleaned;
   } catch (e) {
     return 'MEDIUM';
   }
@@ -459,7 +498,8 @@ Args: ${JSON.stringify(args)}
 Reply ONLY with YES or NO.`;
   try {
     const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
-    return (choice.message.content || 'NO').trim().toUpperCase().startsWith('YES');
+    const cleaned = (choice.message.content || 'NO').replace(/[*'`"“”’‘]/g, '').trim().toUpperCase();
+    return cleaned.startsWith('YES') || cleaned === 'YES';
   } catch (e) {
     return false;
   }
@@ -546,7 +586,13 @@ async function executeToolRaw(name, args) {
       let result = `📄 Page fetched successfully (${action})\nURL: ${url}\n\n🔗 Links found (infer from names):\n${linksSummary || 'No clickable links found'}\n\n`;
 
       if (action === 'extract' || action === 'navigate') {
-        result += `Content preview (first 3000 chars):\n${pageContent.substring(0, 3000)}...`;
+        let textContent = pageContent
+          .replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, '')
+          .replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, '')
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim();
+        result += `Content preview (first 3000 chars):\n${textContent.substring(0, 3000)}...`;
       } else if (action === 'click') {
         result += `🔗 Click simulated — navigated to the provided URL. Use the extracted links above for next steps.`;
       }
@@ -847,13 +893,39 @@ Reply with ONLY valid JSON:
     // Launch
     const exePath = filePath.endsWith('.cs') ? filePath.replace('.cs','.exe') : filePath;
     console.log(`🚀 Launching ${exePath}...`);
+    let cmdToRun = exePath;
+    let cmdArgs = [];
+    if (filePath.endsWith('.js')) {
+      cmdToRun = 'node';
+      cmdArgs = [filePath];
+    } else if (filePath.endsWith('.py')) {
+      cmdToRun = process.platform === 'win32' ? 'python' : 'python3';
+      cmdArgs = [filePath];
+    } else if (filePath.endsWith('.sh')) {
+      cmdToRun = 'bash';
+      cmdArgs = [filePath];
+    } else if (filePath.endsWith('.bat') || filePath.endsWith('.cmd')) {
+      cmdToRun = 'cmd.exe';
+      cmdArgs = ['/c', filePath];
+    }
+
+    let stderrData = '';
+    let stdoutData = '';
+
     if (appType === 'gui') {
-      processHandle = child_process.spawn(exePath, [], { detached: true, stdio: 'ignore', cwd: launchDir });
+      processHandle = child_process.spawn(cmdToRun, cmdArgs, { detached: true, stdio: 'ignore', cwd: launchDir });
       processHandle.unref();
       testLog += `✅ GUI launched (PID ${processHandle.pid})\n`;
     } else {
-      processHandle = child_process.spawn(exePath, [], { stdio: ['ignore', 'pipe', 'pipe'], cwd: launchDir });
+      processHandle = child_process.spawn(cmdToRun, cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: launchDir });
       testLog += `✅ CLI launched (PID ${processHandle.pid})\n`;
+
+      if (processHandle.stdout) {
+        processHandle.stdout.on('data', data => { stdoutData += data.toString(); });
+      }
+      if (processHandle.stderr) {
+        processHandle.stderr.on('data', data => { stderrData += data.toString(); });
+      }
     }
 
     // Test loop (simulate real user)
@@ -877,10 +949,7 @@ Reply with ONLY valid JSON:
     }
 
     // Collect errors
-    let errors = testLog;
-    if (processHandle && processHandle.stderr) {
-      errors += '\n' + processHandle.stderr.toString();
-    }
+    let errors = testLog + '\nSTDOUT:\n' + stdoutData + '\nSTDERR:\n' + stderrData;
     testLog += `\nErrors found: ${errors.includes('error') || errors.includes('Exception') ? 'YES' : 'none'}`;
 
     // Auto-fix loop (up to 3 rounds)
@@ -894,9 +963,7 @@ Reply with ONLY valid JSON:
       const fixPrompt = `Fix all fatal errors in this app. Only warnings allowed at the end.\nPath: ${filePath}\nLogs:\n${errors}\nOutput COMPLETE fixed code via write_file.`;
       messages.push({ role: 'user', content: fixPrompt });
       await processWithTools(messages); // heavy model will write_file
-      errors = 'Re-tested after fix...';
-      // Re-run test quickly
-      await executeToolRaw('auto_debug_tool', { path: args.path, type: appType, duration_minutes: 1 });
+      errors = await executeToolRaw('auto_debug_tool', { path: args.path, type: appType, duration_minutes: 1 });
     }
 
     return `✅ Auto-debug complete — ${fixRound} fixes applied. Remaining issues: only warnings or benign.\nFull log:\n${testLog}`;
@@ -978,6 +1045,67 @@ async function processWithTools(currentMessages) {
 }
 
 // ====================== CORE EXECUTION ======================
+let currentRawPrompt = '';
+
+function prepareMessagesForPrompt(rawPrompt) {
+  const mdPath = path.join(launchDir, '7CODER.md');
+  let content = rawPrompt;
+  if (fs.existsSync(mdPath)) {
+    try {
+      const completeSummary = fs.readFileSync(mdPath, 'utf8').trim();
+      if (completeSummary) {
+        content += `\n\nthis is what’s already been done.\n${completeSummary}`;
+      }
+    } catch (e) {
+      console.error('Error reading 7CODER.md:', e);
+    }
+  }
+  return [
+    { role: 'system', content: systemPrompt },
+    { role: 'user', content: content }
+  ];
+}
+
+async function summarizeAction(rawPrompt, assistantResponse) {
+  const prompt = `Create a short, concise summary (1-2 sentences) of what has been done in response to the user's task. Do not list tools, just describe the output/effect.
+User task: "${rawPrompt}"
+Action/Response: "${assistantResponse}"`;
+  try {
+    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
+    return (choice.message.content || `Completed task: ${rawPrompt}`).trim();
+  } catch (e) {
+    return `Completed task: ${rawPrompt}`;
+  }
+}
+
+function updateCompleteSummary(newSummary) {
+  const mdPath = path.join(launchDir, '7CODER.md');
+  let summaries = [];
+  if (fs.existsSync(mdPath)) {
+    try {
+      const existingContent = fs.readFileSync(mdPath, 'utf8').trim();
+      if (existingContent) {
+        summaries = existingContent.split('\n')
+          .map(l => l.trim())
+          .filter(l => l.startsWith('- '))
+          .map(l => l.slice(2).trim())
+          .filter(Boolean);
+      }
+    } catch (e) {
+      console.error('Error reading 7CODER.md:', e);
+    }
+  }
+  summaries.push(newSummary);
+  const completeSummary = summaries.map(s => `- ${s}`).join('\n');
+  try {
+    fs.writeFileSync(mdPath, completeSummary, 'utf8');
+    console.log('✅ 7CODER.md updated with complete summary');
+  } catch (e) {
+    console.error('Error writing to 7CODER.md:', e);
+  }
+}
+
+// ====================== CORE EXECUTION ======================
 async function executeTask() {
   console.log(`7coder is ${getRandomSpinner()}`);
   try {
@@ -1000,10 +1128,9 @@ async function executeTask() {
       }
     }
 
-    const mdPath = path.join(launchDir, '7CODER.md');
-    const update = `\n\n## 7coder Update — ${new Date().toISOString()}\n\n${displayReply}\n\n`;
-    fs.appendFileSync(mdPath, update);
-    console.log('✅ 7CODER.md automatically updated with latest findings');
+    // Generate action summary using the small model
+    const newSummary = await summarizeAction(currentRawPrompt, displayReply);
+    updateCompleteSummary(newSummary);
 
     updateLastInteractionTime();
 
@@ -1022,11 +1149,22 @@ function startHttpServer() {
       req.on('end', async () => {
         try {
           const data = JSON.parse(body);
-          let tempMessages = [{ role: 'system', content: systemPrompt }];
-          if (data.messages) tempMessages = tempMessages.concat(data.messages);
+          let userPrompt = '';
+          if (data.messages) {
+            const userMsgs = data.messages.filter(m => m.role === 'user');
+            if (userMsgs.length > 0) {
+              userPrompt = userMsgs[userMsgs.length - 1].content;
+            }
+          }
+          currentRawPrompt = userPrompt;
+          let tempMessages = prepareMessagesForPrompt(userPrompt);
 
           console.log(`🌐 HTTP request received from UI`);
           const result = await processWithTools(tempMessages);
+
+          // Summarize and update 7CODER.md
+          const newSummary = await summarizeAction(currentRawPrompt, result);
+          updateCompleteSummary(newSummary);
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -1086,7 +1224,8 @@ async function main() {
     console.log(`\n🚀 7coder non-interactive mode`);
     await triggerDreamIfNeeded();
     console.log(`Task: ${promptArg}`);
-    messages.push({ role: 'user', content: promptArg });
+    currentRawPrompt = promptArg;
+    messages = prepareMessagesForPrompt(currentRawPrompt);
     await executeTask();
     if (ENABLE_HTTP_SERVER) {
       startHttpServer();
@@ -1129,11 +1268,12 @@ Make it read like a direct continuation of the user's task instructions for the 
           try {
             const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: LIGHT_MODEL, useTools: false });
             summarized = (resp.message.content || note).trim();
-            messages.push({ role: 'user', content: summarized });
-            console.log(`📝 BTW sub-agent injected into main heavy-model task as user message:\n${summarized}`);
+            // Since we prune context, for /btw we can just append it to the currentPrompt
+            currentPrompt += '\n' + summarized + '\n';
+            console.log(`📝 BTW sub-agent injected into current task prompt:\n${summarized}`);
           } catch (e) {
             console.log(`📝 BTW sub-agent error — injecting original note as fallback.`);
-            messages.push({ role: 'user', content: `[BTW note] ${note}` });
+            currentPrompt += '\n' + note + '\n';
           }
           const btwPath = path.join(launchDir, 'BTW.md');
           fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
@@ -1148,7 +1288,8 @@ Make it read like a direct continuation of the user's task instructions for the 
         if (currentPrompt.trim()) {
           await triggerDreamIfNeeded();
           console.log(`7coder is ${getRandomSpinner()}`);
-          messages.push({ role: 'user', content: currentPrompt.trim() });
+          currentRawPrompt = currentPrompt.trim();
+          messages = prepareMessagesForPrompt(currentRawPrompt);
           await executeTask();
           currentPrompt = '';
         } else {
