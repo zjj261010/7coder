@@ -1,7 +1,8 @@
 # 7coder
+
 **Full clean-room Claude Code replacement** for Windows 7 / Node.js 13+.
 
-**v2.1.5** — Improved and made more Claude-like.
+**v2.1.9** — Improved even further (and updated the docs).
 
 ## System Requirements
 
@@ -11,14 +12,27 @@
 - **Disk Space**: 500 MB free
 - **Internet**: Required for online OpenAI compatible API endpoint (or LAN for one on the local network)
 
+## Now on NPM!
+
+Steps:
+
+1. install using: `npm install -g @nodemixaholic/7coder`
+2. find your global root using `npm root -g`, append '/@nodemixaholic/7coder' to it (could be something slightly differnet on Windows, I'm not sure, I'm on macOS.)
+3. change directory to that
+4. find the **.env.example** file in that folder
+5. copy it to ".env" and then edit ".env" using your favorite plaintext editor (mine is nano!)
+6. you can now use 7coder by typing **7coder** in your terminal
+
 ## Cheat Sheet
 
 **Interactive REPL (default)**
+
 ```bash
  index.js
 ```
 
 **One-shot task (non-interactive)**
+
 ```bash
  index.js --prompt "Create a todo list app in React with localStorage"
  # Short form
@@ -26,17 +40,20 @@
 ```
 
 **HTTP OpenAI-compatible endpoint** (use with Cursor, Windsurf, Continue.dev, etc.)
+
 ```bash
  index.js --server
  # or set ENABLE_HTTP_SERVER=true in .env
 ```
 
 **Background / daemon mode** (frees your terminal)
+
 ```bash
  index.js --background --prompt "Refactor the entire backend"
 ```
 
 **Permission mode control**
+
 ```bash
  index.js --permission-mode=auto     # Light model decides approvals
  index.js --permission-mode=bypass   # Same as --danger
@@ -44,11 +61,13 @@
 ```
 
 **Danger mode (no confirmations)**
+
 ```bash
  index.js --danger --prompt "Install dependencies and run tests"
 ```
 
 **Help**
+
 ```bash
  index.js --help
 ```
@@ -76,12 +95,12 @@ Even in bypass mode, super-dangerous commands (`rm -rf /`, `format`, `dd`, etc.)
 
 ## New Permission & Security System
 
-| Mode       | Behavior                                      |
-|------------|-----------------------------------------------|
-| `default`  | Interactive y/n prompts (recommended)         |
-| `auto`     | Light model decides approvals automatically   |
-| `bypass`   | No approvals (same as `--danger`)             |
-| `denial`   | Block every tool call                         |
+| Mode      | Behavior                                    |
+| --------- | ------------------------------------------- |
+| `default` | Interactive y/n prompts (recommended)       |
+| `auto`    | Light model decides approvals automatically |
+| `bypass`  | No approvals (same as `--danger`)           |
+| `denial`  | Block every tool call                       |
 
 Protected files (`.env`, `.gitconfig`, `package.json`, etc.) can **never** be auto-edited.  
 Path traversal and dangerous commands are blocked at every level.
