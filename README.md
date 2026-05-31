@@ -2,7 +2,7 @@
 
 **Full clean-room Claude Code replacement** for Windows 7 / Node.js 13+.
 
-**v2.1.9** — Improved even further (and updated the docs).
+**v2.1.9.1** — Fix git repo url.
 
 ## System Requirements
 
