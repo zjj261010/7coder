@@ -221,26 +221,30 @@ scenarios.push({
   }
 });
 
-// --- F4: sub-agent long conversation stays bounded and coherent ---
+// --- F4: sub-agent long conversation compresses inside the sub-agent (A4) ---
 scenarios.push({
   name: 'subagent-long',
   fn: async () => {
     const cwd = freshCwd('f4');
-    const big = 'BIGSUB-'.repeat(400); // ~2800 chars per tool result
+    const big = 'BIGSUB-'.repeat(780); // ~5460 chars per tool result (capped at 3000)
+    // Deterministic step order: main1 -> agent_tool; sub main1 -> sb0 tool; sub
+    // main2 -> sb1 tool; then compression's light call fires before sub main3
+    // (total ~13k > CONTEXT_CHARS 6000); sub main3 -> digest filler; main2 ->
+    // F4-DONE; main summary. Fillers absorb any drift.
     const script = [
-      { role: 'assistant', content: null, tool_calls: [{ id: 's0', type: 'function', function: { name: 'agent_tool', arguments: JSON.stringify({ name: 'digger', task: 'dig through files' }) } }] }
+      { role: 'assistant', content: null, tool_calls: [{ id: 's0', type: 'function', function: { name: 'agent_tool', arguments: JSON.stringify({ name: 'digger', task: 'dig through files' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'sb0', type: 'function', function: { name: 'read_file', arguments: '{"path":"big0.txt"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'sb1', type: 'function', function: { name: 'read_file', arguments: '{"path":"big1.txt"}' } }] },
+      { role: 'assistant', content: 'dig filler' },
+      { role: 'assistant', content: 'F4-DONE' },
+      { role: 'assistant', content: 'f4 summary' },
+      { role: 'assistant', content: 'f4 filler' }
     ];
-    for (let i = 0; i < 8; i++) {
-      script.push({ role: 'assistant', content: null, tool_calls: [{ id: 'sb' + i, type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'big' + (i % 2) + '.txt' }) } }] });
-    }
-    script.push({ role: 'assistant', content: 'SUB-DIGEST-DONE' });
-    script.push({ role: 'assistant', content: 'F4-DONE' });
-    script.push({ role: 'assistant', content: 'f4 summary' });
     const m = startMock(script);
     await new Promise(r => setTimeout(r, 600));
     fs.writeFileSync(path.join(cwd, 'big0.txt'), big);
     fs.writeFileSync(path.join(cwd, 'big1.txt'), big);
-    const r = await runCli({ port: m.port, args: ['--prompt', 'dig'], env: { PERMISSION_MODE: 'bypass', MAX_TOOL_RESULT_CHARS: '3000' }, cwd, timeoutMs: 60000 });
+    const r = await runCli({ port: m.port, args: ['--prompt', 'dig'], env: { PERMISSION_MODE: 'bypass', MAX_TOOL_RESULT_CHARS: '3000', CONTEXT_CHARS: '6000' }, cwd, timeoutMs: 60000 });
     const log = readLog(m.log);
     let pairing = true;
     for (const req of log) {
@@ -249,11 +253,11 @@ scenarios.push({
         if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) pairing = false;
       }
     }
-    const subMain = log.find(x => (x.messages || []).length >= 18);
-    const subSize = subMain ? JSON.stringify(subMain.messages).length : 0;
-    record('subagent-long: 8 big tool calls complete inside sub-agent', r.out.includes('F4-DONE') && tr(log, 'sb7') && tr(log, 'sb7').c.includes('BIGSUB'), '');
+    const compReqs = log.filter(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
+    record('subagent-long: sub-agent completes its dig (result returned to main)', tr(log, 's0') && tr(log, 's0').c.includes('F4-DONE') && tr(log, 'sb1') && tr(log, 'sb1').c.includes('BIGSUB'), tr(log, 's0') ? tr(log, 's0').c.substring(0, 80) : 'no result');
+    record('subagent-long: compression fires INSIDE the sub-agent (A4 fixed)', compReqs.length >= 1 && compReqs.some(x => (x.messages || []).length >= 4), 'comp reqs=' + compReqs.length);
     record('subagent-long: pairing valid through nested conversation', pairing, '');
-    record('subagent-long: KNOWN GAP - sub-agent context not compressed (no user turns after start)', subSize > 0, 'sub conv chars=' + subSize + ' (documented limitation)');
+    record('subagent-long: context bounded under compression', log.every(x => JSON.stringify(x.messages || []).length < 20000), '');
     stopMock(m);
   }
 });

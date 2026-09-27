@@ -1753,9 +1753,12 @@ async function summarizeConversation(oldMessages) {
 }
 
 // When the conversation exceeds CONTEXT_CHARS, summarize the oldest turns and
-// keep the newest ~60% of the budget verbatim. The split point is always moved
-// forward to the start of a user turn so an assistant(tool_calls) message and
-// its tool results are never separated (that pairing must stay adjacent).
+// keep the newest ~60% of the budget verbatim. The split point is moved forward
+// to the first position that keeps API pairing valid: a 'user' turn, or an
+// 'assistant' turn (assistant may follow anything; a 'tool' message may NOT be
+// the kept-start because its assistant(tool_calls) would land in the summarized
+// part). This also enables compression inside sub-agent conversations, which
+// contain no user turns after the initial task.
 async function compressConversationIfNeeded(currentMessages) {
   let total = 0;
   for (const m of currentMessages) total += messageSize(m);
@@ -1768,7 +1771,7 @@ async function compressConversationIfNeeded(currentMessages) {
     splitIdx = i;
     if (kept > CONTEXT_CHARS * 0.6) break;
   }
-  while (splitIdx < currentMessages.length && currentMessages[splitIdx].role !== 'user') splitIdx++;
+  while (splitIdx < currentMessages.length && currentMessages[splitIdx].role === 'tool') splitIdx++;
   if (splitIdx < 1 || splitIdx >= currentMessages.length) return;
 
   const oldPart = currentMessages.slice(1, splitIdx);

@@ -347,7 +347,7 @@ scenarios.push({
     await runCli({
       port: m.port, args: [], env: { PERMISSION_MODE: 'bypass', CONTEXT_CHARS: '800' }, cwd,
       stdinSteps: [
-        { t: 'turn one\n', d: 100 }, { t: '/execute-task-now\n', d: 3500 },
+        { t: 'remember EVICT-MARKER-XYZ while reading\n', d: 100 }, { t: '/execute-task-now\n', d: 3500 },
         { t: 'turn two\n', d: 100 }, { t: '/execute-task-now\n', d: 3500 },
         { t: '/bye\n', d: 500 }
       ]
@@ -358,11 +358,14 @@ scenarios.push({
     if (compressed.length) {
       const roles = compressed[0].messages.map(x => x.role);
       for (let i = 0; i < roles.length; i++) {
-        if (roles[i] === 'tool' && (i === 0 || roles[i - 1] !== 'assistant')) pairingOk = false;
+        if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) pairingOk = false;
       }
     }
     record('ctx: compression triggered', compressed.length > 0, '');
-    record('ctx: old content evicted after compression', compressed.length > 0 && !compressed[0].messages.some(mm => String(mm.content || '').includes('ALPHA-DETAIL')), '');
+    // The newest assistant turn may legitimately survive at the boundary; the
+    // OLDEST user turn must be summarized away.
+    const evicted = compressed.length > 0 && compressed.every(r => !(r.messages || []).some(mm => mm.role === 'user' && String(mm.content || '').includes('EVICT-MARKER-XYZ')));
+    record('ctx: old content evicted after compression', evicted, '');
     record('ctx: tool/assistant pairing intact post-compression', pairingOk, '');
     stopMock(m);
 
