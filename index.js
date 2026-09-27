@@ -7,6 +7,8 @@ const child_process = require('child_process');
 const http = require('http');
 
 // ====================== CLI ARGUMENT PARSING (Node 13 safe) =====================
+// Two-pass parsing so flags work in any order: flags are consumed first, then
+// any remaining words become the task text (for bare -p / trailing words).
 const args = process.argv.slice(2);
 let promptArg = null;
 let dangerMode = false;
@@ -15,34 +17,34 @@ let serverMode = false;
 let backgroundMode = false;
 let permissionModeFlag = null;
 
-for (let i = 0; i < args.length; i++) {
-  const arg = args[i];
-  if (arg === '--help' || arg === '-h') {
-    showHelp = true;
-  } else if (arg === '--danger') {
-    dangerMode = true;
-  } else if (arg === '--server') {
-    serverMode = true;
-  } else if (arg === '--background') {
-    backgroundMode = true;
-  } else if (arg.startsWith('--permission-mode=') || arg.startsWith('-m=')) {
-    const prefix = arg.startsWith('--permission-mode=') ? '--permission-mode=' : '-m=';
-    permissionModeFlag = arg.substring(prefix.length);
-  } else if (arg === '--permission-mode' || arg === '-m') {
-    if (i + 1 < args.length) {
-      permissionModeFlag = args[i + 1];
-      i++;
+{
+  let promptValue = null;
+  let barePrompt = false;
+  const words = [];
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--help' || arg === '-h') showHelp = true;
+    else if (arg === '--danger') dangerMode = true;
+    else if (arg === '--server') serverMode = true;
+    else if (arg === '--background') backgroundMode = true;
+    else if (arg.startsWith('--permission-mode=')) permissionModeFlag = arg.substring('--permission-mode='.length);
+    else if (arg === '--permission-mode' || arg === '-m') {
+      // Only consume a value that isn't itself flag-shaped, so
+      // `--permission-mode --prompt hello` doesn't eat the --prompt flag.
+      if (i + 1 < args.length && !args[i + 1].startsWith('-')) { permissionModeFlag = args[i + 1]; i++; }
     }
-  } else if (arg.startsWith('--prompt=') || arg.startsWith('-p=')) {
-    const prefix = arg.startsWith('--prompt=') ? '--prompt=' : '-p=';
-    promptArg = [arg.substring(prefix.length)].concat(args.slice(i + 1)).join(' ');
-    break;
-  } else if (arg === '--prompt' || arg === '-p') {
-    if (i + 1 < args.length) {
-      promptArg = args.slice(i + 1).join(' ');
-      break;
+    else if (arg.startsWith('-m=')) permissionModeFlag = arg.substring(3);
+    else if (arg.startsWith('--prompt=')) { const v = arg.substring('--prompt='.length); if (v) promptValue = v; else barePrompt = true; }
+    else if (arg.startsWith('-p=')) { const v = arg.substring(3); if (v) promptValue = v; else barePrompt = true; }
+    else if (arg === '--prompt' || arg === '-p') {
+      if (i + 1 < args.length && args[i + 1].startsWith('-')) barePrompt = true;
+      else if (i + 1 < args.length) { promptValue = args[i + 1]; i++; }
+      else barePrompt = true;
     }
+    else words.push(arg);
   }
+  if (promptValue !== null) promptArg = words.length ? [promptValue].concat(words).join(' ') : promptValue;
+  else if (barePrompt) promptArg = words.length ? words.join(' ') : null;
 }
 
 if (showHelp) {
@@ -76,7 +78,9 @@ const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || process.env.MAX_ATTEMPT_
 const HEAVY_MODEL = process.env.HEAVY_MODEL || 'gpt-4o-mini';
 const LIGHT_MODEL = process.env.LIGHT_MODEL || 'gpt-3.5-turbo';
 const VISION_MODEL = process.env.VISION_MODEL || null;
-const TEMPERATURE = parseFloat(process.env.TEMPERATURE) || 0.7;
+// parseFloat('0')||fallback would silently rewrite a legitimate TEMPERATURE=0;
+// only fall back when the value is missing or not a finite number.
+const TEMPERATURE = Number.isFinite(parseFloat(process.env.TEMPERATURE)) ? parseFloat(process.env.TEMPERATURE) : 0.7;
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS, 10) || 2048;
 const VALID_PERMISSION_MODES = ['default', 'auto', 'bypass', 'denial'];
 const rawPermissionMode = (permissionModeFlag || process.env.PERMISSION_MODE || (dangerMode ? 'bypass' : 'default')).toLowerCase().trim();
@@ -90,8 +94,10 @@ const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 8000;
 const HTTP_BIND = process.env.HTTP_BIND || '127.0.0.1';
 const HTTP_API_KEY = process.env.HTTP_API_KEY || null;
 const MAX_TOOL_STEPS = parseInt(process.env.MAX_TOOL_STEPS, 10) || 30;
-const MAX_TOOL_RESULT_CHARS = parseInt(process.env.MAX_TOOL_RESULT_CHARS, 10) || 30000;
-const CONTEXT_CHARS = parseInt(process.env.CONTEXT_CHARS, 10) || 120000;
+// Guard against nonsense values: a negative cap would reduce every tool result
+// to just the truncation marker.
+const MAX_TOOL_RESULT_CHARS = Math.max(1000, parseInt(process.env.MAX_TOOL_RESULT_CHARS, 10) || 30000);
+const CONTEXT_CHARS = Math.max(500, parseInt(process.env.CONTEXT_CHARS, 10) || 120000);
 const ENABLE_COMPUTER_USE = process.env.ENABLE_COMPUTER_USE === 'true';
 const DREAM_ALLOW = process.env.DREAM_ALLOW === 'true';
 const MCP_SERVER_URLS = (process.env.MCP_SERVER_URLS || '').split(',').map(s => s.trim()).filter(Boolean);
@@ -282,6 +288,7 @@ ADDITIONAL RULES (critical):
 - Use skill_tool to load user-defined instructions from .7coder/skills/<name>.md.
 - On Windows prefer powershell_tool for PowerShell-native tasks and bash_tool when Unix syntax is needed (requires Git for Windows).
 - CRITICAL: When using write_file, ALWAYS output the COMPLETE, full file (all imports, full functions, error handling, comments - never partial or "..." code).
+- Tool results may be truncated (look for the omission marker). NEVER write_file a file whose read was truncated - re-read the omitted range with offset/limit first, otherwise you will destroy the missing middle.
 - In DREAM MODE (internal): follow the override for hyper-detailed self-consolidation (target yourself only, no lazy summaries, no user-directed language).
 - Safe tools (read_file, glob_tool, etc.) run instantly without user approval (reading secret files like .env still requires approval).
 
@@ -300,13 +307,56 @@ function isInsideDir(baseDir, targetPath) {
   return normTarget === normBase || normTarget.startsWith(normBase + path.sep);
 }
 
+// Resolves symlinks/junctions on the longest existing prefix of a path, so the
+// sandbox cannot be escaped through links pointing outside the workspace.
+// FAILS CLOSED: if the depth guard is exhausted (or resolution hits the root
+// without succeeding), we throw instead of returning the unresolved path -
+// returning it would silently degrade to a lexical check that junctions defeat.
+function realPathSafe(p) {
+  let cur = path.resolve(p);
+  const stack = [];
+  for (let guard = 0; guard < 64; guard++) {
+    try {
+      let real = fs.realpathSync(cur);
+      for (let i = stack.length - 1; i >= 0; i--) real = path.join(real, stack[i]);
+      return real;
+    } catch (e) {
+      const parent = path.dirname(cur);
+      if (parent === cur) throw new Error('Security: path cannot be resolved safely');
+      stack.push(path.basename(cur));
+      cur = parent;
+    }
+  }
+  throw new Error('Security: path resolution depth exceeded');
+}
+
+let launchDirRealCache = null;
+function getLaunchDirReal() {
+  if (launchDirRealCache === null) launchDirRealCache = realPathSafe(launchDir);
+  return launchDirRealCache;
+}
+
+// True when a directory entry is safe to walk/read: plain entries pass;
+// symlinks/junctions only pass when they resolve back inside the workspace.
+function linkStaysInside(full) {
+  try {
+    const st = fs.lstatSync(full);
+    if (!st.isSymbolicLink()) return true;
+    return isInsideDir(getLaunchDirReal(), realPathSafe(full));
+  } catch (e) {
+    return false;
+  }
+}
+
 function sanitizePath(userPath) {
   if (!userPath) return '';
   const resolved = path.resolve(launchDir, userPath);
-  if (!isInsideDir(launchDir, resolved)) {
+  const real = realPathSafe(resolved);
+  const base = getLaunchDirReal();
+  if (!isInsideDir(base, real)) {
     throw new Error('Security: Path traversal blocked');
   }
-  return path.relative(launchDir, resolved);
+  return path.relative(base, real);
 }
 
 // Files the AI must never edit, and whose contents deserve extra scrutiny when read.
@@ -384,6 +434,8 @@ function recursiveReaddir(dir = '', pattern = '') {
     try { entries = fs.readdirSync(current); } catch (e) { return; }
     for (const entry of entries) {
       const full = path.join(current, entry);
+      // Do not traverse/read through links that leave the workspace.
+      if (!linkStaysInside(full)) continue;
       let stat;
       try { stat = fs.statSync(full); } catch (e) { continue; }
       if (stat.isDirectory()) {
@@ -429,6 +481,8 @@ function grepSearch(pattern, searchPath = '') {
     try { entries = fs.readdirSync(current); } catch (e) { return; }
     for (const entry of entries) {
       const full = path.join(current, entry);
+      // Do not read through links that leave the workspace.
+      if (!linkStaysInside(full)) continue;
       let stat;
       try { stat = fs.statSync(full); } catch (e) { continue; }
       if (stat.isDirectory()) {
@@ -557,7 +611,10 @@ async function triggerDreamIfNeeded() {
 
 async function runDreamSession() {
   const mdPath = path.join(launchDir, '7CODER.md');
-  let currentContent = fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : 'No prior content.';
+  let currentContent = 'No prior content.';
+  try {
+    if (fs.existsSync(mdPath)) currentContent = fs.readFileSync(mdPath, 'utf8') || currentContent;
+  } catch (e) {}
   const dreamSystemPrompt = `${systemPrompt}
 [DREAM MODE OVERRIDE - 2.5 HOUR SELF-CONSOLIDATION SESSION]
 You are now in a dedicated deep organization session for 7CODER.md.
@@ -615,6 +672,9 @@ async function describeWithVision(imageUrl) {
 // Calls onDelta(text) for every content fragment (used for live output).
 function parseSSEStream(stream, onDelta) {
   return new Promise((resolve, reject) => {
+    // Decode with Node's StringDecoder so a multibyte UTF-8 char split across
+    // TCP chunks is reassembled instead of torn into U+FFFD replacement chars.
+    if (stream.setEncoding) stream.setEncoding('utf8');
     const message = { role: 'assistant', content: '' };
     const toolCalls = [];
     let finishReason = null;
@@ -1017,6 +1077,7 @@ async function executeToolRaw(name, args, conversation) {
 
   if (name === 'ask_user_question_tool') {
     if (subAgentModeOverride) return 'Question skipped (a sub-agent cannot ask the user questions).';
+    if (rlClosed) return 'Question skipped (input stream is closed).';
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') return 'Question skipped in non-interactive mode';
     const answer = await new Promise(resolve => rl.question(`${args.question}\nAnswer: `, resolve));
     return `User answered: ${answer}`;
@@ -1059,8 +1120,14 @@ async function executeToolRaw(name, args, conversation) {
       }
       pruneTasks();
     });
-    if (child.stdout) child.stdout.on('data', d => { task.output += d.toString(); });
-    if (child.stderr) child.stderr.on('data', d => { task.output += d.toString(); });
+    if (child.stdout) {
+      child.stdout.setEncoding('utf8');
+      child.stdout.on('data', d => { task.output += d.toString(); });
+    }
+    if (child.stderr) {
+      child.stderr.setEncoding('utf8');
+      child.stderr.on('data', d => { task.output += d.toString(); });
+    }
     task.child = child;
     backgroundTasks.set(taskId, task);
     return `[OK] Background task ${taskId} started: ${command}`;
@@ -1119,8 +1186,11 @@ async function executeToolRaw(name, args, conversation) {
   if (name === 'read_mcp_resource_tool') {
     try {
       const resPath = path.resolve(mcpResourcesDir, args.resource_id || '');
-      if (!isInsideDir(mcpResourcesDir, resPath)) return 'Resource not found (paths outside the .mcp directory are blocked)';
-      return fs.readFileSync(resPath, 'utf8');
+      const resReal = realPathSafe(resPath);
+      // Compare the resolved resource path against the INTENDED (lexical) .mcp
+      // path, so a junction planted at .mcp itself cannot vacate the check.
+      if (!isInsideDir(path.resolve(mcpResourcesDir), resReal)) return 'Resource not found (paths outside the .mcp directory are blocked)';
+      return fs.readFileSync(resReal, 'utf8');
     } catch (e) { return 'Resource not found'; }
   }
 
@@ -1179,7 +1249,8 @@ async function executeToolRaw(name, args, conversation) {
 
   if (name === 'enter_worktree_tool') {
     try {
-      const wtPath = quoteForShell(args.path || 'worktree');
+      const rel = sanitizePath(args.path || 'worktree');
+      const wtPath = quoteForShell(rel);
       child_process.execSync(`git worktree add ${wtPath}`, { cwd: launchDir, timeout: 60000 });
       return `[OK] Entered worktree at ${args.path}`;
     } catch (e) { return `Worktree error: ${e.message}`; }
@@ -1190,11 +1261,12 @@ async function executeToolRaw(name, args, conversation) {
     return scheduleCronJob(jobId, args.schedule, args.command);
   }
   if (name === 'cron_delete_tool') {
-    const job = cronJobs.get(args.job_id);
-    if (job) {
-      job.stopped = true;
-      clearTimeout(job.timer);
+    if (!args.job_id || !cronJobs.has(args.job_id)) {
+      return 'Cron job not found: ' + (args.job_id || '(no job_id provided)');
     }
+    const job = cronJobs.get(args.job_id);
+    job.stopped = true;
+    clearTimeout(job.timer);
     cronJobs.delete(args.job_id);
     return `[OK] Cron job deleted`;
   }
@@ -1459,9 +1531,11 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
     processHandle = child_process.spawn(cmdToRun, cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: launchDir });
     log += `[OK] CLI launched (PID ${processHandle.pid})\n`;
     if (processHandle.stdout) {
+      processHandle.stdout.setEncoding('utf8');
       processHandle.stdout.on('data', data => { stdoutData += data.toString(); });
     }
     if (processHandle.stderr) {
+      processHandle.stderr.setEncoding('utf8');
       processHandle.stderr.on('data', data => { stderrData += data.toString(); });
     }
   }
@@ -1580,7 +1654,7 @@ async function safeExecuteTool(toolCall, conversation) {
 
 // ====================== APPROVAL ======================
 async function askApproval(question) {
-  if (!INTERACTIVE) {
+  if (!INTERACTIVE || rlClosed) {
     console.log(`\n[PERM] ${question} (auto-skipped in non-interactive mode)`);
     return false;
   }
@@ -1598,7 +1672,8 @@ function capToolResult(result) {
   const head = Math.floor(MAX_TOOL_RESULT_CHARS * 0.7);
   const tail = MAX_TOOL_RESULT_CHARS - head;
   return s.substring(0, head) +
-    `\n\n[... tool result truncated: ${s.length - MAX_TOOL_RESULT_CHARS} chars omitted ...]\n\n` +
+    `\n\n[... tool result truncated: ${s.length - MAX_TOOL_RESULT_CHARS} chars omitted from the middle ...]\n` +
+    `[DO NOT rewrite this file from this truncated view - the omitted range is missing. Re-read with offset/limit first.]\n\n` +
     s.substring(s.length - tail);
 }
 
@@ -1643,9 +1718,17 @@ async function compressConversationIfNeeded(currentMessages) {
     if (kept > CONTEXT_CHARS * 0.6) break;
   }
   while (splitIdx < currentMessages.length && currentMessages[splitIdx].role !== 'user') splitIdx++;
-  if (splitIdx <= 1 || splitIdx >= currentMessages.length) return;
+  if (splitIdx < 1 || splitIdx >= currentMessages.length) return;
 
   const oldPart = currentMessages.slice(1, splitIdx);
+  if (!oldPart.length) return;
+  // Zero-progress guard: when the kept tail alone exceeds the budget, the only
+  // summarizable message can be a previous summary - re-summarizing it forever
+  // wastes light-model calls without ever converging. Warn and stop instead.
+  if (oldPart.length === 1 && String(oldPart[0].content || '').includes('[CONTEXT COMPRESSION]')) {
+    console.warn('[CTX] Context still over budget after compression; a single large message dominates. Consider raising CONTEXT_CHARS.');
+    return;
+  }
   const digest = await summarizeConversation(oldPart);
   const summaryMsg = {
     role: 'user',
@@ -1720,6 +1803,11 @@ function backupFile(fullPath) {
     const backupPath = path.join(backupsDir, rel + '.' + stamp + '.bak');
     fs.mkdirSync(path.dirname(backupPath), { recursive: true });
     fs.copyFileSync(fullPath, backupPath);
+    // copyFileSync preserves the SOURCE mtime on Windows, which would make an
+    // old file's brand-new backup look "oldest" to prune/restore ordering.
+    // Touch it so the backup's mtime is its creation time.
+    const now = new Date();
+    try { fs.utimesSync(backupPath, now, now); } catch (e) {}
     pruneBackups();
     return backupPath;
   } catch (e) {
@@ -1921,6 +2009,7 @@ function startHttpServer() {
       }
       let body = '';
       let oversized = false;
+      req.setEncoding('utf8');
       req.on('data', chunk => {
         body += chunk;
         if (body.length > 10 * 1024 * 1024) oversized = true;
@@ -1950,11 +2039,23 @@ function startHttpServer() {
               'Cache-Control': 'no-cache',
               'Connection': 'keep-alive'
             });
+            // Client-disconnect safety: res.write on a destroyed socket throws
+            // inside the upstream 'data' handler (uncaughtException kills the
+            // whole server on Node 13). Track the client and stop writing.
+            // NOTE: must listen on RES close (fires on abnormal termination),
+            // not req close (fires as soon as the request body is consumed).
+            let clientGone = false;
+            res.on('close', () => { clientGone = true; });
             const writeChunk = (delta, finishReason) => {
-              res.write(`data: ${JSON.stringify({
-                id: responseId, object: 'chat.completion.chunk', created, model: HEAVY_MODEL,
-                choices: [{ index: 0, delta, finish_reason: finishReason || null }]
-              })}\n\n`);
+              if (clientGone || res.destroyed) return;
+              try {
+                res.write(`data: ${JSON.stringify({
+                  id: responseId, object: 'chat.completion.chunk', created, model: HEAVY_MODEL,
+                  choices: [{ index: 0, delta, finish_reason: finishReason || null }]
+                })}\n\n`);
+              } catch (e) {
+                clientGone = true;
+              }
             };
             const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null) });
             writeChunk({}, 'stop');
@@ -2018,6 +2119,11 @@ const rl = readline.createInterface({
   output: process.stdout,
   prompt: 'You: '
 });
+// Module-level closed tracking: after stdin EOF, rl.question callbacks are
+// NEVER invoked on Node 13 (permanent hang) and throw ERR_USE_AFTER_CLOSE on
+// modern Node. All question/prompt paths must check this.
+let rlClosed = false;
+rl.on('close', () => { rlClosed = true; });
 
 // ====================== GLOBAL MESSAGES ======================
 let messages = [{ role: 'system', content: systemPrompt }];
@@ -2068,28 +2174,52 @@ async function main() {
 
     let currentPrompt = '';
     let taskRunning = false;
+    let btwPending = null;
+    // After stdin EOF the readline interface is closed; calling prompt() on it
+    // throws ERR_USE_AFTER_CLOSE on modern Node and would crash the process
+    // with exit code 1 right after the task finished. Guard every re-prompt.
+    // (rlClosed is tracked at module level next to the rl definition.)
+    const safePrompt = () => { if (!rlClosed) { try { rl.prompt(); } catch (e) {} } };
 
-    rl.prompt();
+    safePrompt();
 
     rl.on('line', async (input) => {
       const trimmed = input.trim();
 
       if (trimmed.toLowerCase() === '/bye') {
+        // Quit for real: stop any running background tasks (their child handles
+        // would otherwise keep the event loop alive and hang the process).
+        for (const t of backgroundTasks.values()) {
+          if (t.status === 'running') {
+            t.stopRequested = true;
+            try {
+              if (process.platform === 'win32' && t.child && t.child.pid) {
+                child_process.execSync(`taskkill /PID ${t.child.pid} /T /F`, { stdio: 'ignore', timeout: 15000 });
+              } else if (t.child) {
+                t.child.kill('SIGTERM');
+              }
+            } catch (e) {}
+            t.status = 'stopped';
+            t.endedAt = new Date().toISOString();
+          }
+        }
         console.log('Goodbye!');
         rl.close();
+        setTimeout(() => process.exit(0), 150);
         return;
       }
 
       if (trimmed === '/clear') {
-        if (taskRunning) { console.log('A task is running - wait before /clear.'); rl.prompt(); return; }
+        if (taskRunning) { console.log('A task is running - wait before /clear.'); safePrompt(); return; }
         messages = [{ role: 'system', content: systemPrompt }];
+        currentPrompt = ''; // a half-typed draft should not survive a fresh conversation
         console.log('[OK] Conversation cleared.');
-        rl.prompt();
+        safePrompt();
         return;
       }
 
       if (trimmed.startsWith('/undo')) {
-        if (taskRunning) { console.log('A task is running - wait before /undo.'); rl.prompt(); return; }
+        if (taskRunning) { console.log('A task is running - wait before /undo.'); safePrompt(); return; }
         const rel = trimmed.slice(5).trim();
         if (!rel) {
           console.log('Usage: /undo <file path>');
@@ -2098,7 +2228,7 @@ async function main() {
         } else {
           console.log(`No backup found for ${rel}.`);
         }
-        rl.prompt();
+        safePrompt();
         return;
       }
 
@@ -2106,40 +2236,48 @@ async function main() {
         const note = trimmed.slice(5).trim();
         if (note) {
           console.log(`[BTW] /btw note received - small-model sub-agent summarizing for main task...`);
-          const btwPrompt = `You are 7coder's BTW sub-agent (light model only). 
+          // Track the in-flight summarization so an immediately following
+          // /execute-task-now (e.g. pasted input) waits for the note to land
+          // instead of racing past it with an empty prompt.
+          const work = (async () => {
+            const btwPrompt = `You are 7coder's BTW sub-agent (light model only).
 The user just appended this note to the CURRENT heavy-model coding task WITHOUT interrupting it:
 
 "${note}"
 
-Summarize EXACTLY what the user wants in 1-2 clear, concise sentences. 
-Output ONLY the summarized user message text (no extra explanation, no quotes, no prefixes). 
+Summarize EXACTLY what the user wants in 1-2 clear, concise sentences.
+Output ONLY the summarized user message text (no extra explanation, no quotes, no prefixes).
 Make it read like a direct continuation of the user's task instructions for the main agent.`;
-          let summarized = note;
-          try {
-            const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: LIGHT_MODEL, useTools: false });
-            summarized = (resp.message.content || note).trim();
-            // Since we prune context, for /btw we can just append it to the currentPrompt
-            currentPrompt += '\n' + summarized + '\n';
-            console.log(`[BTW] BTW sub-agent injected into current task prompt:\n${summarized}`);
-          } catch (e) {
-            console.log(`[BTW] BTW sub-agent error - injecting original note as fallback.`);
-            currentPrompt += '\n' + note + '\n';
-          }
-          const btwPath = path.join(launchDir, 'BTW.md');
-          fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
+            let summarized = note;
+            try {
+              const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: LIGHT_MODEL, useTools: false });
+              summarized = (resp.message.content || note).trim();
+              // Since we prune context, for /btw we can just append it to the currentPrompt
+              currentPrompt += '\n' + summarized + '\n';
+              console.log(`[BTW] BTW sub-agent injected into current task prompt:\n${summarized}`);
+            } catch (e) {
+              console.log(`[BTW] BTW sub-agent error - injecting original note as fallback.`);
+              currentPrompt += '\n' + note + '\n';
+            }
+            const btwPath = path.join(launchDir, 'BTW.md');
+            fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
+          })();
+          btwPending = work;
+          try { await work; } finally { if (btwPending === work) btwPending = null; }
         } else {
           console.log('Usage: /btw your note here');
         }
-        rl.prompt();
+        safePrompt();
         return;
       }
 
       if (trimmed === '/execute-task-now') {
         if (taskRunning) {
           console.log('A task is already running - queued lines are still appended to the next task.');
-          rl.prompt();
+          safePrompt();
           return;
         }
+        if (btwPending) { try { await btwPending; } catch (e) {} }
         if (currentPrompt.trim()) {
           taskRunning = true;
           // Consume the prompt NOW; lines typed while the task runs accumulate
@@ -2148,7 +2286,11 @@ Make it read like a direct continuation of the user's task instructions for the 
           const taskText = currentPrompt.trim();
           currentPrompt = '';
           try {
-            await triggerDreamIfNeeded();
+            try {
+              await triggerDreamIfNeeded();
+            } catch (e) {
+              console.error(`[WARN] dream check failed (task continues): ${e.message}`);
+            }
             console.log(`7coder is ${getRandomSpinner()}`);
             currentRawPrompt = taskText;
             // Session continuity: the FIRST task seeds the conversation (with the
@@ -2170,7 +2312,7 @@ Make it read like a direct continuation of the user's task instructions for the 
         currentPrompt += input + '\n';
       }
 
-      rl.prompt();
+      safePrompt();
     });
   }
 }

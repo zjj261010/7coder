@@ -183,7 +183,7 @@ scenarios.push({
       ['adv2: brief with traversal folder rejected', tr(log, 'g3') && tr(log, 'g3').c.includes('Brief error'), ''],
       ['adv2: download to traversal path rejected', tr(log, 'g4') && tr(log, 'g4').c.includes('Download error'), ''],
       ['adv2: absolute path outside workspace blocked', tr(log, 'g5') && tr(log, 'g5').c.includes('Path traversal blocked'), tr(log, 'g5') ? tr(log, 'g5').c : 'no result'],
-      ['adv2: UNC path blocked', tr(log, 'g6') && tr(log, 'g6').c.includes('Path traversal blocked'), ''],
+      ['adv2: UNC path blocked', tr(log, 'g6') && /Security: (Path traversal blocked|path cannot be resolved safely)/.test(tr(log, 'g6').c), ''],
       ['adv2: binary file read does not crash', tr(log, 'g7') && !tr(log, 'g7').c.includes('Tool error'), ''],
       ['adv2: empty file reads as empty string', tr(log, 'g8') && tr(log, 'g8').c === '', tr(log, 'g8') ? JSON.stringify(tr(log, 'g8').c) : 'no result'],
       ['adv2: wrong arg type surfaces as tool error', tr(log, 'g9') && /Tool error|Read error/.test(tr(log, 'g9').c), ''],
