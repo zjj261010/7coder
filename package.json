@@ -12,11 +12,13 @@
   "bin": {
     "7coder": "./index.js"
   },
-  "homepage": "https://nodemixaholic.com/7coder-home",
-
+  "homepage": "https://github.com/zjj261010/7coder",
+  "bugs": {
+    "url": "https://github.com/zjj261010/7coder/issues"
+  },
   "repository": {
     "type": "git",
-    "url": "https://git.nodemixaholic.com/mymel2001-holder/7Coder.git"
+    "url": "git+https://github.com/zjj261010/7coder.git"
   },
   "license": "SEE LICENSE IN LICENSE",
   "author": "nodemixaholic",
