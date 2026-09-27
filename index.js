@@ -83,6 +83,9 @@ try {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_ENDPOINT = process.env.OPENAI_ENDPOINT || 'https://api.openai.com/v1';
 const ENABLE_RALPH_MODE = process.env.ENABLE_RALPH_MODE === 'true' || process.env.ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE === 'true';
+// Ralph loop iterations are independent of API retries (A9); falls back to
+// MAX_RETRIES for backward compatibility with existing .env files.
+const RALPH_ITERATIONS = Math.max(1, parseInt(process.env.RALPH_ITERATIONS, 10) || MAX_RETRIES);
 const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || process.env.MAX_ATTEMPT_RETRIES, 10) || 3;
 const HEAVY_MODEL = process.env.HEAVY_MODEL || 'gpt-4o-mini';
 const LIGHT_MODEL = process.env.LIGHT_MODEL || 'gpt-3.5-turbo';
@@ -2097,7 +2100,7 @@ async function executeTask() {
     if (ENABLE_RALPH_MODE) {
       console.log(`[LOOP] Ralph Wiggum Loop - Iteration 1: ${displayReply.substring(0, 120)}${displayReply.length > 120 ? '...' : ''}`);
 
-      for (let attempt = 2; attempt <= MAX_RETRIES; attempt++) {
+      for (let attempt = 2; attempt <= RALPH_ITERATIONS; attempt++) {
         const refineMsg = `You are in Claude-Like Ralph Wiggum loop mode. This is iteration ${attempt}. Review and iterate. You may use any tools. If complete, start reply with exactly "RALPH_WIGGUM_COMPLETE" followed by final version.`;
         messages.push({ role: 'user', content: refineMsg });
         displayReply = await processWithTools(messages, { onDelta });
