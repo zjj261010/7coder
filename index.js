@@ -83,10 +83,10 @@ try {
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const OPENAI_ENDPOINT = process.env.OPENAI_ENDPOINT || 'https://api.openai.com/v1';
 const ENABLE_RALPH_MODE = process.env.ENABLE_RALPH_MODE === 'true' || process.env.ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE === 'true';
+const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || process.env.MAX_ATTEMPT_RETRIES, 10) || 3;
 // Ralph loop iterations are independent of API retries (A9); falls back to
 // MAX_RETRIES for backward compatibility with existing .env files.
 const RALPH_ITERATIONS = Math.max(1, parseInt(process.env.RALPH_ITERATIONS, 10) || MAX_RETRIES);
-const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || process.env.MAX_ATTEMPT_RETRIES, 10) || 3;
 const HEAVY_MODEL = process.env.HEAVY_MODEL || 'gpt-4o-mini';
 const LIGHT_MODEL = process.env.LIGHT_MODEL || 'gpt-3.5-turbo';
 const VISION_MODEL = process.env.VISION_MODEL || null;
@@ -153,6 +153,8 @@ const mcpResourcesDir = path.join(launchDir, '.mcp');
 const skillsDir = path.join(launchDir, '.7coder', 'skills');
 const backgroundTasks = new Map();
 let taskSeq = 0;
+// Set when the REPL is quitting - blocks new background work (A10).
+let shuttingDown = false;
 
 // Sub-agent context: while a sub-agent runs, interactive y/n approvals are
 // impossible to answer meaningfully, so 'default' mode is downgraded to 'auto'
@@ -581,8 +583,9 @@ function scheduleCronJob(jobId, schedule, command) {
   const job = { schedule, command, parsed, nextRun: null, timer: null, runs: 0, lastError: null, stopped: false };
   const runCommand = () => {
     job.runs++;
-    child_process.exec(command, { cwd: launchDir, timeout: 300000 }, (err) => {
+    job.child = child_process.exec(command, { cwd: launchDir, timeout: 300000 }, (err) => {
       if (err) job.lastError = err.message;
+      job.child = null;
     });
   };
   // setTimeout delays cap at ~24.8 days (2^31-1 ms); re-arm in chunks so very
@@ -1171,6 +1174,7 @@ async function executeToolRaw(name, args, conversation) {
   }
 
   if (name === 'task_create_tool') {
+    if (shuttingDown) return 'Task refused: 7coder is shutting down.';
     const command = String(args.command || '').trim();
     if (!command) return 'Task error: command is required (e.g. "npm test")';
     const taskId = `task-${Date.now()}-${++taskSeq}`;
@@ -2369,8 +2373,10 @@ async function main() {
       const trimmed = input.trim();
 
       if (trimmed.toLowerCase() === '/bye') {
-        // Quit for real: stop any running background tasks (their child handles
-        // would otherwise keep the event loop alive and hang the process).
+        // Quit for real: stop running background tasks, cron jobs and any
+        // in-flight cron command, drop the dream lock, then exit. Their
+        // handles would otherwise keep the event loop alive (hang) or leak.
+        shuttingDown = true;
         for (const t of backgroundTasks.values()) {
           if (t.status === 'running') {
             t.stopRequested = true;
@@ -2385,6 +2391,20 @@ async function main() {
             t.endedAt = new Date().toISOString();
           }
         }
+        for (const j of cronJobs.values()) {
+          j.stopped = true;
+          if (j.timer) clearTimeout(j.timer);
+          if (j.child) {
+            try {
+              if (process.platform === 'win32' && j.child.pid) {
+                child_process.execSync(`taskkill /PID ${j.child.pid} /T /F`, { stdio: 'ignore', timeout: 15000 });
+              } else {
+                j.child.kill('SIGTERM');
+              }
+            } catch (e) {}
+          }
+        }
+        try { const lock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
         console.log('Goodbye!');
         rl.close();
         setTimeout(() => process.exit(0), 150);
