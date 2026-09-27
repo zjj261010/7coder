@@ -81,7 +81,8 @@ REPL commands: /clear, /undo <file>, /btw <note>, /execute-task-now, /bye
 // log and streamed replies in one-shot mode).
 function flushExit(code) {
   const pending = () => (process.stdout.writableLength || 0) + (process.stderr.writableLength || 0);
-  const tryExit = () => { if (pending() === 0) process.exit(code); else setTimeout(tryExit, 50); };
+  const deadline = Date.now() + 2000; // never hang if a stream never drains
+  const tryExit = () => { if (pending() === 0 || Date.now() > deadline) process.exit(code); else setTimeout(tryExit, 50); };
   tryExit();
 }
 
@@ -1448,7 +1449,7 @@ async function executeToolRaw(name, args, conversation) {
       try {
         runPsInput(
           'Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing;\n' +
-          'Add-Type -TypeDefinition "using System; using System.Runtime.InteropServices; public static class Win7Input { [DllImport(\\"user32.dll\\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }"\n' +
+          "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Win7Input { [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }'\n" +
           `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x}, ${y})\n` +
           clickPart +
           'Write-Output done\n'
@@ -1883,6 +1884,25 @@ async function compressConversationIfNeeded(currentMessages) {
   }
   while (splitIdx < currentMessages.length && currentMessages[splitIdx].role === 'tool') splitIdx++;
   if (splitIdx < 1 || splitIdx >= currentMessages.length) return;
+
+  // If the walk landed at messages[1] the oldPart would be empty. Extend
+  // forward to the first safe boundary instead (the audit's dead-zone case):
+  // this summarizes the OLDEST turns while the kept part stays pair-valid.
+  if (splitIdx === 1 && currentMessages.length > 2) {
+    splitIdx = 2;
+    while (splitIdx < currentMessages.length && currentMessages[splitIdx].role === 'tool') splitIdx++;
+    if (splitIdx >= currentMessages.length) return;
+  }
+
+  // Never compress when the model has not yet seen the current task: with no
+  // assistant turn after the last user message, the "old" part IS the live
+  // task (e.g. [system, task]) and summarizing it would destroy it.
+  let lastUserIdx = -1;
+  for (let i = currentMessages.length - 1; i >= 1; i--) {
+    if (currentMessages[i].role === 'user') { lastUserIdx = i; break; }
+  }
+  const assistantAfterLastUser = currentMessages.slice(lastUserIdx + 1).some(m => m.role === 'assistant');
+  if (splitIdx >= lastUserIdx && !assistantAfterLastUser) return;
 
   const oldPart = currentMessages.slice(1, splitIdx);
   if (!oldPart.length) return;

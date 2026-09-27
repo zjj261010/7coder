@@ -47,6 +47,7 @@ function tr(log, id) { return toolResults(log).find(t => t.id === id); }
 function freshCwd(name) {
   const dir = path.join(ROOT, 'w-g-' + name);
   fs.rmSync(dir, { recursive: true, force: true });
+  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }

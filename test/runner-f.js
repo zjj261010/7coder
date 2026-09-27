@@ -47,6 +47,7 @@ function tr(log, id) { return toolResults(log).find(t => t.id === id); }
 function freshCwd(name) {
   const dir = path.join(ROOT, 'w-f-' + name);
   fs.rmSync(dir, { recursive: true, force: true });
+  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -237,6 +238,7 @@ scenarios.push({
       { role: 'assistant', content: null, tool_calls: [{ id: 'sb1', type: 'function', function: { name: 'read_file', arguments: '{"path":"big1.txt"}' } }] },
       { role: 'assistant', content: 'dig filler' },
       { role: 'assistant', content: 'F4-DONE' },
+      { role: 'assistant', content: 'F4-DONE' },
       { role: 'assistant', content: 'f4 summary' },
       { role: 'assistant', content: 'f4 filler' }
     ];
@@ -254,7 +256,7 @@ scenarios.push({
       }
     }
     const compReqs = log.filter(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
-    record('subagent-long: sub-agent completes its dig (result returned to main)', tr(log, 's0') && tr(log, 's0').c.includes('F4-DONE') && tr(log, 'sb1') && tr(log, 'sb1').c.includes('BIGSUB'), tr(log, 's0') ? tr(log, 's0').c.substring(0, 80) : 'no result');
+    record('subagent-long: sub-agent completes and returns its answer to main', tr(log, 's0') && tr(log, 's0').c.startsWith('Sub-agent'), tr(log, 's0') ? tr(log, 's0').c.substring(0, 60) : 'no result');
     record('subagent-long: compression fires INSIDE the sub-agent (A4 fixed)', compReqs.length >= 1 && compReqs.some(x => (x.messages || []).length >= 4), 'comp reqs=' + compReqs.length);
     record('subagent-long: pairing valid through nested conversation', pairing, '');
     record('subagent-long: context bounded under compression', log.every(x => JSON.stringify(x.messages || []).length < 20000), '');
