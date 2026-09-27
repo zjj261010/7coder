@@ -64,6 +64,15 @@ REPL commands: /clear, /undo <file>, /btw <note>, /execute-task-now, /bye
   process.exit(0);
 }
 
+// Exit without truncating buffered stdout/stderr: on Windows, file/pipe stdout
+// writes are async and process.exit() discards them (this bit the background
+// log and streamed replies in one-shot mode).
+function flushExit(code) {
+  const pending = () => (process.stdout.writableLength || 0) + (process.stderr.writableLength || 0);
+  const tryExit = () => { if (pending() === 0) process.exit(code); else setTimeout(tryExit, 50); };
+  tryExit();
+}
+
 // ====================== SETUP ======================
 const launchDir = process.cwd();
 const appDir = require.main ? path.dirname(require.main.filename) : __dirname;
@@ -2174,14 +2183,24 @@ let messages = [{ role: 'system', content: systemPrompt }];
 async function main() {
   if (backgroundMode && promptArg) {
     console.log('[LOOP] Starting background/daemon mode...');
+    // Route the child's stdout/stderr into a log file instead of dropping
+    // everything (A3): the log is the only observable trace besides 7CODER.md.
+    const logDir = path.join(launchDir, '.7coder');
+    try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) {}
+    const logPath = path.join(logDir, 'background.log');
+    let logFd;
+    try {
+      logFd = fs.openSync(logPath, 'a');
+      fs.writeSync(logFd, '\n[' + new Date().toISOString() + '] background run: ' + process.argv.slice(1).join(' ') + '\n');
+    } catch (e) { logFd = undefined; }
     const child = child_process.spawn(process.argv[0], process.argv.slice(1).filter(a => a !== '--background'), {
       detached: true,
-      stdio: 'ignore',
+      stdio: ['ignore', logFd !== undefined ? logFd : 'ignore', logFd !== undefined ? logFd : 'ignore'],
       cwd: launchDir
     });
     child.unref();
-    console.log('[OK] Background process started (terminal freed).');
-    process.exit(0);
+    console.log('[OK] Background process started (terminal freed). Output: ' + (logFd !== undefined ? logPath : '(log file unavailable - falling back to /dev/null)'));
+    flushExit(0);
   }
 
   if (ENABLE_HTTP_SERVER) {
@@ -2205,7 +2224,7 @@ async function main() {
     currentRawPrompt = promptArg;
     messages = prepareMessagesForPrompt(currentRawPrompt);
     await executeTask();
-    process.exit(0);
+    flushExit(0);
   } else {
     console.log('\nWelcome to 7coder (interactive REPL)');
     if (ENABLE_RALPH_MODE) console.log('Ralph Wiggum mode ENABLED');
