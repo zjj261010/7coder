@@ -3,6 +3,8 @@
 // Usage: node test/runner-c.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
+function rmrf(p) { try { if (fs.rmSync) rmrf(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
+
 const path = require('path');
 const http = require('http');
 
@@ -45,8 +47,8 @@ function tr(log, id) { return toolResults(log).find(t => t.id === id); }
 
 function freshCwd(name) {
   const dir = path.join(ROOT, 'w-c-' + name);
-  fs.rmSync(dir, { recursive: true, force: true });
-  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
+  rmrf(dir, { recursive: true, force: true });
+  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -207,7 +209,7 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('c3');
     const outside = path.join(ROOT, 'c3-outside');
-    fs.rmSync(outside, { recursive: true, force: true });
+    rmrf(outside, { recursive: true, force: true });
     fs.mkdirSync(outside, { recursive: true });
     fs.writeFileSync(path.join(outside, 'secret.txt'), 'TOP-SECRET-OUTSIDE');
     const link = path.join(cwd, 'jout');
@@ -224,8 +226,8 @@ scenarios.push({
     record('escape: read through junction BLOCKED', tr(log, 'j1') && tr(log, 'j1').c.includes('Path traversal blocked'), tr(log, 'j1') ? tr(log, 'j1').c : 'no result');
     record('escape: write through junction BLOCKED', tr(log, 'j2') && tr(log, 'j2').c.includes('Path traversal blocked') && !fs.existsSync(path.join(outside, 'evil.txt')), tr(log, 'j2') ? tr(log, 'j2').c : 'no result');
     stopMock(m);
-    try { fs.rmSync(link, { recursive: true, force: true }); } catch (e) {}
-    fs.rmSync(outside, { recursive: true, force: true });
+    try { rmrf(link, { recursive: true, force: true }); } catch (e) {}
+    rmrf(outside, { recursive: true, force: true });
   }
 });
 

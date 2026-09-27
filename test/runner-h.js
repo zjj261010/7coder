@@ -4,6 +4,8 @@
 // Usage: node test/runner-h.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
 const { spawn, spawnSync, execSync } = require('child_process');
 const fs = require('fs');
+function rmrf(p) { try { if (fs.rmSync) rmrf(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
+
 const path = require('path');
 const http = require('http');
 
@@ -47,8 +49,8 @@ function tr(log, id) { return toolResults(log).find(t => t.id === id); }
 
 function freshCwd(name) {
   const dir = path.join(ROOT, 'w-h-' + name);
-  fs.rmSync(dir, { recursive: true, force: true });
-  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
+  rmrf(dir, { recursive: true, force: true });
+  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -390,7 +392,7 @@ scenarios.push({
     // 1) junction + 70-segment depth attack must fail closed (no silent fallback)
     const cwd = freshCwd('h8a');
     const outside = path.join(ROOT, 'h8-outside');
-    fs.rmSync(outside, { recursive: true, force: true });
+    rmrf(outside, { recursive: true, force: true });
     fs.mkdirSync(outside, { recursive: true });
     spawnSync('cmd', ['/c', 'mklink', '/J', path.join(cwd, 'jdeep'), outside]);
     const deepPath = 'jdeep/' + Array(70).fill(0).map((_, i) => 'd' + i).join('/') + '/x.txt';
@@ -404,8 +406,8 @@ scenarios.push({
     const escaped = fs.existsSync(path.join(outside, 'd0'));
     record('audit: depth-guard exhaustion fails CLOSED (no junction escape)', res1 && /depth exceeded|resolved safely/.test(res1.c) && !escaped, 'result=' + (res1 ? res1.c.substring(0, 60) : 'none') + ' escaped=' + escaped);
     stopMock(m);
-    try { fs.rmSync(path.join(cwd, 'jdeep'), { recursive: true, force: true }); } catch (e) {}
-    fs.rmSync(outside, { recursive: true, force: true });
+    try { rmrf(path.join(cwd, 'jdeep'), { recursive: true, force: true }); } catch (e) {}
+    rmrf(outside, { recursive: true, force: true });
 
     // 2) backup of an OLD-mtime file survives pruning and /undo ordering holds
     const cwd2 = freshCwd('h8b');

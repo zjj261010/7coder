@@ -5,3 +5,7 @@ node_modules/
 test/w-*
 test/mock-log-*.jsonl
 test/cur-script-*.json
+
+# offline build artifacts
+dist/
+.cache/

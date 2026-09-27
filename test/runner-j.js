@@ -5,6 +5,8 @@
 // Usage: node test/runner-j.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
 const { spawn, spawnSync, execSync } = require('child_process');
 const fs = require('fs');
+function rmrf(p) { try { if (fs.rmSync) rmrf(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
+
 const path = require('path');
 const http = require('http');
 
@@ -47,8 +49,8 @@ function tr(log, id) { return toolResults(log).find(t => t.id === id); }
 
 function freshCwd(name) {
   const dir = path.join(ROOT, 'w-j-' + name);
-  fs.rmSync(dir, { recursive: true, force: true });
-  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { fs.rmSync(dir, { recursive: true, force: true }); } catch (e) { spawnSync('ping', ['-n', '2', '127.0.0.1'], { stdio: 'ignore' }); } }
+  rmrf(dir, { recursive: true, force: true });
+  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { spawnSync('ping', ['-n', '2', '127.0.0.1'], { stdio: 'ignore' }); } }
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
@@ -140,7 +142,7 @@ scenarios.push({
     record('cycle: glob result is a bounded string (visited-set or error)', typeof (res1 ? res1.c : '') === 'string' && res1.c.length < 200000, 'len=' + (res1 ? res1.c.length : 'none'));
     record('cycle: grep terminates and finds the target exactly once-ish', res2 && res2.c.includes('CYCLE-TARGET') && res2.c.length < 200000, 'len=' + (res2 ? res2.c.length : 'none'));
     stopMock(m);
-    try { fs.rmSync(path.join(cwd, 'jself'), { recursive: true, force: true }); } catch (e) {}
+    try { rmrf(path.join(cwd, 'jself'), { recursive: true, force: true }); } catch (e) {}
   }
 });
 

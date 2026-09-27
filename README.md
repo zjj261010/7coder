@@ -12,6 +12,14 @@
 - **Disk Space**: 500 MB free
 - **Internet**: Required for online OpenAI compatible API endpoint (or LAN for one on the local network)
 
+## Offline Package
+
+A fully offline distribution (bundled Node.js 13.14.0 runtime + pre-installed
+dependencies + install/usage guide) can be built with
+`node scripts/pack-offline.js --with-node` - see **INSTALL.md** for the
+three-step install. No internet, no npm install, no system Node required
+on the target machine.
+
 ## Now on NPM!
 
 Steps:
