@@ -2153,7 +2153,7 @@ function conversationFromClient(clientMessages) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
     let content = Array.isArray(m.content)
       ? m.content.filter(p => p && p.type === 'text').map(p => p.text).join('\n')
-      : String(m.content || '');
+      : (typeof m.content === 'string' ? m.content : (m.content === undefined || m.content === null ? '' : JSON.stringify(m.content)));
     if (!content) continue;
     if (m.role === 'user' && firstUser) {
       content = buildTaskUserContent(content);
