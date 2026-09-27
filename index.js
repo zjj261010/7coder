@@ -43,6 +43,18 @@ let permissionModeFlag = null;
     }
     else words.push(arg);
   }
+  // Unknown flag-shaped words are folded into the task text (two-pass design),
+  // but say so instead of silently eating them (A12).
+  const unknownFlags = words.filter(w => w.startsWith('-') && w !== '-');
+  if (unknownFlags.length) {
+    console.warn('[WARN] Unknown argument(s) ' + JSON.stringify(unknownFlags) + ' will be treated as part of the task text.');
+  }
+  // An explicitly empty --prompt "" is almost certainly a mistake - fail fast
+  // instead of silently starting the REPL (A12).
+  if (promptValue !== null && promptValue.trim() === '' && !barePrompt) {
+    console.error('[ERROR] --prompt was given an empty value. Pass your task text or omit --prompt.');
+    process.exit(1);
+  }
   if (promptValue !== null) promptArg = words.length ? [promptValue].concat(words).join(' ') : promptValue;
   else if (barePrompt) promptArg = words.length ? words.join(' ') : null;
 }
