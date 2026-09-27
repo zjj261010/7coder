@@ -236,6 +236,24 @@ scenarios.push({
     record('economics: bypass mode adds ZERO light-model calls', lightCalls === 1, 'light=' + lightCalls + ' heavy=' + heavyCalls);
     record('economics: one summary per task (not per tool call)', lightCalls === 1 && heavyCalls === 5, 'heavy=' + heavyCalls);
     stopMock(m);
+
+    // default mode with deterministic rules: write_file needs NO light calls
+    // (deterministic risk + explanation + real diff preview)
+    const cwd2 = freshCwd('g4b');
+    const m2 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'q5', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'w.txt', content: 'x' }) } }] },
+      { role: 'assistant', content: 'ECON2-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const r2 = await runCli({
+      port: m2.port, args: [], cwd: cwd2,
+      stdinSteps: [{ t: 'write it\n', d: 100 }, { t: '/execute-task-now\n', d: 4000 }, { t: 'y\n', d: 2500 }, { t: '/bye\n', d: 400 }]
+    });
+    const log2 = readLog(m2.log);
+    const light2 = log2.filter(x => !x.tools).length;
+    const heavy2 = log2.filter(x => x.tools).length;
+    record('economics: default-mode edit costs ZERO light calls (was 2)', light2 === 1 && heavy2 === 2 && r2.out.includes('Proposed change'), 'light=' + light2 + ' heavy=' + heavy2);
+    stopMock(m2);
   }
 });
 

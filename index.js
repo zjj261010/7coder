@@ -837,6 +837,28 @@ async function callOpenAI(currentMessages, options = {}) {
   }
 }
 
+// Deterministic one-line explanations for the approval prompt - no light-model
+// call needed for the common tools (A8). Unmapped tools fall back to the LLM.
+const DETERMINISTIC_EXPLAIN = {
+  write_file: (a) => `Write file ${a.path}`,
+  append_file: (a) => `Append to file ${a.path}`,
+  edit_file: (a) => `Edit file ${a.path}`,
+  notebook_edit_tool: (a) => `Edit notebook ${a.path}`,
+  download_tool: (a) => `Download ${a.url} to ${a.path}`,
+  todo_write_tool: () => 'Append an entry to TODO.md',
+  brief_tool: (a) => `Summarize folder ${a.folder} into ${a.folder}.summary`,
+  enter_worktree_tool: (a) => `Create git worktree at ${a.path}`,
+  schedule_cron_tool: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`,
+  cron_create_tool: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`,
+  cron_delete_tool: (a) => `Delete cron job ${a.job_id}`,
+  process_kill_tool: (a) => `Kill process ${a.pid}`,
+  run_command: (a) => `Run shell command: ${String(a.command || '').substring(0, 100)}`,
+  bash_tool: (a) => `Run bash command: ${String(a.command || '').substring(0, 100)}`,
+  powershell_tool: (a) => `Run PowerShell command: ${String(a.command || '').substring(0, 100)}`,
+  task_create_tool: (a) => `Start background task: ${String(a.command || '').substring(0, 80)}`,
+  mcp_tool: (a) => `Call MCP tool ${a.tool_name}`
+};
+
 // ====================== RISK CLASSIFICATION & PERMISSION ======================
 async function classifyRisk(toolName, args) {
   const prompt = `Classify risk of tool call as ONLY ONE WORD: LOW, MEDIUM or HIGH.
@@ -1713,7 +1735,18 @@ async function safeExecuteTool(toolCall, conversation) {
       return await executeToolRaw(name, args, conversation);
     }
 
-    const risk = (protectedWrite || protectedRead) ? 'HIGH' : await classifyRisk(name, args);
+    // Deterministic risk classes (A8): the common tools need no light-model
+    // classification. Unmapped tools still fall back to the light model.
+    const DETERMINISTIC_RISK = {
+      write_file: 'MEDIUM', append_file: 'MEDIUM', edit_file: 'MEDIUM',
+      notebook_edit_tool: 'MEDIUM', download_tool: 'MEDIUM', todo_write_tool: 'LOW',
+      brief_tool: 'LOW', sleep_tool: 'LOW', enter_worktree_tool: 'MEDIUM',
+      agent_tool: 'MEDIUM', schedule_cron_tool: 'HIGH', cron_create_tool: 'HIGH',
+      cron_delete_tool: 'MEDIUM', process_kill_tool: 'HIGH',
+      run_command: 'HIGH', bash_tool: 'HIGH', powershell_tool: 'HIGH',
+      task_create_tool: 'HIGH', mcp_tool: 'HIGH'
+    };
+    const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 
     if (mode === 'auto') {
       const safe = await isAutoApprovalSafe(name, args, risk);
@@ -1741,6 +1774,8 @@ async function safeExecuteTool(toolCall, conversation) {
       }
       if (preview) {
         console.log(`\n[PERM] Proposed change to ${args.path}:\n${preview}\n`);
+      } else if (DETERMINISTIC_EXPLAIN[name]) {
+        console.log(`\n[PERM] ${DETERMINISTIC_EXPLAIN[name](args)} (risk: ${risk})`);
       } else {
         const expl = await getPermissionExplanation(name, args, risk);
         console.log(`\n[PERM] ${expl}`);
