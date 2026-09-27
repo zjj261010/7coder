@@ -223,7 +223,7 @@ const tools = [
   { type: "function", function: { name: "run_command", description: "Run a shell command via the system default shell (cmd.exe on Windows, /bin/sh elsewhere).", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell. On Windows requires Git for Windows (bash.exe) - returns guidance if missing.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (works on Win7 PowerShell 2.0+ via -EncodedCommand). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-  { type: "function", function: { name: "glob_tool", description: "File search (glob).", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
+  { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js).", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "grep_tool", description: "Search file contents.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "list_dir", description: "List directory contents (name, type, size).", parameters: { type: "object", properties: { path: { type: "string" } } } } },
   { type: "function", function: { name: "download_tool", description: "Download a URL to a local file inside the workspace (streamed, 500 MB cap).", parameters: { type: "object", properties: { url: { type: "string" }, path: { type: "string" } }, required: ["url", "path"] } } },
@@ -426,9 +426,46 @@ function isSuperDangerous(cmd) {
   return dangerousPatterns.some(p => lower.includes(p));
 }
 
+// Converts a glob pattern to an anchored case-insensitive regex with standard
+// semantics: `**` spans directory separators, `*` and `?` stay within one
+// segment, everything else is escaped literally. Backslashes in the pattern
+// are treated as separators (Windows users type `src\*.js`).
+function globToRegex(pattern) {
+  const norm = String(pattern).split('\\').join('/');
+  let out = '';
+  for (let i = 0; i < norm.length; i++) {
+    const c = norm[i];
+    if (c === '*') {
+      if (norm[i + 1] === '*') {
+        if (norm[i + 2] === '/') {
+          // `**/` may also match ZERO path segments (bash globstar convention:
+          // src/**/*.js includes src/a.js).
+          out += '(?:.*/)?';
+          i += 2;
+        } else { out += '.*'; i++; }
+      } else out += '[^/]*';
+    } else if (c === '?') {
+      out += '[^/]';
+    } else if ('.+^${}()|[]'.indexOf(c) >= 0) {
+      out += '\\' + c;
+    } else {
+      out += c;
+    }
+  }
+  return new RegExp('^' + out + '$', 'i');
+}
+
 function recursiveReaddir(dir = '', pattern = '') {
   const results = [];
   const startDir = dir ? path.join(launchDir, sanitizePath(dir)) : launchDir;
+  let rx = null;
+  if (pattern) {
+    try { rx = globToRegex(pattern); } catch (e) { rx = null; }
+  }
+  // Path-aware semantics only for patterns that NAME a path (contain a
+  // separator or **). Plain patterns like *.js keep matching basenames at any
+  // depth - the pre-existing behavior and the most common search intent.
+  const pathAware = pattern && (pattern.indexOf('/') >= 0 || pattern.indexOf('\\') >= 0 || pattern.indexOf('**') >= 0);
   function walk(current) {
     let entries;
     try { entries = fs.readdirSync(current); } catch (e) { return; }
@@ -445,17 +482,14 @@ function recursiveReaddir(dir = '', pattern = '') {
         let isMatch = false;
         if (!pattern) {
           isMatch = true;
-        } else {
-          try {
-            // Convert glob to regex: * -> .* , ? -> . , everything else escaped.
-            const regexStr = '^' + pattern.replace(/[.+^${}()|[\]\\*?]/g, ch =>
-              ch === '*' ? '.*' : ch === '?' ? '.' : '\\' + ch
-            ) + '$';
-            const rx = new RegExp(regexStr, 'i');
+        } else if (rx) {
+          if (pathAware) {
+            isMatch = rx.test(rel.split(path.sep).join('/'));
+          } else {
             isMatch = rx.test(entry);
-          } catch (e) {
-            isMatch = entry.toLowerCase().includes(pattern.toLowerCase());
           }
+        } else {
+          isMatch = entry.toLowerCase().includes(pattern.toLowerCase());
         }
         if (isMatch) {
           results.push(rel);

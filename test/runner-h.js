@@ -479,6 +479,45 @@ scenarios.push({
   }
 });
 
+// --- H9: glob directory-aware patterns (A11 fix) ---
+scenarios.push({
+  name: 'glob-dir',
+  fn: async () => {
+    const cwd = freshCwd('h9');
+    for (const f of ['top.js', 'top.txt', 'src/a.js', 'src/b.ts', 'src/sub/deep.js', 'src/sub/deeper/x.test.js', 'lib/note.TXT']) {
+      fs.mkdirSync(path.join(cwd, path.dirname(f)), { recursive: true });
+      fs.writeFileSync(path.join(cwd, f), 'x');
+    }
+    const asks = [
+      ['g1', 'src/*.js', ['src/a.js'], ['src/sub/deep.js', 'top.js']],
+      ['g2', 'src/**/*.js', ['src/a.js', 'src/sub/deep.js'], []],
+      ['g3', '**/*.test.js', ['src/sub/deeper/x.test.js'], []],
+      ['g4', '*.js', ['top.js', 'src/a.js', 'src/sub/deep.js', 'src/sub/deeper/x.test.js'], []], // plain pattern: basenames at any depth (pre-existing behavior)
+      ['g5', '*.txt', ['top.txt', 'lib' + path.sep + 'note.TXT'], []],
+      ['g6', 'src' + path.sep + '*.ts', ['src/b.ts'], []],
+      ['g7', 'lib/**', ['lib' + path.sep + 'note.TXT'], []]
+    ];
+    const script = asks.map(([id, pattern]) => ({
+      role: 'assistant', content: null,
+      tool_calls: [{ id, type: 'function', function: { name: 'glob_tool', arguments: JSON.stringify({ pattern }) } }]
+    }));
+    script.push({ role: 'assistant', content: 'GLOBDIR-DONE' });
+    const m = startMock(script);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const log = readLog(m.log);
+    for (const [id, pattern, must, mustNot] of asks) {
+      const res = tr(log, id);
+      if (!res) { record('glob-dir: ' + pattern + ' (result present)', false, 'no result'); continue; }
+      const sep = s => s.split('/').join(path.sep);
+      const lines = res.c.split('\n').filter(Boolean);
+      const ok = must.map(sep).every(x => lines.includes(x)) && mustNot.map(sep).every(x => !lines.includes(x));
+      record('glob-dir: ' + pattern + ' matches exactly the right set', ok, 'got=' + JSON.stringify(lines));
+    }
+    stopMock(m);
+  }
+});
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

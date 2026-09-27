@@ -243,11 +243,20 @@ scenarios.push({
 scenarios.push({
   name: 'supply-chain',
   fn: async () => {
-    const nmDir = path.join(ROOT, '..', 'node_modules');
-    let top = [];
-    try { top = fs.readdirSync(nmDir).filter(d => !d.startsWith('.')).sort(); } catch (e) {}
-    record('supply: node_modules contains only axios+dotenv(+follow-redirects)', JSON.stringify(top) === JSON.stringify(['axios', 'dotenv', 'follow-redirects']), JSON.stringify(top));
+    // The real invariant: OUR code loads only axios+dotenv plus Node builtins.
+    // (axios 1.x ships transitive packages in node_modules - that is its tree,
+    // managed by npm; what matters is what index.js itself pulls in.)
+    const src = fs.readFileSync(path.join(ROOT, '..', 'index.js'), 'utf8');
+    const builtins = new Set(['fs', 'path', 'http', 'readline', 'child_process', 'os', 'crypto', 'util', 'stream', 'events', 'net', 'tls', 'url', 'querystring', 'zlib', 'buffer', 'string_decoder', 'assert']);
+    const requires = [];
+    const re = /(?:^|[^.\w])require\(\s*['"]([^'"]+)['"]\s*\)/g;
+    let mm;
+    while ((mm = re.exec(src))) requires.push(mm[1]);
+    const foreign = requires.filter(r => !builtins.has(r) && !/^node:/.test(r) && !/^\.\.?[/\\]/.test(r));
+    record('supply: index.js requires only axios+dotenv+builtins', JSON.stringify(foreign.sort()) === JSON.stringify(['axios', 'dotenv']), JSON.stringify(foreign.sort()));
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, '..', 'package.json'), 'utf8'));
+    record('supply: direct dependencies are exactly axios+dotenv', JSON.stringify(Object.keys(pkg.dependencies).sort()) === JSON.stringify(['axios', 'dotenv']), JSON.stringify(Object.keys(pkg.dependencies)));
+    record('supply: axios upgraded off the CVE-affected 0.x line', !/^0\./.test(pkg.dependencies.axios.replace(/^[\^~]/, '')), pkg.dependencies.axios);
     const lock = JSON.parse(fs.readFileSync(path.join(ROOT, '..', 'package-lock.json'), 'utf8'));
     record('supply: package.json version matches lockfile', pkg.version === lock.version, pkg.version + ' vs ' + lock.version);
     record('supply: bin target exists', fs.existsSync(path.join(ROOT, '..', pkg.bin['7coder'])), pkg.bin['7coder']);
