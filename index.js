@@ -2142,10 +2142,15 @@ Make it read like a direct continuation of the user's task instructions for the 
         }
         if (currentPrompt.trim()) {
           taskRunning = true;
+          // Consume the prompt NOW; lines typed while the task runs accumulate
+          // in currentPrompt for the NEXT task (clearing after the run would
+          // race with the concurrent line handler and silently drop them).
+          const taskText = currentPrompt.trim();
+          currentPrompt = '';
           try {
             await triggerDreamIfNeeded();
             console.log(`7coder is ${getRandomSpinner()}`);
-            currentRawPrompt = currentPrompt.trim();
+            currentRawPrompt = taskText;
             // Session continuity: the FIRST task seeds the conversation (with the
             // 7CODER.md summary); every later task is appended so the model keeps
             // full context of this session. /clear starts over.
@@ -2155,7 +2160,6 @@ Make it read like a direct continuation of the user's task instructions for the 
               messages.push({ role: 'user', content: currentRawPrompt });
             }
             await executeTask();
-            currentPrompt = '';
           } finally {
             taskRunning = false;
           }
