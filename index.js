@@ -265,7 +265,7 @@ const tools = [
   { type: "function", function: { name: "skill_tool", description: "Invoke a user-defined skill: reads .7coder/skills/<skill_name>.md and returns its instructions to follow. Pass params for the skill to use.", parameters: { type: "object", properties: { skill_name: { type: "string" }, params: { type: "object" } }, required: ["skill_name"] } } },
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
   { type: "function", function: { name: "auto_approval_return", description: "Lightweight model hands over to heavy model for auto-approval description.", parameters: { type: "object", properties: { description: { type: "string" } } } } },
-  { type: "function", function: { name: "computer_use", description: "Take a REAL screenshot of the screen. Mouse/keyboard actions are SIMULATED no-ops (real input injection is not implemented). Only available when ENABLE_COMPUTER_USE=true.", parameters: { type: "object", properties: { action: { type: "string", enum: ["screenshot", "mouse_move", "click", "type_text", "press_key"] }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, key: { type: "string" } }, required: ["action"] } } },
+  { type: "function", function: { name: "computer_use", description: "Real screen control: screenshot (real capture), mouse_move/click (real cursor + click), type_text/press_key (real SendKeys). Windows-only for input actions; requires ENABLE_COMPUTER_USE=true.", parameters: { type: "object", properties: { action: { type: "string", enum: ["screenshot", "mouse_move", "click", "type_text", "press_key"] }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, key: { type: "string" } }, required: ["action"] } } },
   { type: "function", function: { name: "plan_mode", description: "Plan mode: light model improves prompt + specifies refinement loops for heavy model deep thinking. Use ONLY for complex tasks.", parameters: { type: "object", properties: { initial_task: { type: "string" } }, required: ["initial_task"] } } },
   { type: "function", function: { name: "auto_debug_tool", description: "Launch app/script (compile if needed), test like a real user (GUI via desktop simulation or CLI via terminal) for 2-5 min, auto-fix errors until only warnings remain.", parameters: { type: "object", properties: { path: { type: "string" }, type: { type: "string", enum: ["gui", "cli", "script"] }, duration_minutes: { type: "number" } }, required: ["path"] } } },
   { type: "function", function: { name: "bickering_tool", description: "Two small-model PM sub-agents bicker/debate the current task until they reach agreement.", parameters: { type: "object", properties: { task: { type: "string" } }, required: ["task"] } } }
@@ -1384,13 +1384,68 @@ async function executeToolRaw(name, args, conversation) {
       if (fs.existsSync(shotPath)) return `Screenshot saved to ${shotPath}`;
       return 'Screenshot failed (file was not created - is a display/session available?)';
     }
+    // Real input injection (Windows): a temp .ps1 avoids triple-quoted command
+    // strings; user32 mouse_event drives clicks, SendKeys drives typing/keys.
+    const inputDir = path.join(launchDir, '.7coder');
+    const runPsInput = (ps) => {
+      try { fs.mkdirSync(inputDir, { recursive: true }); } catch (e) {}
+      const file = path.join(inputDir, 'input.ps1');
+      fs.writeFileSync(file, ps, 'utf8');
+      child_process.execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${file}"`, { stdio: 'ignore', timeout: 30000 });
+    };
+    const escapeSendKeys = (text) => String(text)
+      .replace(/([+^%~(){}[\]])/g, '{$1}')
+      .replace(/\r\n/g, '{ENTER}').replace(/\r|\n/g, '{ENTER}').replace(/\t/g, '{TAB}');
+    if (action === 'mouse_move' || action === 'click') {
+      if (process.platform !== 'win32') return `[WARN] ${action} is Windows-only in this build (got ${process.platform}).`;
+      const x = Math.max(0, Math.floor(Number(args.x) || 0));
+      const y = Math.max(0, Math.floor(Number(args.y) || 0));
+      const clickPart = action === 'click'
+        ? '[Win7Input]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [Win7Input]::mouse_event(4,0,0,0,[UIntPtr]::Zero); '
+        : '';
+      try {
+        runPsInput(
+          'Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing;\n' +
+          'Add-Type -TypeDefinition "using System; using System.Runtime.InteropServices; public static class Win7Input { [DllImport(\\"user32.dll\\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }"\n' +
+          `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x}, ${y})\n` +
+          clickPart +
+          'Write-Output done\n'
+        );
+        return `[OK] ${action === 'click' ? 'Clicked' : 'Cursor moved'} at ${x},${y}`;
+      } catch (e) { return `Input error: ${e.message}`; }
+    }
     if (action === 'type_text' && args.text) {
-      return `[WARN] Typing is simulated (not implemented yet): ${args.text}`;
+      if (process.platform !== 'win32') return `[WARN] type_text is Windows-only in this build (got ${process.platform}).`;
+      try {
+        runPsInput(
+          'Add-Type -AssemblyName System.Windows.Forms;\n' +
+          `[System.Windows.Forms.SendKeys]::SendWait('${escapeSendKeys(args.text).replace(/'/g, "''")}')\n` +
+          'Write-Output done\n'
+        );
+        return `[OK] Typed ${String(args.text).length} character(s) via SendKeys`;
+      } catch (e) { return `Input error: ${e.message}`; }
     }
     if (action === 'press_key' && args.key) {
-      return `[WARN] Key press is simulated (not implemented yet): ${args.key}`;
+      if (process.platform !== 'win32') return `[WARN] press_key is Windows-only in this build (got ${process.platform}).`;
+      const keyMap = { enter: '{ENTER}', tab: '{TAB}', esc: '{ESC}', escape: '{ESC}', backspace: '{BACKSPACE}', delete: '{DELETE}', del: '{DELETE}', up: '{UP}', down: '{DOWN}', left: '{LEFT}', right: '{RIGHT}', home: '{HOME}', end: '{END}', pageup: '{PGUP}', pagedown: '{PGDN}', space: ' ', win: '{LWIN}' };
+      const k = String(args.key).trim().toLowerCase();
+      const keys = k.split('+').map(part => {
+        const mods = { ctrl: '^', alt: '%', shift: '+' };
+        if (mods[part]) return mods[part];
+        if (keyMap[part]) return keyMap[part];
+        if (/^[a-z0-9]$/.test(part)) return part.toUpperCase();
+        return '{' + part.toUpperCase() + '}';
+      }).join('');
+      try {
+        runPsInput(
+          'Add-Type -AssemblyName System.Windows.Forms;\n' +
+          `[System.Windows.Forms.SendKeys]::SendWait('${keys.replace(/'/g, "''")}')\n` +
+          'Write-Output done\n'
+        );
+        return `[OK] Pressed key: ${args.key}`;
+      } catch (e) { return `Input error: ${e.message}`; }
     }
-    return `[WARN] Action "${action}" is simulated (not implemented yet) - only "screenshot" is real.`;
+    return `[WARN] Unknown computer_use action "${action}". Available: screenshot, mouse_move, click, type_text, press_key.`;
   }
 
   if (name === 'synthetic_output_tool') {

@@ -19,7 +19,7 @@
 | A4 | **子代理会话永不压缩**（设计缺口） | 资源 | 起始 user 轮之后无 user 轮，压缩切分守卫使其跳过。风险有界（MAX_TOOL_STEPS × 结果上限）。修复需允许在工具组边界切分 → 单独立项 |
 | A5 | **HTTP 客户端断连后上游处理继续空跑**（已部分缓解：不再崩溃、停止写分片） | 资源 | res.close 跟踪已阻止崩溃与死写；完整取消需中止 processWithTools → 单独立项 |
 | A6 | **dream 整理与摘要机制互相打架** | 数据 | dream 重组的 7CODER.md 章节在下个任务后被压回 bullet 列表。需定主从 |
-| A7 | **computer_use 鼠标/键盘为模拟 no-op** | 功能 | 已如实标注"(simulated)"；真实输入注入未实现 |
+| A7 | ~~computer_use 鼠标/键盘为模拟 no-op~~ **已关闭**（Windows 真实输入：光标移动/点击经 user32 mouse_event + Cursor.Position，打字/按键经 SendKeys；临时 .ps1 避免引号地狱；实测光标移动后位置回读一致。非 Windows 平台返回警告） | 功能 | 已解决 |
 | A8 | **审批经济性**：default 模式每个非免审批工具消耗 2 次轻模型调用 | 成本 | 可用确定性规则优先，灰区才问 LLM |
 | A9 | **Ralph 循环复用 MAX_RETRIES 作为迭代数** | 语义 | 缺独立配置（如 RALPH_ITERATIONS） |
 | A10 | **/bye 遗留**：退出时正在执行的 cron 命令成孤儿；150ms 窗口内新建的任务不清理；dream 进行中退出会漏删锁（4h 后自愈） | 边缘 | 审计确认；影响极小，暂记录不修 |
