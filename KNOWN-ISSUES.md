@@ -1,7 +1,7 @@
 # KNOWN ISSUES & PENDING DECISIONS
 
-> 生成于 2026-09-27。依据：最初代码审阅 + 六轮多维测试（套件 A-F，共 221 项断言，Node 24 / Node 13.14.0 双运行时全绿）。
-> 已修复问题不在此列，见 git log（glob 通配符、denial 拦截顺序、备份修剪、输入排队竞态、junction 逃逸、/bye 挂起、TEMPERATURE=0、CLI 解析顺序、流式多字节撕裂、cron_delete 谎报）。
+> 生成于 2026-09-27，末次核对同日。依据：最初代码审阅 + 八轮多维测试 + 一轮修复审计（套件 A-H 共 272 项断言，Node 24 / Node 13.14.0 双运行时全绿）。
+> 已修复问题不在此列，见 git log。2026-09-27 逐项复核：下列 A/B/C/D 各项状态与当前代码一致，无已被顺带解决而未更新状态的条目。
 
 ## A. 未修复的已知缺陷
 
@@ -65,6 +65,6 @@
 
 ## E. 测试资产现状
 
-- `npm test`（套件 A：73 项）、`npm run test:b`（B：39）、`node test/runner-c.js`（C：35）、`node test/runner-d.js`（D：32）、`node test/runner-e.js`（E：22）、`node test/runner-f.js`（F：20）——合计 **221 项**
-- 全部支持 `NODE_BIN=<node13>` 换运行时、`RUN_ONLY=场景名` 筛选；均须以 mock LLM 端点离线运行
-- 六轮累计发现并修复 10 个真 bug（见文首列表）
+- 套件：A 基线 73 项（`npm test`）、B 故障注入/对抗 39（`npm run test:b`）、C 并发/逃逸/cron 35、D 沙箱酷刑/视觉 32、E 流式 UTF-8/模糊 22、F 性能/E2E/schema 20、G 命令面/差分 oracle 26、H 交互组合/RSS/静态审计 + audit-fixes 25——合计 **272 项/运行时**
+- 全部支持 `NODE_BIN=<node13>` 换运行时、`RUN_ONLY=场景名` 筛选；均以 mock LLM 端点离线运行
+- 八轮测试 + 一轮修复审计累计发现并修复的产品缺陷详见两个 fix 提交（f4a6e4a、4541da0）的提交说明
