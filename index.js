@@ -426,6 +426,14 @@ function isSuperDangerous(cmd) {
   return dangerousPatterns.some(p => lower.includes(p));
 }
 
+// Windows: console commands emit the OEM/ANSI codepage (GBK on zh systems),
+// which execSync decodes as UTF-8 -> mojibake. Switching the child session to
+// chcp 65001 makes commands emit UTF-8 (verified: 14 -> 0 replacement chars).
+// Zero-dependency fix for A2.
+function withUtf8Codepage(cmd) {
+  return process.platform === 'win32' ? 'chcp 65001>nul & ' + cmd : cmd;
+}
+
 // Converts a glob pattern to an anchored case-insensitive regex with standard
 // semantics: `**` spans directory separators, `*` and `?` stay within one
 // segment, everything else is escaped literally. Backslashes in the pattern
@@ -932,7 +940,7 @@ async function executeToolRaw(name, args, conversation) {
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') console.log(`[WARN] Running: ${cmd}`);
 
     try {
-      const output = child_process.execSync(cmd, { encoding: 'utf8', cwd: launchDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
+      const output = child_process.execSync(withUtf8Codepage(cmd), { encoding: 'utf8', cwd: launchDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
       return `Command OK:\n${output}`;
     } catch (e) {
       return `[ERROR] Command failed:\n${e.message}\n${e.stderr || ''}`;
@@ -998,7 +1006,7 @@ async function executeToolRaw(name, args, conversation) {
   if (name === 'process_list_tool') {
     try {
       const cmd = process.platform === 'win32' ? 'tasklist' : 'ps -eo pid,comm';
-      return child_process.execSync(cmd, { encoding: 'utf8', timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
+      return child_process.execSync(withUtf8Codepage(cmd), { encoding: 'utf8', timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
     } catch (e) { return `Process list error: ${e.message}`; }
   }
   if (name === 'process_kill_tool') {
@@ -1143,7 +1151,7 @@ async function executeToolRaw(name, args, conversation) {
       child: null,
       stopRequested: false
     };
-    const child = child_process.exec(command, { cwd: launchDir, timeout: 1800000, maxBuffer: 20 * 1024 * 1024 }, (err) => {
+    const child = child_process.exec(withUtf8Codepage(command), { cwd: launchDir, timeout: 1800000, maxBuffer: 20 * 1024 * 1024 }, (err) => {
       task.endedAt = new Date().toISOString();
       if (task.stopRequested || task.status === 'stopped') return;
       if (err) {
