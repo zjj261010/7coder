@@ -14,18 +14,18 @@
 | # | 问题 | 影响 | 现状 / 建议 |
 |---|------|------|------------|
 | A1 | ~~axios 0.21.4 存在 CVE-2023-45857~~ **已关闭**（B1 验证通过：axios 1.20.0 在真实 Node 13.14.0 上 9/9 API 面探针全过——POST/超时/流式 SSE 含跨块 CJK/错误形状/ECONNREFUSED；272 项回归无破坏。依赖升级至 ^1.20.0，node_modules 传递包由 2 增至 25，G 套件供应链断言改为校验"index.js 仅 require axios+dotenv+内置模块"） | 安全 | 已解决 |
-| A2 | **外部命令输出的 GBK 中文乱码**（tasklist、部分 cmd 工具） | 体验 | Node 13 纯标准库无法转码；ASCII 部分（PID、多数程序名）完好。修复需引入 iconv-lite（破坏零依赖）或切换系统代码页 |
-| A3 | **`--background` 模式输出全部丢失**（stdio:'ignore'） | 可观测性 | 除 7CODER.md 外无任何日志。建议落日志文件（如 `.7coder/background.log`） |
-| A4 | **子代理会话永不压缩**（设计缺口） | 资源 | 起始 user 轮之后无 user 轮，压缩切分守卫使其跳过。风险有界（MAX_TOOL_STEPS × 结果上限）。修复需允许在工具组边界切分 → 单独立项 |
-| A5 | **HTTP 客户端断连后上游处理继续空跑**（已部分缓解：不再崩溃、停止写分片） | 资源 | res.close 跟踪已阻止崩溃与死写；完整取消需中止 processWithTools → 单独立项 |
-| A6 | **dream 整理与摘要机制互相打架** | 数据 | dream 重组的 7CODER.md 章节在下个任务后被压回 bullet 列表。需定主从 |
+| A2 | ~~外部命令输出的 GBK 中文乱码~~ **已关闭**（子进程会话前置 chcp 65001，实测 14→0 个 U+FFFD，零依赖，不影响 POSIX） | 体验 | 已解决 |
+| A3 | ~~`--background` 模式输出全部丢失~~ **已关闭**（子进程 stdout/stderr 指向 .7coder/background.log 追加写入并带运行头部；同时以 flushExit 修复 Windows 上 process.exit 截断缓冲输出的一般性问题） | 可观测性 | 已解决 |
+| A4 | ~~子代理会话永不压缩~~ **已关闭**（切分点放宽为“非 tool 角色”边界——assistant 可作切分起点且配对合法；Suite F subagent-long 正向断言子代理内压缩触发且上下文有界） | 已解决 |
+| A5 | ~~HTTP 客户端断连后上游处理继续空跑~~ **已关闭**（processWithTools 取消令牌在步骤/工具边界生效；断连后跳过摘要、不写 7CODER.md；F5b 断言验证） | 已解决 |
+| A6 | ~~dream 整理与摘要机制互相打架~~ **已关闭**（摘要写入 <!-- 7coder:auto-log --> 标记节并原位重建；标记外内容——dream 成果、用户笔记——逐字保留） | 已解决 |
 | A7 | ~~computer_use 鼠标/键盘为模拟 no-op~~ **已关闭**（Windows 真实输入：光标移动/点击经 user32 mouse_event + Cursor.Position，打字/按键经 SendKeys；临时 .ps1 避免引号地狱；实测光标移动后位置回读一致。非 Windows 平台返回警告） | 功能 | 已解决 |
-| A8 | **审批经济性**：default 模式每个非免审批工具消耗 2 次轻模型调用 | 成本 | 可用确定性规则优先，灰区才问 LLM |
-| A9 | **Ralph 循环复用 MAX_RETRIES 作为迭代数** | 语义 | 缺独立配置（如 RALPH_ITERATIONS） |
-| A10 | **/bye 遗留**：退出时正在执行的 cron 命令成孤儿；150ms 窗口内新建的任务不清理；dream 进行中退出会漏删锁（4h 后自愈） | 边缘 | 审计确认；影响极小，暂记录不修 |
+| A8 | ~~审批经济性~~ **已关闭**（确定性风险分类+解释表覆盖常见工具，default 模式编辑审批零额外轻调用；无规则工具仍回退轻模型） | 已解决 |
+| A9 | ~~Ralph 循环复用 MAX_RETRIES~~ **已关闭**（新增 RALPH_ITERATIONS 独立配置，默认回退 MAX_RETRIES；注意 A9 提交曾引入 TDZ 启动崩溃，已在 A10 提交中热修） | 已解决 |
+| A10 | ~~/bye 遗留~~ **已关闭**（退出时停止 cron 定时器+击杀在途 cron 命令、拒绝关机中新任务、删除 dream 锁） | 已解决 |
 | A11 | ~~glob/grep 仅匹配文件名~~ **已关闭**（glob_tool 支持目录感知：`src/*.js`、`src/**/*.js`、`**/*.test.js`；`*` 不跨目录、`**` 跨目录且可匹配零段；无分隔符模式保持按文件名任意深度匹配的既有行为。grep 的 pattern 是正则内容匹配，本来就与文件名无关） | 功能 | 已修复并回归（Suite H glob-dir：15 项单测 + 7 项端到端） |
 | A12 | **解析器怪癖**：`--prompt ""` 静默进 REPL；未知 flag 及其值并入任务文本；词序重排（`file.js --prompt fix it` → "fix file.js it"） | 体验 | 两遍解析的既定设计；如需严格模式另立 issue |
-| A13 | **HTTP 客户端 content 为非字符串/数组时字面化为 "[object Object]"** | 边缘 | conversationFromClient 的 String() 回退；罕见畸形输入 |
+| A13 | ~~HTTP 客户端 content 非字符串时字面化为 "[object Object]"~~ **已关闭**（改为 JSON.stringify 回退） | 已解决 |
 
 ## B. 待决策事项
 

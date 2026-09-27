@@ -874,7 +874,8 @@ const DETERMINISTIC_EXPLAIN = {
   bash_tool: (a) => `Run bash command: ${String(a.command || '').substring(0, 100)}`,
   powershell_tool: (a) => `Run PowerShell command: ${String(a.command || '').substring(0, 100)}`,
   task_create_tool: (a) => `Start background task: ${String(a.command || '').substring(0, 80)}`,
-  mcp_tool: (a) => `Call MCP tool ${a.tool_name}`
+  mcp_tool: (a) => `Call MCP tool ${a.tool_name}`,
+  agent_tool: (a) => `Spawn sub-agent "${a.name}" with task: ${String(a.task || '').substring(0, 60)}`
 };
 
 // ====================== RISK CLASSIFICATION & PERMISSION ======================

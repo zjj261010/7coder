@@ -204,13 +204,13 @@ scenarios.push({
 scenarios.push({
   name: 'subagent-downgrade',
   fn: async () => {
+    // A8: agent_tool approval is now deterministic (no light steps for
+    // classify/explain); the sub-agent's append_file still hits the light
+    // model once for auto-approval.
     const cwd = freshCwd('e3');
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'ag1', type: 'function', function: { name: 'agent_tool', arguments: JSON.stringify({ name: 'worker', task: 'append a line' }) } }] },
-      { role: 'assistant', content: 'MEDIUM' },
-      { role: 'assistant', content: 'It spawns a sub-agent.' },
       { role: 'assistant', content: null, tool_calls: [{ id: 'ag2', type: 'function', function: { name: 'append_file', arguments: JSON.stringify({ path: 'sub.txt', content: 'SUBWORK' }) } }] },
-      { role: 'assistant', content: 'LOW' },
       { role: 'assistant', content: 'YES' },
       { role: 'assistant', content: 'SUB-FINISHED' },
       { role: 'assistant', content: 'E3-DONE' }
@@ -240,8 +240,6 @@ scenarios.push({
     const cwd = freshCwd('e4');
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'ag3', type: 'function', function: { name: 'agent_tool', arguments: JSON.stringify({ name: 'w', task: 't' }) } }] },
-      { role: 'assistant', content: 'MEDIUM' },
-      { role: 'assistant', content: 'It spawns a sub-agent.' },
       { role: 'assistant', content: 'E4-DONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -382,7 +380,8 @@ scenarios.push({
       ]);
       const md = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8');
       const lines = md.split('\n').filter(Boolean);
-      record('summary-race: concurrent writes leave valid bullet list', lines.length >= 2 && lines.every(l => l.startsWith('- ')), JSON.stringify(md.substring(0, 120)));
+      const validLog = lines.every(l => l.startsWith('<!-- 7coder:auto-log') || l.startsWith('- '));
+      record('summary-race: concurrent writes leave a valid marker/bullet log', lines.length >= 4 && validLog, JSON.stringify(md.substring(0, 120)));
     } finally {
       try { srv.kill(); } catch (e) {}
       stopMock(m);
