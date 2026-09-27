@@ -1796,13 +1796,19 @@ async function compressConversationIfNeeded(currentMessages) {
 
 async function processWithTools(currentMessages, opts = {}) {
   const onDelta = opts.onDelta || null;
+  // Cancellation token (A5): an HTTP client that disconnects mid-stream can
+  // stop the run at the next step/tool boundary instead of running to
+  // completion for a ghost client.
+  const cancelled = opts.cancel || (() => false);
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+    if (cancelled()) return '[aborted: client disconnected]';
     await compressConversationIfNeeded(currentMessages);
     const choice = await callOpenAI(currentMessages, { onDelta });
     const assistantMsg = choice.message;
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
       for (const tc of assistantMsg.tool_calls) {
+        if (cancelled()) return '[aborted: client disconnected]';
         const result = await safeExecuteTool(tc, currentMessages);
         currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(result) });
       }
@@ -2111,7 +2117,11 @@ function startHttpServer() {
                 clientGone = true;
               }
             };
-            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null) });
+            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone });
+            // Give the socket-close event a moment to land when the client
+            // aborted at the very end of the run - then skip the summary.
+            await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
+            if (clientGone) return; // aborted: skip summary, 7CODER.md untouched
             writeChunk({}, 'stop');
             res.write('data: [DONE]\n\n');
             res.end();

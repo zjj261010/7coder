@@ -296,6 +296,46 @@ scenarios.push({
   }
 });
 
+// --- F5b: aborted stream cancels the run (no summary for a ghost client) ---
+scenarios.push({
+  name: 'disconnect-cancel',
+  fn: async () => {
+    const cwd = freshCwd('f5b');
+    // long sleep tool so the abort lands mid-task; the run would normally
+    // complete and write a summary afterwards
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'sl', type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":4000}' } }] },
+      { role: 'assistant', content: 'F5B-LATE' },
+      { role: 'assistant', content: 'F5B summary' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 285;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      await new Promise((resolve) => {
+        const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path: '/v1/chat/completions',
+          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] })) } },
+          res => { res.once('data', () => { req.destroy(); resolve(); }); });
+        req.on('error', () => resolve());
+        req.write(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] }));
+        req.end();
+      });
+      await new Promise(r => setTimeout(r, 9000)); // let the sleep finish + cancellation stop the run
+      const md = fs.existsSync(path.join(cwd, '7CODER.md')) ? fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8') : null;
+      record('disconnect-cancel: aborted run writes NO 7CODER.md summary', md === null || !md.includes('F5B summary'), md ? md.substring(0, 60) : 'absent (correct)');
+      const after = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'alive' }] });
+      record('disconnect-cancel: server healthy after cancellation', after.status === 200, 'status=' + after.status);
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
 // --- F6: strict OpenAI schema conformance ---
 scenarios.push({
   name: 'schema',
