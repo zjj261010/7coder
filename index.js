@@ -1954,27 +1954,42 @@ Action/Response: "${assistantResponse}"`;
   }
 }
 
+// Task summaries live inside a marker-delimited section so they never destroy
+// free-form content (e.g. a dream session's reorganized 7CODER.md). Anything
+// outside the markers is preserved verbatim; the bullet log inside is rebuilt
+// from the previous bullets plus the new one.
+const LOG_START = '<!-- 7coder:auto-log:start -->';
+const LOG_END = '<!-- 7coder:auto-log:end -->';
+
 function updateCompleteSummary(newSummary) {
   const mdPath = path.join(launchDir, '7CODER.md');
+  let existing = '';
+  try {
+    if (fs.existsSync(mdPath)) existing = fs.readFileSync(mdPath, 'utf8');
+  } catch (e) {
+    console.error('Error reading 7CODER.md:', e);
+  }
+  // Bullets from the previous auto-log section (if present)
   let summaries = [];
-  if (fs.existsSync(mdPath)) {
-    try {
-      const existingContent = fs.readFileSync(mdPath, 'utf8').trim();
-      if (existingContent) {
-        summaries = existingContent.split('\n')
-          .map(l => l.trim())
-          .filter(l => l.startsWith('- '))
-          .map(l => l.slice(2).trim())
-          .filter(Boolean);
-      }
-    } catch (e) {
-      console.error('Error reading 7CODER.md:', e);
-    }
+  const startIdx = existing.indexOf(LOG_START);
+  const endIdx = existing.indexOf(LOG_END);
+  if (startIdx >= 0 && endIdx > startIdx) {
+    const inner = existing.substring(startIdx + LOG_START.length, endIdx);
+    summaries = inner.split('\n')
+      .map(l => l.trim())
+      .filter(l => l.startsWith('- '))
+      .map(l => l.slice(2).trim())
+      .filter(Boolean);
   }
   summaries.push(newSummary);
-  const completeSummary = summaries.map(s => `- ${s}`).join('\n');
+  // Free-form content outside the markers survives (dream sessions, user notes)
+  const outside = (startIdx >= 0 && endIdx > startIdx)
+    ? (existing.substring(0, startIdx) + existing.substring(endIdx + LOG_END.length)).trim()
+    : existing.trim();
+  const autoSection = LOG_START + '\n' + summaries.map(s => '- ' + s).join('\n') + '\n' + LOG_END;
+  const next = outside ? autoSection + '\n\n' + outside + '\n' : autoSection + '\n';
   try {
-    fs.writeFileSync(mdPath, completeSummary, 'utf8');
+    fs.writeFileSync(mdPath, next, 'utf8');
     console.log('[OK] 7CODER.md updated with complete summary');
   } catch (e) {
     console.error('Error writing to 7CODER.md:', e);
