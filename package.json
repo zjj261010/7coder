@@ -1,7 +1,7 @@
 {
   "name": "@nodemixaholic/7coder",
-  "version": "2.2.0",
-  "description": "7coder — Full clean-room Claude Code replacement. Advanced tools (agents, MCP, computer use, cron, workflows), sophisticated permission system (default/auto/bypass/denial), near-prompt-injection-proof computer use, HTTP OpenAI-compatible endpoint for any UI, Ralph Wiggum loop, 7CODER.md findings file, anti-frustration detection. Zero extra dependencies. Broad compatibility: Windows 7/Node.js 13+ to modern systems.",
+  "version": "2.5.0",
+  "description": "7coder - Clean-room Claude Code-style assistant. Real tools (sub-agents, background shell tasks, skills, validated structured output, file ops, real PowerShell/bash shells, web, screenshots, cron scheduling, auto-debug), permission system (default/auto/bypass/denial) with protected-files enforcement, HTTP OpenAI-compatible endpoint (localhost-only by default, optional API key), Ralph Wiggum loop, 7CODER.md findings file. Two small dependencies (axios, dotenv). Broad compatibility: Windows 7/Node.js 13+ to modern systems.",
   "keywords": [
     "code",
     "vibe-code",
@@ -24,7 +24,8 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "server": "node index.js --server"
+    "server": "node index.js --server",
+    "test": "node test/runner.js"
   },
   "dependencies": {
     "axios": "^0.21.4",

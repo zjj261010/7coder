@@ -1,8 +1,8 @@
 # 7coder
 
-**Full clean-room Claude Code replacement** for Windows 7 / Node.js 13+.
+**Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.2.0** — Fix git repo url.
+**v2.5.0** — Daily-driver pass: session continuity across REPL tasks with automatic context compression, streaming output (REPL live text + HTTP SSE), tool-result size caps, edit safety net (real diff previews on approval, automatic backups, `/undo`).
 
 ## System Requirements
 
@@ -17,7 +17,7 @@
 Steps:
 
 1. install using: `npm install -g @nodemixaholic/7coder`
-2. find your global root using `npm root -g`, append '/@nodemixaholic/7coder' to it (could be something slightly differnet on Windows, I'm not sure, I'm on macOS.)
+2. find your global root using `npm root -g`, append '/@nodemixaholic/7coder' to it (could be something slightly different on Windows, I'm not sure, I'm on macOS.)
 3. change directory to that
 4. find the **.env.example** file in that folder
 5. copy it to ".env" and then edit ".env" using your favorite plaintext editor (mine is nano!)
@@ -45,6 +45,11 @@ Steps:
  index.js --server
  # or set ENABLE_HTTP_SERVER=true in .env
 ```
+
+The server binds to **127.0.0.1 only** by default (`HTTP_BIND` to change) and can
+require an API key (`HTTP_API_KEY` in .env → clients send `Authorization: Bearer <key>`).
+Both non-streaming and streaming (`stream: true`, SSE) `/v1/chat/completions` are
+supported, plus `/v1/models`. Client message histories are honored for multi-turn chats.
 
 **Background / daemon mode** (frees your terminal)
 
@@ -74,26 +79,33 @@ Steps:
 
 ## How Tools Work
 
-7coder has **full tool calling** with 40+ production-ready tools:
+7coder has tool calling with these tools:
 
-- `read_file` / `write_file` / `append_file`
-- `run_command` / `bash_tool` / `powershell_tool`
-- `glob_tool` / `grep_tool` (fast file search)
-- `web_fetch_tool` / `web_search_tool` / `web_browser_tool`
-- `computer_use` (screenshot, mouse, keyboard — cross-platform)
-- `agent_tool` / `remove_agent` (spawn child AIs)
-- Background tasks, cron jobs, MCP resources, git worktrees
-- Notebook editing, skill tools, TODO.md, 7CODER.md auto-generation, etc.
+- `read_file` (optional line `offset`/`limit` for large files) / `write_file` / `append_file` / `edit_file` (surgical unique-substring replacement)
+- `agent_tool` — **real sub-agents**: a fresh AI conversation with full tool access that works through a task and returns its final answer (no nesting; sub-agent tool approvals run in auto mode)
+- `task_create_tool` / `task_get_tool` / `task_list_tool` / `task_output_tool` / `task_stop_tool` — **real background shell tasks** (async exec, output streaming, `taskkill /T /F` tree-kill on Windows)
+- `skill_tool` — **real skills**: instructions loaded from `.7coder/skills/<name>.md`
+- `synthetic_output_tool` — validated structured output (JSON parsed + type-checked against your schema)
+- `run_command` (default shell) / `bash_tool` (**real bash**; on Windows needs Git for Windows) / `powershell_tool` (**real Windows PowerShell**, works on Win7's PowerShell 2.0 via `-EncodedCommand`)
+- `glob_tool` / `grep_tool` / `list_dir`
+- `web_fetch_tool` / `web_search_tool` / `web_browser_tool` / `download_tool` (streamed, 500 MB cap)
+- `process_list_tool` / `process_kill_tool` — `tasklist` / `taskkill /T /F` on Windows (kills the whole child tree), `ps`/`kill` elsewhere
+- `computer_use` — **real screenshots**; mouse/keyboard actions are simulated no-ops
+- `schedule_cron_tool` / `cron_create_tool` — schedules like `30s`, `5m`, `2h`, `every 10m`, `daily 09:30`
+- `auto_debug_tool` (launch + observe + auto-fix loop; on Windows closes test apps with `taskkill /T /F`), `bickering_tool`, `plan_mode`
+- MCP resources (`.mcp` directory), git worktrees, notebook editing, TODO.md, 7CODER.md auto-generation
 
-**All tools are fully functional** — no stubs.
+Everything listed above does what it says. Tools that were previously advertised
+but only simulated (teams, workflows, remote triggers, MCP auth) have been
+**removed** rather than pretending to work.
 
-In **default** mode the AI asks for confirmation on risky actions.  
-In **`--danger`** or **`--permission-mode=bypass`** it runs instantly.  
+In **default** mode the AI asks for confirmation on risky actions.
+In **`--danger`** or **`--permission-mode=bypass`** it runs instantly.
 Even in bypass mode, super-dangerous commands (`rm -rf /`, `format`, `dd`, etc.) are still blocked.
 
 **Every tool action is risk-classified** by the light model (`LOW` / `MEDIUM` / `HIGH`).
 
-## New Permission & Security System
+## Permission & Security System
 
 | Mode      | Behavior                                    |
 | --------- | ------------------------------------------- |
@@ -102,22 +114,45 @@ Even in bypass mode, super-dangerous commands (`rm -rf /`, `format`, `dd`, etc.)
 | `bypass`  | No approvals (same as `--danger`)           |
 | `denial`  | Block every tool call                       |
 
-Protected files (`.env`, `.gitconfig`, `package.json`, etc.) can **never** be auto-edited.  
-Path traversal and dangerous commands are blocked at every level.
+Protected files (`.env`, `.gitconfig`, `.bashrc`, `.npmrc`, SSH keys, `credentials.json`, etc.)
+can **never** be edited by the AI in bypass/auto mode, and reading them always
+requires approval (never auto-safe). Path traversal and dangerous commands are
+blocked at every level; the HTTP endpoint is localhost-only by default.
 
-## New "Computer Use" Feature
+## Computer Use
 
-Enable with `ENABLE_COMPUTER_USE=true` in `.env`.  
-Gives the AI real mouse/keyboard/screenshot control on Windows 7, Windows 10/11, macOS, and Linux.
+Enable with `ENABLE_COMPUTER_USE=true` in `.env`.
+Screenshots are real on Windows, macOS, and Linux. Mouse/keyboard input
+injection is **not implemented** — those actions return an explicit
+"simulated" notice to the model.
 
-## Other Killer Features
+## Session Continuity & Context Safety
+
+- The REPL **keeps the conversation across tasks** — the first task seeds it
+  (with the 7CODER.md summary), later tasks are appended, so iterative
+  "now fix the tests too" workflows work. `/clear` starts fresh.
+- When the conversation grows past `CONTEXT_CHARS` (default 120k chars), the
+  oldest turns are **automatically summarized** by the light model and replaced
+  with a compact digest; the newest ~60% of the budget stays verbatim.
+- Every tool result is capped at `MAX_TOOL_RESULT_CHARS` (default 30k,
+  head + tail kept) so a huge file or command dump can't blow the context.
+
+## Edit Safety Net
+
+- `write_file` / `edit_file` / `notebook_edit_tool` **automatically back up the
+  previous file** to `.7coder/backups/` before writing (max 100 backups kept).
+- In default permission mode, file edits are approved against a **real diff
+  preview** (`-` removed / `+` added lines), not an LLM paraphrase.
+- `/undo <file>` restores the newest backup of a file.
+
+## Other Features
 
 - **7CODER.md** — AI automatically creates and updates this file in the project root with all findings and progress.
 - **Ralph Wiggum self-iteration loop** — still available (`ENABLE_RALPH_MODE=true`)
 - **Anti-frustration system** — detects when you’re mad and makes the model extra calm/helpful
-- **HTTP OpenAI endpoint** — works with any UI (Open WebUI, VS Code w/ Cline, etc.)
-- **In-memory agents, background tasks, cron jobs, MCP resources** — fully working
+- **HTTP OpenAI endpoint** — works with any non-streaming OpenAI-compatible UI
 - **Light model** for risk checks, explanations, and moderation (saves tokens)
+- **Dream mode** (`DREAM_ALLOW=true`) — self-consolidates 7CODER.md after ≥5h idle
 
 ## Compatibility
 
@@ -127,8 +162,9 @@ Gives the AI real mouse/keyboard/screenshot control on Windows 7, Windows 10/11,
 
 ## Why 7coder?
 
-Because real Claude Code is expensive and doesn’t run on Windows 7.  
-This is the **free, broad-compatibility, semi-open** version that delivers almost everything Claude Code does — with better security controls and zero proprietary code.
+Because real Claude Code is expensive and doesn’t run on Windows 7.
+This is the free, broad-compatibility, semi-open version that delivers a lot of
+what Claude Code does — with straightforward security controls and zero proprietary code.
 
-Vibe-coded with love (and a lot of Windows 7 debugging) by NodeMixaholic.  
+Vibe-coded with love (and a lot of Windows 7 debugging) by NodeMixaholic.
 Enjoy my hard work.

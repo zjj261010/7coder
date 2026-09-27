@@ -1,2 +1,7 @@
 node_modules/
 .env
+
+# test harness artifacts
+test/w-*
+test/mock-log-*.jsonl
+test/cur-script-*.json
