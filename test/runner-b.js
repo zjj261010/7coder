@@ -572,6 +572,34 @@ scenarios.push({
 });
 
 
+// --- B13: structured audit log (D5) ---
+scenarios.push({
+  name: 'audit-log',
+  fn: async () => {
+    const cwd = freshCwd('b-audit');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'au1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'ok.txt', content: 'fine' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'au2', type: 'function', function: { name: 'read_file', arguments: '{"path":"ghost.txt"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'au3', type: 'function', function: { name: 'run_command', arguments: '{"command":"rm -rf /"}' } }] },
+      { role: 'assistant', content: 'AUDIT-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const auditPath = path.join(cwd, '.7coder', 'audit.jsonl');
+    record('audit: audit.jsonl created', fs.existsSync(auditPath), '');
+    if (!fs.existsSync(auditPath)) { stopMock(m); return; }
+    const entries = fs.readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } });
+    record('audit: every line is valid JSON with ts/tool/mode/status', entries.length >= 3 && entries.every(e => e && e.ts && e.tool && e.mode && e.status), 'lines=' + entries.length);
+    const byTool = {};
+    for (const e of entries) if (!byTool[e.tool]) byTool[e.tool] = e.status;
+    record('audit: ok / error / blocked statuses recorded', byTool.write_file === 'ok' && byTool.read_file === 'error' && byTool.run_command === 'blocked', JSON.stringify(byTool));
+    const wf = entries.find(e => e.tool === 'write_file');
+    record('audit: args preview truncated and present', wf && wf.args && String(wf.args.path).includes('ok.txt') && JSON.stringify(wf.args).length < 400, JSON.stringify(wf && wf.args));
+    stopMock(m);
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

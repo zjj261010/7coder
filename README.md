@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.8.0** - `workflow_tool` (JSON step-plan interpreter with fail-fast/optional steps), permission-mode switching from the web UI, keyless local-endpoint support, offline packaging.
+**v2.9.0** - Structured audit log (`.7coder/audit.jsonl`): every tool call and permission change recorded as machine-readable JSON lines.
 
 ## System Requirements
 
@@ -156,6 +156,7 @@ injection is **not implemented** — those actions return an explicit
 ## Other Features
 
 - **7CODER.md** — AI automatically creates and updates this file in the project root with all findings and progress.
+- **Structured audit log** - every tool call and permission change is appended as JSON lines to `.7coder/audit.jsonl` (machine-readable, 5 MB rotation, `AUDIT_LOG=false` to disable).
 - **Ralph Wiggum self-iteration loop** — still available (`ENABLE_RALPH_MODE=true`)
 - **Anti-frustration system** — detects when you’re mad and makes the model extra calm/helpful
 - **HTTP OpenAI endpoint** — works with any non-streaming OpenAI-compatible UI

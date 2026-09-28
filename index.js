@@ -131,6 +131,20 @@ const ENABLE_AUTO_DEBUG = process.env.ENABLE_AUTO_DEBUG === 'true';
 const DEBUG_TEST_MINUTES = parseInt(process.env.DEBUG_TEST_MINUTES, 10) || 3;
 const BICKER_ROUNDS = parseInt(process.env.BICKER_ROUNDS, 10) || 5;
 
+// Structured audit log (D5): every tool call and permission-mode change is
+// appended as one JSON line to .7coder/audit.jsonl. Disable with AUDIT_LOG=false.
+const AUDIT_ENABLED = process.env.AUDIT_LOG !== 'false';
+const auditPath = path.join(launchDir, '.7coder', 'audit.jsonl');
+let auditDirReady = false;
+function audit(entry) {
+  if (!AUDIT_ENABLED) return;
+  try {
+    if (!auditDirReady) { fs.mkdirSync(path.join(launchDir, '.7coder'), { recursive: true }); auditDirReady = true; }
+    try { if (fs.existsSync(auditPath) && fs.statSync(auditPath).size > 5 * 1024 * 1024) fs.renameSync(auditPath, auditPath.replace(/\.jsonl$/, '.old.jsonl')); } catch (e) {}
+    fs.appendFileSync(auditPath, JSON.stringify(entry) + '\n');
+  } catch (e) {}
+}
+
 // No-key is a valid setup for local endpoints (LMStudio/Ollama/vLLM/liteLLM);
 // only warn when the endpoint looks remote, where a missing key means 401s.
 const localEndpoint = /127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0/.test(OPENAI_ENDPOINT);
@@ -1807,7 +1821,24 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
 }
 
 // ====================== SAFE TOOL EXECUTION ======================
+// Auditing wrapper: records every tool call (args preview, status, duration)
+// to .7coder/audit.jsonl, then delegates to the real implementation.
 async function safeExecuteTool(toolCall, conversation) {
+  const t0 = Date.now();
+  const func = toolCall.function;
+  let argsPreview = {};
+  try { const a = JSON.parse(func.arguments || '{}'); for (const k of Object.keys(a)) argsPreview[k] = String(JSON.stringify(a[k])).substring(0, 200); } catch (e) { argsPreview = { raw: String(func.arguments || '').substring(0, 200) }; }
+  const res = await safeExecuteToolInner(toolCall, conversation);
+  const first = String(res).split('\n')[0];
+  const status = /^BLOCKED/.test(res) ? 'blocked'
+    : /declined/i.test(res) ? 'declined'
+    : /^(?:\[ERROR\]|Tool error|Parse error|Read error|Write error|Edit error|Workflow error|Download error|List error|Input error|Kill error)/.test(res) ? 'error'
+    : 'ok';
+  audit({ ts: new Date().toISOString(), type: 'tool', tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: first.substring(0, 160) });
+  return res;
+}
+
+async function safeExecuteToolInner(toolCall, conversation) {
   const func = toolCall.function;
   let args;
   try { args = JSON.parse(func.arguments || '{}'); } catch (e) { return `Parse error: ${e.message}`; }
@@ -2348,6 +2379,7 @@ function startHttpServer() {
           const prev = PERMISSION_MODE;
           PERMISSION_MODE = wanted;
           console.log('[PERM] permission mode changed: ' + prev + ' -> ' + wanted);
+          audit({ ts: new Date().toISOString(), type: 'mode', from: prev, to: wanted });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, mode: PERMISSION_MODE }));
         } catch (e) {
