@@ -113,7 +113,7 @@ if (!VALID_PERMISSION_MODES.includes(rawPermissionMode)) {
   console.warn(`[WARN] Unknown PERMISSION_MODE "${rawPermissionMode}" - falling back to "default".`);
   console.warn('   (Note: .env values must not contain inline # comments - dotenv 8 keeps them as part of the value.)');
 }
-const PERMISSION_MODE = VALID_PERMISSION_MODES.includes(rawPermissionMode) ? rawPermissionMode : 'default';
+let PERMISSION_MODE = VALID_PERMISSION_MODES.includes(rawPermissionMode) ? rawPermissionMode : 'default';
 const ENABLE_HTTP_SERVER = process.env.ENABLE_HTTP_SERVER === 'true' || serverMode;
 const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 8000;
 const HTTP_BIND = process.env.HTTP_BIND || '127.0.0.1';
@@ -2263,6 +2263,38 @@ function startHttpServer() {
         object: 'list',
         data: [HEAVY_MODEL, LIGHT_MODEL].map(id => ({ id, object: 'model', owned_by: '7coder' }))
       }));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/mode') {
+      if (HTTP_API_KEY) {
+        const auth = req.headers.authorization || '';
+        if (auth !== `Bearer ${HTTP_API_KEY}`) {
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Unauthorized: invalid or missing API key' } }));
+          return;
+        }
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const wanted = (JSON.parse(body).mode || '').toLowerCase().trim();
+          if (!VALID_PERMISSION_MODES.includes(wanted)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'Invalid mode. Valid: ' + VALID_PERMISSION_MODES.join(', ') } }));
+            return;
+          }
+          const prev = PERMISSION_MODE;
+          PERMISSION_MODE = wanted;
+          console.log('[PERM] permission mode changed: ' + prev + ' -> ' + wanted);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, mode: PERMISSION_MODE }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: e.message } }));
+        }
+      });
       return;
     }
     if (req.method === 'POST' && req.url === '/v1/chat/completions') {

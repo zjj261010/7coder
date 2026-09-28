@@ -501,6 +501,36 @@ scenarios.push({
 });
 
 
+// --- B11: runtime permission-mode switching (/api/mode) ---
+scenarios.push({
+  name: 'mode-switch',
+  fn: async () => {
+    const cwd = freshCwd('b-mode');
+    const m = startMock([{ role: 'assistant', content: 'MODE-OK' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 370;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const sw = await httpReq(srvPort, 'POST', '/api/mode', { mode: 'denial' });
+      record('mode: switch to denial ok', sw.status === 200 && JSON.parse(sw.body).mode === 'denial', sw.body);
+      const info = JSON.parse((await httpReq(srvPort, 'GET', '/api/info', null)).body);
+      record('mode: /api/info reflects the new mode', info.mode === 'denial', 'mode=' + info.mode);
+      const bad = await httpReq(srvPort, 'POST', '/api/mode', { mode: 'chaos' });
+      record('mode: invalid mode -> 400', bad.status === 400, 'status=' + bad.status);
+      const back = await httpReq(srvPort, 'POST', '/api/mode', { mode: 'auto' });
+      record('mode: switch back works', back.status === 200 && JSON.parse(back.body).mode === 'auto', '');
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

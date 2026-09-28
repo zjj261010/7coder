@@ -39,6 +39,14 @@
   <h1>7coder</h1>
   <span class="chip" id="model">…</span>
   <span class="chip" id="ws" title="工作区（AI 的文件操作都在此目录内）"></span>
+  <span class="chip" id="mode" title="权限模式：default=操作前询问；auto=轻量模型自动放行；bypass=全部直接执行（危险）；denial=全部拒绝"></span>
+  <select id="modeSel" title="切换权限模式" style="background:#10131a;color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:5px 6px;font-size:12px;">
+    <option value="">权限模式…</option>
+    <option value="default">default · 操作前询问</option>
+    <option value="auto">auto · 自动放行</option>
+    <option value="bypass">bypass · 全部直接执行（危险）</option>
+    <option value="denial">denial · 全部拒绝</option>
+  </select>
   <span class="spacer"></span>
   <input id="key" type="password" placeholder="API Key（未设可留空）" autocomplete="off">
   <button class="ghost" id="new">新会话</button>
@@ -79,8 +87,36 @@
   fetch('/api/info', { headers: headers() }).then(function (r) { return r.json(); }).then(function (info) {
     document.getElementById('model').textContent = '模型: ' + (info.model || '?');
     document.getElementById('ws').textContent = '工作区: ' + (info.workspace || '?');
+    var modeSel = document.getElementById('modeSel');
+    if (info.mode) {
+      modeSel.value = info.mode;
+      document.getElementById('mode').textContent = '权限: ' + info.mode;
+    }
+    if (info.keyRequired) keyInput.placeholder = 'API Key（必填）';
     document.title = '7coder - ' + (info.model || '');
   }).catch(function () { document.getElementById('model').textContent = '模型: (info 不可用)'; });
+
+  document.getElementById('modeSel').addEventListener('change', function () {
+    var sel = this;
+    var mode = sel.value;
+    if (!mode) return;
+    if (mode === 'bypass' && !confirm('bypass 模式下 AI 的所有操作（含删除文件、执行命令）都不再询问，直接执行。\n确定切换吗？')) {
+      sel.value = '';
+      return;
+    }
+    fetch('/api/mode', { method: 'POST', headers: headers(), body: JSON.stringify({ mode: mode }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error((res.j && res.j.error && res.j.error.message) || ('HTTP ' + res.status));
+        document.getElementById('mode').textContent = '权限: ' + res.j.mode;
+        addMsg('sys', '权限模式已切换为 ' + res.j.mode + '。');
+        statusEl.textContent = '';
+      })
+      .catch(function (e) {
+        addMsg('err', '切换失败: ' + e.message);
+        sel.value = '';
+      });
+  });
 
   function esc(s) { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
   function render(text) {
