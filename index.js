@@ -2240,6 +2240,23 @@ function startHttpServer() {
     console.warn('[WARN] Set HTTP_API_KEY in .env (clients send "Authorization: Bearer <key>") or keep HTTP_BIND=127.0.0.1.');
   }
   const server = http.createServer((req, res) => {
+  // Built-in chat UI (Chinese-friendly web frontend for the terminal-shy)
+  if (req.method === 'GET' && (req.url === '/' || req.url === '/ui')) {
+    try {
+      const html = fs.readFileSync(path.join(appDir, 'webui.html'));
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      res.end(html);
+    } catch (e) {
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('webui.html not found next to index.js');
+    }
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/api/info') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY }));
+    return;
+  }
     if (req.method === 'GET' && req.url === '/v1/models') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
@@ -2307,7 +2324,12 @@ function startHttpServer() {
                 clientGone = true;
               }
             };
+            const ka = setInterval(() => {
+              if (clientGone || res.destroyed) { clearInterval(ka); return; }
+              try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; clearInterval(ka); }
+            }, 5000);
             const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone });
+            clearInterval(ka);
             // Give the socket-close event a moment to land when the client
             // aborted at the very end of the run - then skip the summary.
             await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
@@ -2361,7 +2383,7 @@ function startHttpServer() {
   server.listen(HTTP_PORT, HTTP_BIND, () => {
     console.log(`7coder HTTP OpenAI-compatible endpoint ready at http://${HTTP_BIND}:${HTTP_PORT}`);
     if (HTTP_API_KEY) console.log('[AUTH] API key required (Authorization: Bearer <HTTP_API_KEY>).');
-    console.log('Any OpenAI-compatible UI can now point to this endpoint (tools executed server-side).');
+    console.log('Built-in web UI: open http://127.0.0.1:' + HTTP_PORT + '/ in your browser (Chinese-friendly chat).');
     console.log('Streaming (stream: true) and multi-turn client histories are supported.');
     console.log('Note: in default permission mode non-interactive approvals are declined - use PERMISSION_MODE=auto for server-driven tool use.');
   });

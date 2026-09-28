@@ -464,6 +464,43 @@ scenarios.push({
   }
 });
 
+// --- B10: built-in web UI serving + info endpoint ---
+scenarios.push({
+  name: 'webui',
+  fn: async () => {
+    const cwd = freshCwd('b-webui');
+    const m = startMock([{ role: 'assistant', content: 'WEBUI-OK' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 360;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const page = await httpReq(srvPort, 'GET', '/', null);
+      record('webui: GET / serves the chat page (utf-8 html)', page.status === 200 && page.body.includes('lang="zh-CN"') && page.body.includes('<textarea') && page.body.includes('7coder'), 'status=' + page.status);
+      const info = await httpReq(srvPort, 'GET', '/api/info', null);
+      let infoOk = false;
+      try { const j = JSON.parse(info.body); infoOk = j.model && j.workspace && typeof j.keyRequired === 'boolean'; } catch (e) {}
+      record('webui: /api/info returns model+workspace+keyRequired', info.status === 200 && infoOk, info.body.substring(0, 100));
+      const chat = await httpReq(srvPort, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'x' }] });
+            let assembled = '';
+      for (const line of chat.body.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const pl = line.substring(5).trim();
+        if (!pl || pl === '[DONE]') continue;
+        try { const j = JSON.parse(pl); const d = j.choices && j.choices[0].delta; if (d && d.content) assembled += d.content; } catch (e) {}
+      }
+      record('webui: chat streaming still works with UI routes present', chat.status === 200 && assembled === 'WEBUI-OK' && chat.body.includes('[DONE]'), 'assembled=' + JSON.stringify(assembled));
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

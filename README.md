@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.5.0** — Daily-driver pass: session continuity across REPL tasks with automatic context compression, streaming output (REPL live text + HTTP SSE), tool-result size caps, edit safety net (real diff previews on approval, automatic backups, `/undo`).
+**v2.7.0** - Built-in web chat UI: run `--server` and open http://127.0.0.1:7103/ in a browser - full Chinese input support, streaming replies, one-click stop.
 
 ## System Requirements
 

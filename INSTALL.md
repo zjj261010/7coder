@@ -54,7 +54,10 @@ runtime\node.exe index.js --background --prompt "重构整个后端"
 runtime\node.exe index.js --server
 ```
 
-HTTP 服务默认只监听 `127.0.0.1:7103`（本机回环，安全）。在 Cursor 等工具里把
+HTTP 服务默认只监听 `127.0.0.1:7103`（本机回环，安全）。
+
+**浏览器聊天界面**：服务启动后用浏览器打开 `http://127.0.0.1:7103/`，即可在网页里
+用中文与 AI 对话（流式输出、可随时停止；工具仍在服务器工作区内执行）。在 Cursor 等工具里把
 Base URL 设为 `http://127.0.0.1:7103/v1` 即可。局域网访问需设 `HTTP_BIND=0.0.0.0`
 并强烈建议同时设置 `HTTP_API_KEY`。
 
