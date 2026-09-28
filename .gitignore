@@ -11,3 +11,5 @@ dist/
 .cache/
 
 test/cur-*.json
+test/c3-outside/
+test/d1-outside/
