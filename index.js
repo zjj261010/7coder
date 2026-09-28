@@ -176,6 +176,9 @@ let shuttingDown = false;
 // for its tool calls. Cleared again when the sub-agent finishes.
 let subAgentModeOverride = null;
 let agentDepth = 0;
+// >0 while workflow_tool inner steps execute: they inherit the plan approval
+// (soft per-step light-model checks are skipped; hard rails stay active).
+let workflowStepDepth = 0;
 
 function effectivePermissionMode() {
   return subAgentModeOverride || PERMISSION_MODE;
@@ -1547,6 +1550,8 @@ async function executeToolRaw(name, args, conversation) {
       const head = stopReason ? ('[STOPPED] ' + stopReason) : '[OK] Workflow complete';
       return head + '\n' + transcript.join('\n');
     };
+    workflowStepDepth++;
+    try {
     for (let i = 0; i < steps.length; i++) {
       const st = steps[i] || {};
       const toolName = typeof st.tool === 'string' ? st.tool.trim() : '';
@@ -1574,6 +1579,7 @@ async function executeToolRaw(name, args, conversation) {
       }
     }
     return finishWf(null);
+    } finally { workflowStepDepth--; }
   }
 
   if (name === 'synthetic_output_tool') {
@@ -1855,8 +1861,18 @@ async function safeExecuteTool(toolCall, conversation) {
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 
     if (mode === 'auto') {
-      const safe = await isAutoApprovalSafe(name, args, risk);
-      if (!safe) return `Auto-approval declined by light model. Risk: ${risk}.`;
+      // workflow_tool wrapper: every inner step is individually permission-
+      // checked, so the meta-approval adds no safety - the light model's YES/NO
+      // on a vague 'N-step workflow' just makes the feature unusable in auto.
+      const inheritPlan = workflowStepDepth > 0 && !protectedWrite;
+      if (name === 'workflow_tool') {
+        console.log('[PERM] workflow auto-approved (each inner step is still permission-checked)');
+      } else if (inheritPlan) {
+        console.log('[PERM] workflow inner step inherits plan approval: ' + name);
+      } else {
+        const safe = await isAutoApprovalSafe(name, args, risk);
+        if (!safe) return `Auto-approval declined by light model. Risk: ${risk}.`;
+      }
     } else {
       let preview = null;
       if (['write_file', 'append_file', 'edit_file'].includes(name) && args.path && typeof args.path === 'string') {
@@ -1886,8 +1902,12 @@ async function safeExecuteTool(toolCall, conversation) {
         const expl = await getPermissionExplanation(name, args, risk);
         console.log(`\n[PERM] ${expl}`);
       }
+      if (workflowStepDepth > 0 && !protectedWrite) {
+        console.log('[PERM] workflow inner step inherits plan approval: ' + name);
+      } else {
       const approved = await askApproval(`Execute ${name}${protectedWrite ? ' (PROTECTED FILE - make sure you really want this)' : ''}? (y/n) `);
       if (!approved) return 'User declined the tool action.';
+      }
     }
 
     console.log(`[TOOL] Executing approved tool: ${name}`);

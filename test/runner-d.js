@@ -50,9 +50,10 @@ function toolResults(log) {
 function tr(log, id) { return toolResults(log).find(t => t.id === id); }
 
 function freshCwd(name) {
-  const dir = path.join(ROOT, 'w-d-' + name);
+  let dir = path.join(ROOT, 'w-d-' + name);
   rmrf(dir, { recursive: true, force: true });
   for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
+    if (fs.existsSync(dir)) dir = dir + '-' + Date.now(); // unique-suffix fallback (stale dir undeletable)
   fs.mkdirSync(dir, { recursive: true });
   return dir;
 }
