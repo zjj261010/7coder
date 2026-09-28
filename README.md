@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.11.0** - Per-project configuration: a `.env` in the workspace overrides the install-dir one (models, endpoint, keys, permission mode - per project).
+**v2.12.0** - Session persistence: the REPL conversation auto-saves after every task; `--resume` or `/resume` continues a previous session across restarts.
 
 ## System Requirements
 
@@ -137,6 +137,7 @@ injection is **not implemented** — those actions return an explicit
 ## Session Continuity & Context Safety
 
 - The REPL **keeps the conversation across tasks** — the first task seeds it
+- The conversation is **auto-saved** after every task (to ) - start the REPL with  (or type ) to continue a previous session across restarts.  starts fresh.
   (with the 7CODER.md summary), later tasks are appended, so iterative
   "now fix the tests too" workflows work. `/clear` starts fresh.
 - When the conversation grows past `CONTEXT_CHARS` (default 120k chars), the

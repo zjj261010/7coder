@@ -16,6 +16,7 @@ let showHelp = false;
 let serverMode = false;
 let backgroundMode = false;
 let permissionModeFlag = null;
+let resumeFlag = false;
 
 {
   let promptValue = null;
@@ -25,6 +26,7 @@ let permissionModeFlag = null;
     const arg = args[i];
     if (arg === '--help' || arg === '-h') showHelp = true;
     else if (arg === '--danger') dangerMode = true;
+    else if (arg === '--resume') resumeFlag = true;
     else if (arg === '--server') serverMode = true;
     else if (arg === '--background') backgroundMode = true;
     else if (arg.startsWith('--permission-mode=')) permissionModeFlag = arg.substring('--permission-mode='.length);
@@ -2256,6 +2258,33 @@ function simpleLineDiff(oldText, newText, contextLines = 2, maxLines = 40) {
   return lines.join('\n');
 }
 
+// ====================== SESSION PERSISTENCE (D4) ======================
+// The REPL conversation is auto-saved after every task so a later run can
+// continue it via --resume (CLI) or /resume (REPL command). Only user/
+// assistant turns are saved: tool messages would break API pairing on load.
+const sessionPath = path.join(launchDir, '.7coder', 'session.json');
+function saveSession() {
+  try {
+    if (messages.length <= 1) return; // system only - nothing to save
+    const keep = messages.filter(m => m.role === 'system' || m.role === 'user' || m.role === 'assistant');
+    const body = JSON.stringify({ savedAt: new Date().toISOString(), messages: keep });
+    if (body.length > 2 * 1024 * 1024) { console.warn('[WARN] session too large to save (>2MB)'); return; }
+    fs.mkdirSync(path.join(launchDir, '.7coder'), { recursive: true });
+    fs.writeFileSync(sessionPath, body, 'utf8');
+  } catch (e) { console.warn('[WARN] session save failed: ' + e.message); }
+}
+function loadSession() {
+  try {
+    if (!fs.existsSync(sessionPath)) return false;
+    const j = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
+    if (!Array.isArray(j.messages)) return false;
+    const clean = j.messages.filter(m => m && (m.role === 'system' || ((m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')));
+    if (clean.length < 2) return false;
+    messages = clean;
+    return true;
+  } catch (e) { console.warn('[WARN] session load failed: ' + e.message); return false; }
+}
+
 async function summarizeAction(rawPrompt, assistantResponse) {
   const prompt = `Create a short, concise summary (1-2 sentences) of what has been done in response to the user's task. Do not list tools, just describe the output/effect.
 User task: "${rawPrompt}"
@@ -2628,6 +2657,7 @@ async function main() {
     if (ENABLE_RALPH_MODE) console.log('Ralph Wiggum mode ENABLED');
     if (DANGER_MODE) console.log('[WARN] DANGER MODE ENABLED');
     console.log('Type your task (multi-line OK), /btw <note> for background notes, then /execute-task-now to run.');
+    if (resumeFlag && loadSession()) console.log('[OK] Previous session resumed (' + (messages.length - 1) + ' turns). Use /clear to start fresh.');
     console.log('The conversation is KEPT across tasks (compressed automatically when large).');
     console.log('Commands: /clear (fresh conversation), /undo <file> (restore newest backup), /bye (quit).\n');
 
@@ -2678,9 +2708,21 @@ async function main() {
           }
         }
         try { const lock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
+        saveSession();
         console.log('Goodbye!');
         rl.close();
         setTimeout(() => process.exit(0), 150);
+        return;
+      }
+
+      if (trimmed === '/resume') {
+        if (taskRunning) { console.log('A task is running - wait before /resume.'); safePrompt(); return; }
+        if (loadSession()) {
+          console.log('[OK] Session resumed (' + (messages.length - 1) + ' turns).');
+        } else {
+          console.log('No saved session found in .7coder/session.json.');
+        }
+        safePrompt();
         return;
       }
 
@@ -2777,6 +2819,7 @@ Make it read like a direct continuation of the user's task instructions for the 
               messages.push({ role: 'user', content: currentRawPrompt });
             }
             await executeTask();
+            saveSession();
           } finally {
             taskRunning = false;
           }

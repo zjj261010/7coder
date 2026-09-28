@@ -1,6 +1,6 @@
 {
   "name": "@nodemixaholic/7coder",
-  "version": "2.11.0",
+  "version": "2.12.0",
   "description": "7coder - Clean-room Claude Code-style assistant. Real tools (sub-agents, background shell tasks, skills, validated structured output, file ops, real PowerShell/bash shells, web, screenshots, cron scheduling, auto-debug), permission system (default/auto/bypass/denial) with protected-files enforcement, HTTP OpenAI-compatible endpoint (localhost-only by default, optional API key, built-in Chinese-friendly web chat UI), Ralph Wiggum loop, 7CODER.md findings file. Two small dependencies (axios, dotenv). Broad compatibility: Windows 7/Node.js 13+ to modern systems.",
   "keywords": [
     "code",

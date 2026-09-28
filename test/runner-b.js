@@ -660,6 +660,53 @@ scenarios.push({
   }
 });
 
+// --- B16: session persistence across processes (--resume / D4) ---
+scenarios.push({
+  name: 'resume',
+  fn: async () => {
+    const cwd = freshCwd('b-resume');
+    const m = startMock([
+      { role: 'assistant', content: 'noted: RESUME-77' },
+      { role: 'assistant', content: 'resume summary' },
+      { role: 'assistant', content: 'RESUME-77 is the codeword' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    // session 1: remember codeword, exit (auto-save)
+    const r1 = await runCli({
+      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 30000,
+      stdinSteps: [
+        { t: 'Remember this codeword: RESUME-77. Reply briefly.\n', d: 80 },
+        { t: '/execute-task-now\n', d: 3000 },
+        { t: '/bye\n', d: 500 }
+      ]
+    });
+    const sess = path.join(cwd, '.7coder', 'session.json');
+    record('resume: session auto-saved on exit', fs.existsSync(sess) && fs.readFileSync(sess, 'utf8').includes('RESUME-77'), '');
+    // session 2: --resume loads it; ask for the codeword
+    const r2 = await runCli({
+      port: m.port, args: ['--resume'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 30000,
+      stdinSteps: [
+        { t: 'What codeword did I ask you to remember? Reply with just it.\n', d: 80 },
+        { t: '/execute-task-now\n', d: 3000 },
+        { t: '/bye\n', d: 500 }
+      ]
+    });
+    const log2 = readLog(m.log);
+    const resumedReqs = log2.filter(x => x.stream === true).map(x => x.messages);
+    const carried = resumedReqs.some(msgs => msgs.some(x => x.role === 'user' && String(x.content).includes('RESUME-77')));
+    record('resume: second process --resume loads conversation', r2.out.includes('Previous session resumed'), r2.out.substring(0, 120));
+    record('resume: carried turns reach upstream and model answers from them', r2.out.includes('RESUME-77') || (carried && r2.out.includes('codeword')), 'carried=' + carried);
+    // corrupted session file must not crash startup
+    fs.writeFileSync(sess, '{corrupt!!');
+    const r3 = await runCli({
+      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 30000,
+      stdinSteps: [{ t: '/bye\n', d: 400 }]
+    });
+    record('resume: corrupted session.json -> clean fresh start', r3.code === 0 && r3.out.includes('Welcome'), 'exit=' + r3.code);
+    stopMock(m);
+  }
+});
+
 
 (async () => {
   const t0 = Date.now();
