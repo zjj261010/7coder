@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.10.0** - Multi-model routing: models.json maps each model to its own endpoint + API key; switch models per request (web UI model dropdown or the OpenAI `model` field).
+**v2.11.0** - Per-project configuration: a `.env` in the workspace overrides the install-dir one (models, endpoint, keys, permission mode - per project).
 
 ## System Requirements
 
@@ -152,6 +152,13 @@ injection is **not implemented** — those actions return an explicit
 - In default permission mode, file edits are approved against a **real diff
   preview** (`-` removed / `+` added lines), not an LLM paraphrase.
 - `/undo <file>` restores the newest backup of a file.
+
+## Per-Project Configuration
+
+Drop a .env into the workspace and it overrides the install-dir .env for
+that project only - models, endpoint, API keys, permission mode, everything.
+The workspace .env is a protected file: the AI can use its values but never
+edit the file.
 
 ## Multi-Model
 

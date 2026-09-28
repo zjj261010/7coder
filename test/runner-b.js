@@ -634,6 +634,33 @@ scenarios.push({
 });
 
 
+// --- B15: per-project .env (workspace overrides install dir, D7) ---
+scenarios.push({
+  name: 'project-env',
+  fn: async () => {
+    const cwd = freshCwd('b-penv');
+    fs.writeFileSync(path.join(cwd, '.env'), [
+      'HEAVY_MODEL=from-project-env',
+      'LIGHT_MODEL=proj-light',
+      'PERMISSION_MODE=denial'
+    ].join('\n'));
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pe1', type: 'function', function: { name: 'read_file', arguments: '{"path":"nums.txt"}' } }] },
+      { role: 'assistant', content: 'PE-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    fs.writeFileSync(path.join(cwd, 'nums.txt'), '42\n');
+    const r = await runCli({ port: m.port, args: ['--prompt', 't'], cwd, timeoutMs: 60000 });
+    const log = readLog(m.log);
+    const main = log.find(x => x.tools);
+    record('project-env: workspace HEAVY_MODEL used for upstream calls', !!main && main.model === 'from-project-env', main ? 'model=' + main.model : 'no req');
+    record('project-env: workspace PERMISSION_MODE=denial blocks tools', tr(log, 'pe1') && tr(log, 'pe1').c.includes('denial. Action blocked'), tr(log, 'pe1') ? tr(log, 'pe1').c : 'no result');
+    record('project-env: startup announces overrides', r.out.includes('workspace .env loaded (3 overrides)'), r.out.substring(0, 150));
+    stopMock(m);
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

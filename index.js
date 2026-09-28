@@ -91,6 +91,20 @@ const launchDir = process.cwd();
 const appDir = require.main ? path.dirname(require.main.filename) : __dirname;
 try {
   require('dotenv').config({ path: path.join(appDir, '.env') });
+  // Per-project overrides (D7): a .env in the workspace wins over the
+  // install-dir .env, so each project can pin its own models/endpoint/key.
+  // The workspace .env is on the protected-files list - the AI cannot edit it.
+  try {
+    const wsEnv = path.join(launchDir, '.env');
+    if (fs.existsSync(wsEnv)) {
+      const parsed = require('dotenv').parse(fs.readFileSync(wsEnv));
+      const keys = Object.keys(parsed);
+      for (const k of keys) process.env[k] = parsed[k];
+      if (keys.length) console.log('[OK] workspace .env loaded (' + keys.length + ' overrides)');
+    }
+  } catch (e) {
+    console.warn('[WARN] failed to read workspace .env: ' + e.message);
+  }
 } catch (e) {}
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
