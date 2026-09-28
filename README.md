@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.9.0** - Structured audit log (`.7coder/audit.jsonl`): every tool call and permission change recorded as machine-readable JSON lines.
+**v2.10.0** - Multi-model routing: models.json maps each model to its own endpoint + API key; switch models per request (web UI model dropdown or the OpenAI `model` field).
 
 ## System Requirements
 
@@ -152,6 +152,21 @@ injection is **not implemented** — those actions return an explicit
 - In default permission mode, file edits are approved against a **real diff
   preview** (`-` removed / `+` added lines), not an LLM paraphrase.
 - `/undo <file>` restores the newest backup of a file.
+
+## Multi-Model
+
+Different models on different endpoints/keys? Put a `models.json` next to
+index.js (or in `<workspace>/.7coder/models.json` for per-project overrides):
+
+```json
+{
+  "qwen3.8-max": { "endpoint": "https://...", "apiKey": "sk-a" },
+  "local-llm":    { "endpoint": "http://127.0.0.1:1234/v1" }
+}
+```
+
+Then switch models per request via the web UI model dropdown or the OpenAI
+`model` field. Models without a profile use the global OPENAI_ENDPOINT/KEY.
 
 ## Other Features
 

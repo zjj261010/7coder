@@ -600,6 +600,40 @@ scenarios.push({
 });
 
 
+// --- B14: multi-model routing (models.json + client model field) ---
+scenarios.push({
+  name: 'multi-model',
+  fn: async () => {
+    const cwd = freshCwd('b-mm');
+    const mockA = startMock([{ role: 'assistant', content: 'FROM-MOCK-A' }]);
+    const mockB = startMock([{ role: 'assistant', content: 'FROM-MOCK-B' }]);
+    await new Promise(r => setTimeout(r, 600));
+    fs.mkdirSync(path.join(cwd, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.7coder', 'models.json'), JSON.stringify({
+      'model-b': { endpoint: 'http://127.0.0.1:' + mockB.port + '/v1', apiKey: 'kb' }
+    }));
+    const srvPort = port + 380;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + mockA.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const info = JSON.parse((await httpReq(srvPort, 'GET', '/api/info', null)).body);
+      record('mm: /api/info lists profiled models', Array.isArray(info.models) && info.models.indexOf('model-b') >= 0, JSON.stringify(info.models));
+      const def = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] });
+      record('mm: default model routes to global endpoint', def.status === 200 && def.body.includes('FROM-MOCK-A'), def.body.substring(0, 80));
+      const routed = await httpReq(srvPort, 'POST', '/v1/chat/completions', { model: 'MODEL-B', messages: [{ role: 'user', content: 'x' }] });
+      record('mm: client model field routes via profile (case-insensitive)', routed.status === 200 && routed.body.includes('FROM-MOCK-B'), routed.body.substring(0, 80));
+      stopMock(mockB); stopMock(mockA);
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(mockB); stopMock(mockA);
+    }
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

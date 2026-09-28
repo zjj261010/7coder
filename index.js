@@ -136,6 +136,45 @@ const BICKER_ROUNDS = parseInt(process.env.BICKER_ROUNDS, 10) || 5;
 const AUDIT_ENABLED = process.env.AUDIT_LOG !== 'false';
 const auditPath = path.join(launchDir, '.7coder', 'audit.jsonl');
 let auditDirReady = false;
+// Multi-model routing: optional models.json next to index.js, optionally
+// overridden per workspace by .7coder/models.json (workspace wins per model).
+// Shape: { "<model name>": { "endpoint": "https://...", "apiKey": "sk-..." } }
+// A model without a profile uses the global OPENAI_ENDPOINT / OPENAI_API_KEY.
+let modelProfiles = {};
+function loadModelProfiles() {
+  modelProfiles = {};
+  for (const f of [path.join(appDir, 'models.json'), path.join(launchDir, '.7coder', 'models.json')]) {
+    try {
+      if (!fs.existsSync(f)) continue;
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      for (const k of Object.keys(j)) { if (k && typeof k === 'string') modelProfiles[k.toLowerCase()] = j[k]; }
+    } catch (e) {
+      console.warn('[WARN] failed to read ' + f + ': ' + e.message);
+    }
+  }
+}
+loadModelProfiles();
+function resolveModelConfig(model) {
+  const prof = modelProfiles[String(model || '').toLowerCase()];
+  return {
+    endpoint: (prof && prof.endpoint) || OPENAI_ENDPOINT,
+    apiKey: (prof && typeof prof.apiKey === 'string') ? prof.apiKey : OPENAI_API_KEY
+  };
+}
+function modelList() {
+  const seen = {};
+  const names = [];
+  for (const n of [HEAVY_MODEL, LIGHT_MODEL].concat(Object.keys(modelProfiles))) {
+    if (!seen[n.toLowerCase()]) { seen[n.toLowerCase()] = true; names.push(n); }
+  }
+  return names;
+}
+function authHeadersFor(key) {
+  const h = { 'Content-Type': 'application/json' };
+  if (key) h.Authorization = 'Bearer ' + key;
+  return h;
+}
+
 function audit(entry) {
   if (!AUDIT_ENABLED) return;
   try {
@@ -730,20 +769,13 @@ Rules (strict, no exceptions):
 }
 
 // ====================== VISION HELPER ======================
-// Auth header only when a key exists - local endpoints (LMStudio/Ollama/vLLM)
-// run keyless and must not receive "Bearer undefined".
-function authHeaders() {
-  const h = { 'Content-Type': 'application/json' };
-  if (OPENAI_API_KEY) h.Authorization = `Bearer ${OPENAI_API_KEY}`;
-  return h;
-}
-
 async function describeWithVision(imageUrl) {
   if (!VISION_MODEL) {
     return `[IMAGE] Image at ${imageUrl} - (VISION_MODEL not set in .env - add e.g. gpt-4o to enable real vision)`;
   }
   try {
-    const base = OPENAI_ENDPOINT.replace(/\/+$/, '');
+    const mcfg = resolveModelConfig(VISION_MODEL);
+    const base = mcfg.endpoint.replace(/\/+$/, '');
     const payload = {
       model: VISION_MODEL,
       messages: [{
@@ -756,7 +788,7 @@ async function describeWithVision(imageUrl) {
       max_tokens: 500
     };
     const response = await axios.post(`${base}/chat/completions`, payload, {
-      headers: authHeaders(),
+      headers: authHeadersFor(mcfg.apiKey),
       timeout: 30000
     });
     return response.data.choices[0].message.content.trim();
@@ -862,7 +894,8 @@ async function callOpenAI(currentMessages, options = {}) {
     onDelta = null
   } = options;
 
-  const base = OPENAI_ENDPOINT.replace(/\/+$/, '');
+  const mcfg = resolveModelConfig(model);
+  const base = mcfg.endpoint.replace(/\/+$/, '');
   const url = `${base}/chat/completions`;
 
   const payload = {
@@ -880,7 +913,7 @@ async function callOpenAI(currentMessages, options = {}) {
       if (onDelta) {
         payload.stream = true;
         const response = await axios.post(url, payload, {
-          headers: authHeaders(),
+          headers: authHeadersFor(mcfg.apiKey),
           timeout: 420000,
           responseType: 'stream'
         });
@@ -891,7 +924,7 @@ async function callOpenAI(currentMessages, options = {}) {
         throw new Error((choice && choice.message.reasoning_only) ? 'empty response: the model emitted only reasoning tokens (reasoning_content) and never produced an answer or tool call - raise MAX_TOKENS or disable thinking' : 'empty streamed response');
       }
       const response = await axios.post(url, payload, {
-        headers: authHeaders(),
+        headers: authHeadersFor(mcfg.apiKey),
         timeout: 420000, // 7 minutes - generous for slow local LLM endpoints
       });
       if (response.data && response.data.choices && response.data.choices[0]) {
@@ -2062,6 +2095,7 @@ async function compressConversationIfNeeded(currentMessages) {
 
 async function processWithTools(currentMessages, opts = {}) {
   const onDelta = opts.onDelta || null;
+  const reqModel = opts.model || HEAVY_MODEL;
   // Cancellation token (A5): an HTTP client that disconnects mid-stream can
   // stop the run at the next step/tool boundary instead of running to
   // completion for a ghost client.
@@ -2069,7 +2103,7 @@ async function processWithTools(currentMessages, opts = {}) {
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     if (cancelled()) return '[aborted: client disconnected]';
     await compressConversationIfNeeded(currentMessages);
-    const choice = await callOpenAI(currentMessages, { onDelta });
+    const choice = await callOpenAI(currentMessages, { onDelta, model: reqModel });
     const assistantMsg = choice.message;
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
@@ -2084,7 +2118,7 @@ async function processWithTools(currentMessages, opts = {}) {
   }
   // Step limit reached - force a final answer without any more tool calls.
   currentMessages.push({ role: 'user', content: `Tool step limit (${MAX_TOOL_STEPS}) reached. Wrap up now and give your final answer without calling more tools.` });
-  const finalChoice = await callOpenAI(currentMessages, { useTools: false, onDelta });
+  const finalChoice = await callOpenAI(currentMessages, { useTools: false, onDelta, model: reqModel });
   currentMessages.push(finalChoice.message);
   return finalChoice.message.content || '';
 }
@@ -2345,7 +2379,7 @@ function startHttpServer() {
   }
   if (req.method === 'GET' && req.url === '/api/info') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY }));
+    res.end(JSON.stringify({ model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList() }));
     return;
   }
     if (req.method === 'GET' && req.url === '/v1/models') {
@@ -2414,6 +2448,7 @@ function startHttpServer() {
             return;
           }
           const data = JSON.parse(body);
+          const reqModel = (typeof data.model === 'string' && data.model.trim()) ? data.model.trim().substring(0, 200) : HEAVY_MODEL;
           wantsStream = data.stream === true;
           const tempMessages = conversationFromClient(data.messages);
           const rawPrompt = tempMessages.length > 1 && tempMessages[tempMessages.length - 1].role === 'user'
@@ -2452,7 +2487,7 @@ function startHttpServer() {
               if (clientGone || res.destroyed) { clearInterval(ka); return; }
               try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; clearInterval(ka); }
             }, 5000);
-            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone });
+            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel });
             clearInterval(ka);
             // Give the socket-close event a moment to land when the client
             // aborted at the very end of the run - then skip the summary.
@@ -2466,7 +2501,7 @@ function startHttpServer() {
             return;
           }
 
-          const result = await processWithTools(tempMessages);
+          const result = await processWithTools(tempMessages, { model: reqModel });
 
           // Summarize and update 7CODER.md
           const newSummary = await summarizeAction(rawPrompt, result);
