@@ -749,6 +749,8 @@ function parseSSEStream(stream, onDelta) {
     const toolCalls = [];
     let finishReason = null;
     let sawAnything = false;
+    let upstreamErrorSeen = false;
+    let sawReasoning = false;
     let buffer = '';
     stream.on('data', chunk => {
       buffer += chunk.toString('utf8');
@@ -756,15 +758,42 @@ function parseSSEStream(stream, onDelta) {
       while ((nl = buffer.indexOf('\n')) >= 0) {
         const line = buffer.substring(0, nl).replace(/\r$/, '');
         buffer = buffer.substring(nl + 1);
+        if (line.startsWith('event:')) {
+          const evt = line.substring(6).trim();
+          if (evt === 'error') upstreamErrorSeen = true;
+          continue;
+        }
         if (!line.startsWith('data:')) continue;
         const payload = line.substring(5).trim();
         if (!payload || payload === '[DONE]') continue;
         let parsed;
-        try { parsed = JSON.parse(payload); } catch (e) { continue; }
-        const ch = parsed.choices && parsed.choices[0];
+
+        try { parsed = JSON.parse(payload); } catch (e) {
+
+          // Malformed error payloads (LMStudio appends trailing junk after the
+
+          // error object) still deserve to surface, not be silently skipped.
+
+          if (upstreamErrorSeen || payload.indexOf('"error"') >= 0) {
+
+            return reject(new Error('upstream error: ' + payload.substring(0, 300)));
+
+          }
+
+          continue;
+
+        }
+        // Servers report errors mid-stream as {"error":{...}} data payloads
+// (LMStudio) - surface them instead of treating them as empty responses.
+if (parsed.error) {
+  const em = (parsed.error && parsed.error.message) ? parsed.error.message : String(parsed.error);
+  return reject(new Error('upstream error: ' + em));
+}
+const ch = parsed.choices && parsed.choices[0];
         if (!ch) continue;
         sawAnything = true;
         const delta = ch.delta || {};
+        if (delta.reasoning_content) sawReasoning = true;
         if (delta.content) {
           message.content += delta.content;
           if (onDelta) onDelta(delta.content);
@@ -787,6 +816,7 @@ function parseSSEStream(stream, onDelta) {
     stream.on('end', () => {
       const merged = toolCalls.filter(tc => tc && tc.function && tc.function.name);
       if (merged.length) message.tool_calls = merged;
+      if (!message.content && !merged.length && sawReasoning) message.reasoning_only = true;
       if (!sawAnything) return resolve(null);
       resolve({ message, finish_reason: finishReason || 'stop' });
     });
@@ -830,7 +860,7 @@ async function callOpenAI(currentMessages, options = {}) {
         if (choice && (choice.message.content || (choice.message.tool_calls && choice.message.tool_calls.length))) {
           return choice;
         }
-        throw new Error('empty streamed response');
+        throw new Error((choice && choice.message.reasoning_only) ? 'empty response: the model emitted only reasoning tokens (reasoning_content) and never produced an answer or tool call - raise MAX_TOKENS or disable thinking' : 'empty streamed response');
       }
       const response = await axios.post(url, payload, {
         headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
@@ -846,6 +876,11 @@ async function callOpenAI(currentMessages, options = {}) {
         msg = error.response.data.error.message;
       }
       console.error(`[WARN] API attempt ${attempt}/${MAX_RETRIES} failed: ${msg}`);
+      // Upstream in-stream errors (e.g. LMStudio context overflow) and
+      // reasoning-only responses will not get better by retrying.
+      if (/^upstream error:|only reasoning tokens/.test(msg)) {
+        throw new Error(msg);
+      }
       const status = error.response && error.response.status;
       if (status && status >= 400 && status < 500 && status !== 429) {
         throw new Error(`API error ${status} (not retryable): ${msg}`);

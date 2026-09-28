@@ -43,6 +43,15 @@ http.createServer((req, res) => {
       res.end('not json {{{');
       return;
     }
+    if (FAULT === 'lmstudio-ctx') {
+      // exact shape LMStudio emits on context overflow: SSE event + data with
+      // a trailing-junk-but-valid-JSON error object, HTTP 200
+      res.writeHead(200, { 'Content-Type': 'text/event-stream' });
+      res.write('event: error' + String.fromCharCode(10));
+      res.write('data: ' + JSON.stringify({ error: { message: 'The number of tokens to keep from the initial prompt is greater than the context length (n_keep: 4296>= n_ctx: 4096). Try to load the model with a larger context length, or provide a shorter input.' }, message: 'same'}) + String.fromCharCode(10, 10));
+      res.end();
+      return;
+    }
     if (FAULT === 'reset') {
       res.socket.destroy();
       return;

@@ -72,7 +72,7 @@ function runCli(opts) {
     p.stderr.on('data', d => out += d.toString());
     const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (e) {} }, timeoutMs || 90000);
     p.on('close', code => { clearTimeout(to); resolve({ code, out }); });
-    (async () => {
+(async () => {
       if (stdinSteps) {
         for (const s of stdinSteps) {
           p.stdin.write(s.t);
@@ -448,6 +448,22 @@ scenarios.push({
 });
 
 // ====================== RUNNER ======================
+// --- B9: LMStudio-style in-stream context-overflow error surfaces ---
+scenarios.push({
+  name: 'lmstudio-ctx',
+  fn: async () => {
+    const cwd = freshCwd('b-lmstudio');
+    const m = startChaos('lmstudio-ctx');
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { MAX_RETRIES: '3', PERMISSION_MODE: 'bypass' }, cwd });
+    const surfaced = r.out.includes('upstream error:') && r.out.includes('context length');
+    const attempts = (r.out.match(/API attempt/g) || []).length;
+    record('lmstudio: context-overflow error surfaced (no more empty-response)', surfaced, r.out.substring(r.out.length - 200));
+    record('lmstudio: upstream error not retried', surfaced && attempts === 1, 'attempts=' + attempts);
+    stopMock(m);
+  }
+});
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {
