@@ -9,3 +9,5 @@ test/cur-script-*.json
 # offline build artifacts
 dist/
 .cache/
+
+test/cur-*.json
