@@ -32,10 +32,10 @@
 | # | 决策点 | 选项 / 备注 |
 |---|--------|------------|
 | B1 | ~~axios 升级~~ **已关闭**：实测通过并升级至 ^1.20.0（证据见 A1） | ~~先在 Node 13.14.0 实测 axios 1.x 再定~~ 完成 |
-| B2 | dotenv 升级 | 8.x 不剥行内注释（已在 .env.example 用文档规避）；9+/16+ 行为不同 |
-| B3 | 被移除工具的路线 | workflow_tool（建议 JSON 步骤解释器而非 eval）；remote_trigger_tool（需先定隐私边界）；send_message_tool（需先做持久代理）；monitor_tool（低价值）；mcp_auth_tool（依赖完整 MCP 协议栈）；team_*（建议并入 agent_tool 扇出参数） |
-| B4 | exit_worktree_tool 与路径沙箱冲突 | "进入工作树"语义 = 切换沙箱根，需整体重设计，非补一个工具 |
-| B5 | npm 发布 | README/安装名仍为原作者的 @nodemixaholic/7coder；自有包名/是否发布待定 |
+| B2 | ~~dotenv 升级~~ **已关闭（决定：不升级）**：保持 8.x；行内注释限制已用 .env.example 文档规避。如未来 Node 13 支持不再必要时可重开 | 整洁 | 已解决 |
+| B3 | ~~被移除工具的路线~~ **已关闭（决定）**：`workflow_tool` 已实现（JSON 步骤解释器：顺序执行、失败即停/optional 跳过、禁嵌套、全程过权限系统）；`remote_trigger_tool`/`send_message_tool`/`monitor_tool`/`mcp_auth_tool`/`team_*` **永久放弃**（理由见 git 历史与本清单历史版本） |
+| B4 | ~~exit_worktree_tool 与路径沙箱冲突~~ **已关闭（决定：维持现状）**：现有折中已覆盖主要用例（worktree 创建 + `wt/子路径` 编辑 + git -C diff，Suite J 验证）；完整切换沙箱根的语义不做 |
+| B5 | ~~npm 发布~~ **已关闭（决定：不发布）**：分发渠道 = 离线 zip（`scripts/pack-offline.js`，含内置运行时）；不使用 npm（README 中的原包名安装命令属原作者，未改动）。|
 | B6 | 运行时 emoji | 已全部移除（Win7 GBK 兼容）；README 保留排版字符（决策：保留，渲染场景不受影响） |
 
 ## C. 测试盲区（自动化未覆盖）

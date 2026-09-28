@@ -531,6 +531,46 @@ scenarios.push({
 });
 
 
+// --- B12: workflow_tool (JSON step interpreter) ---
+scenarios.push({
+  name: 'workflow',
+  fn: async () => {
+    const cwd = freshCwd('b-wf');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'wf1', type: 'function', function: { name: 'workflow_tool', arguments: JSON.stringify({ steps: [
+        { tool: 'write_file', args: { path: 'wf.txt', content: 'ONE' } },
+        { tool: 'append_file', args: { path: 'wf.txt', content: '-TWO' } },
+        { tool: 'read_file', args: { path: 'wf.txt' } }
+      ] }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'wf2', type: 'function', function: { name: 'workflow_tool', arguments: JSON.stringify({ steps: [
+        { tool: 'workflow_tool', args: { steps: [] } }
+      ] }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'wf3', type: 'function', function: { name: 'workflow_tool', arguments: JSON.stringify({ steps: [
+        { tool: 'read_file', args: { path: 'missing.txt' } },
+        { tool: 'write_file', args: { path: 'after.txt', content: 'x' } }
+      ] }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'wf4', type: 'function', function: { name: 'workflow_tool', arguments: JSON.stringify({ steps: [
+        { tool: 'read_file', args: { path: 'missing.txt' }, optional: true },
+        { tool: 'write_file', args: { path: 'after2.txt', content: 'y' } }
+      ] }) } }] },
+      { role: 'assistant', content: 'WF-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const log = readLog(m.log);
+    const wf1 = tr(log, 'wf1');
+    record('workflow: 3 ordered steps all execute', wf1 && wf1.c.includes('[OK] Workflow complete') && wf1.c.includes('step 1 (write_file)') && wf1.c.includes('step 3 (read_file)') && fs.readFileSync(path.join(cwd, 'wf.txt'), 'utf8') === 'ONE-TWO', wf1 ? wf1.c : 'no result');
+    const wf2 = tr(log, 'wf2');
+    record('workflow: nested workflow rejected', wf2 && wf2.c.includes('STOPPED') && wf2.c.includes('nested workflows are not allowed'), wf2 ? wf2.c.substring(0, 100) : 'no result');
+    const wf3 = tr(log, 'wf3');
+    record('workflow: failing step stops the batch', wf3 && wf3.c.includes('STOPPED') && !fs.existsSync(path.join(cwd, 'after.txt')), wf3 ? wf3.c : 'no result');
+    const wf4 = tr(log, 'wf4');
+    record('workflow: optional step failure continues', wf4 && wf4.c.includes('[OK] Workflow complete') && fs.existsSync(path.join(cwd, 'after2.txt')), wf4 ? wf4.c : 'no result');
+    stopMock(m);
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

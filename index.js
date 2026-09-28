@@ -284,6 +284,7 @@ const tools = [
   { type: "function", function: { name: "prompt_from_file", description: "Use prompt from TODO.md or similar.", parameters: { type: "object", properties: { file: { type: "string" } }, required: ["file"] } } },
   { type: "function", function: { name: "skill_tool", description: "Invoke a user-defined skill: reads .7coder/skills/<skill_name>.md and returns its instructions to follow. Pass params for the skill to use.", parameters: { type: "object", properties: { skill_name: { type: "string" }, params: { type: "object" } }, required: ["skill_name"] } } },
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
+  { type: "function", function: { name: "workflow_tool", description: "Run a sequence of tool calls from a JSON plan: steps=[{tool, args, optional}]. Steps execute in order through the normal permission system; a failing step stops the workflow unless optional=true. Max 50 steps; nested workflows are rejected.", parameters: { type: "object", properties: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" }, optional: { type: "boolean" } }, required: ["tool"] } }, description: { type: "string" } }, required: ["steps"] } } },
   { type: "function", function: { name: "auto_approval_return", description: "Lightweight model hands over to heavy model for auto-approval description.", parameters: { type: "object", properties: { description: { type: "string" } } } } },
   { type: "function", function: { name: "computer_use", description: "Real screen control: screenshot (real capture), mouse_move/click (real cursor + click), type_text/press_key (real SendKeys). Windows-only for input actions; requires ENABLE_COMPUTER_USE=true.", parameters: { type: "object", properties: { action: { type: "string", enum: ["screenshot", "mouse_move", "click", "type_text", "press_key"] }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, key: { type: "string" } }, required: ["action"] } } },
   { type: "function", function: { name: "plan_mode", description: "Plan mode: light model improves prompt + specifies refinement loops for heavy model deep thinking. Use ONLY for complex tasks.", parameters: { type: "object", properties: { initial_task: { type: "string" } }, required: ["initial_task"] } } },
@@ -921,7 +922,8 @@ const DETERMINISTIC_EXPLAIN = {
   powershell_tool: (a) => `Run PowerShell command: ${String(a.command || '').substring(0, 100)}`,
   task_create_tool: (a) => `Start background task: ${String(a.command || '').substring(0, 80)}`,
   mcp_tool: (a) => `Call MCP tool ${a.tool_name}`,
-  agent_tool: (a) => `Spawn sub-agent "${a.name}" with task: ${String(a.task || '').substring(0, 60)}`
+  agent_tool: (a) => `Spawn sub-agent "${a.name}" with task: ${String(a.task || '').substring(0, 60)}`,
+  workflow_tool: (a) => `Run a ${Array.isArray(a.steps) ? a.steps.length : '?'}-step tool workflow`
 };
 
 // ====================== RISK CLASSIFICATION & PERMISSION ======================
@@ -1536,6 +1538,44 @@ async function executeToolRaw(name, args, conversation) {
     return `[WARN] Unknown computer_use action "${action}". Available: screenshot, mouse_move, click, type_text, press_key.`;
   }
 
+  if (name === 'workflow_tool') {
+    const steps = Array.isArray(args.steps) ? args.steps : null;
+    if (!steps || steps.length === 0) return 'Workflow error: steps must be a non-empty array';
+    if (steps.length > 50) return 'Workflow error: too many steps (max 50)';
+    const transcript = [];
+    const finishWf = (stopReason) => {
+      const head = stopReason ? ('[STOPPED] ' + stopReason) : '[OK] Workflow complete';
+      return head + '\n' + transcript.join('\n');
+    };
+    for (let i = 0; i < steps.length; i++) {
+      const st = steps[i] || {};
+      const toolName = typeof st.tool === 'string' ? st.tool.trim() : '';
+      if (!toolName) {
+        transcript.push('step ' + (i + 1) + ': ERROR - missing tool name');
+        if (!st.optional) return finishWf('step ' + (i + 1) + ' has no tool name');
+        continue;
+      }
+      if (toolName === 'workflow_tool') {
+        transcript.push('step ' + (i + 1) + ' (' + toolName + '): ERROR - nested workflows are not allowed');
+        return finishWf('nested workflow at step ' + (i + 1));
+      }
+      if (!tools.some(t => t.function.name === toolName)) {
+        transcript.push('step ' + (i + 1) + ' (' + toolName + '): ERROR - unknown tool');
+        if (!st.optional) return finishWf('unknown tool at step ' + (i + 1));
+        continue;
+      }
+      const stepArgs = (st.args && typeof st.args === 'object' && !Array.isArray(st.args)) ? st.args : {};
+      const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation);
+      const firstLine = String(res).split('\n')[0];
+      transcript.push('step ' + (i + 1) + ' (' + toolName + '): ' + firstLine.substring(0, 160));
+      if (!st.optional && /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Edit error|Workflow error)/.test(String(res))) {
+        transcript.push('(stopped after failed step ' + (i + 1) + ')');
+        return finishWf('step ' + (i + 1) + ' failed');
+      }
+    }
+    return finishWf(null);
+  }
+
   if (name === 'synthetic_output_tool') {
     const schema = args.schema;
     if (!schema || typeof schema !== 'object' || Array.isArray(schema) || !schema.properties) {
@@ -1810,7 +1850,7 @@ async function safeExecuteTool(toolCall, conversation) {
       agent_tool: 'MEDIUM', schedule_cron_tool: 'HIGH', cron_create_tool: 'HIGH',
       cron_delete_tool: 'MEDIUM', process_kill_tool: 'HIGH',
       run_command: 'HIGH', bash_tool: 'HIGH', powershell_tool: 'HIGH',
-      task_create_tool: 'HIGH', mcp_tool: 'HIGH'
+      task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH'
     };
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 

@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.7.0** - Built-in web chat UI: run `--server` and open http://127.0.0.1:7103/ in a browser - full Chinese input support, streaming replies, one-click stop.
+**v2.8.0** - `workflow_tool` (JSON step-plan interpreter with fail-fast/optional steps), permission-mode switching from the web UI, keyless local-endpoint support, offline packaging.
 
 ## System Requirements
 
