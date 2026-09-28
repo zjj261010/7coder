@@ -23,7 +23,7 @@
 1. **解压** 本 zip 到任意目录（路径建议不含空格，例如 `D:\tools\7coder`）。
 2. **配置**：复制 `.env.example` 为 `.env`，用任意文本编辑器填写：
    ```ini
-   OPENAI_API_KEY=sk-你的密钥
+   OPENAI_API_KEY=sk-你的密钥     # 云端必填；本地 LMStudio/Ollama/vLLM 可留空
    OPENAI_ENDPOINT=https://api.openai.com/v1
    ```
    - 兼容任何 OpenAI 协议端点（Groq、本地 Ollama 等），改 `OPENAI_ENDPOINT` 即可。

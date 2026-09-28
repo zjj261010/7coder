@@ -131,9 +131,11 @@ const ENABLE_AUTO_DEBUG = process.env.ENABLE_AUTO_DEBUG === 'true';
 const DEBUG_TEST_MINUTES = parseInt(process.env.DEBUG_TEST_MINUTES, 10) || 3;
 const BICKER_ROUNDS = parseInt(process.env.BICKER_ROUNDS, 10) || 5;
 
-if (!OPENAI_API_KEY) {
-  console.error('[ERROR] Please set OPENAI_API_KEY in your .env file');
-  process.exit(1);
+// No-key is a valid setup for local endpoints (LMStudio/Ollama/vLLM/liteLLM);
+// only warn when the endpoint looks remote, where a missing key means 401s.
+const localEndpoint = /127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0/.test(OPENAI_ENDPOINT);
+if (!OPENAI_API_KEY && !localEndpoint) {
+  console.warn('[WARN] OPENAI_API_KEY is not set - cloud endpoints will reject requests (leave unset only for local servers such as LMStudio/Ollama/vLLM).');
 }
 
 console.log(`[OK] 7coder initialized at: ${launchDir}`);
@@ -710,8 +712,16 @@ Rules (strict, no exceptions):
 }
 
 // ====================== VISION HELPER ======================
+// Auth header only when a key exists - local endpoints (LMStudio/Ollama/vLLM)
+// run keyless and must not receive "Bearer undefined".
+function authHeaders() {
+  const h = { 'Content-Type': 'application/json' };
+  if (OPENAI_API_KEY) h.Authorization = `Bearer ${OPENAI_API_KEY}`;
+  return h;
+}
+
 async function describeWithVision(imageUrl) {
-  if (!VISION_MODEL || !OPENAI_API_KEY) {
+  if (!VISION_MODEL) {
     return `[IMAGE] Image at ${imageUrl} - (VISION_MODEL not set in .env - add e.g. gpt-4o to enable real vision)`;
   }
   try {
@@ -728,7 +738,7 @@ async function describeWithVision(imageUrl) {
       max_tokens: 500
     };
     const response = await axios.post(`${base}/chat/completions`, payload, {
-      headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       timeout: 30000
     });
     return response.data.choices[0].message.content.trim();
@@ -852,7 +862,7 @@ async function callOpenAI(currentMessages, options = {}) {
       if (onDelta) {
         payload.stream = true;
         const response = await axios.post(url, payload, {
-          headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+          headers: authHeaders(),
           timeout: 420000,
           responseType: 'stream'
         });
@@ -863,7 +873,7 @@ async function callOpenAI(currentMessages, options = {}) {
         throw new Error((choice && choice.message.reasoning_only) ? 'empty response: the model emitted only reasoning tokens (reasoning_content) and never produced an answer or tool call - raise MAX_TOKENS or disable thinking' : 'empty streamed response');
       }
       const response = await axios.post(url, payload, {
-        headers: { Authorization: `Bearer ${OPENAI_API_KEY}`, 'Content-Type': 'application/json' },
+        headers: authHeaders(),
         timeout: 420000, // 7 minutes - generous for slow local LLM endpoints
       });
       if (response.data && response.data.choices && response.data.choices[0]) {

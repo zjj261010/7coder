@@ -108,8 +108,12 @@ scenarios.push({
   fn: async () => {
     const r1 = spawnSync(NODE_BIN, [IDX, '--help'], { encoding: 'utf8' });
     record('cli: --help exits 0 with usage', r1.status === 0 && r1.stdout.includes('Usage'), 'status=' + r1.status);
-    const r2 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '' }) });
-    record('cli: missing API key exits 1', r2.status === 1 && (r2.stdout + r2.stderr).includes('OPENAI_API_KEY'), 'status=' + r2.status + ' out=' + (r2.stdout + r2.stderr).substring(0, 120));
+    const r2 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'http://127.0.0.1:9/v1', MAX_RETRIES: '1' }), timeout: 30000 });
+    const out2 = r2.stdout + r2.stderr;
+    record('cli: missing API key starts anyway for local endpoints (no exit, no warn)', r2.status === 0 && !out2.includes('OPENAI_API_KEY is not set'), 'status=' + r2.status + ' out=' + out2.substring(0, 120));
+    const r3 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'https://api.openai.com/v1', MAX_RETRIES: '1' }), timeout: 60000 });
+    const out3 = r3.stdout + r3.stderr;
+    record('cli: missing API key warns for remote endpoints', out3.includes('OPENAI_API_KEY is not set'), out3.substring(0, 120));
   }
 });
 
