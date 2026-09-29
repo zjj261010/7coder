@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.13.0** - run_tests_tool: structured test-runner integration (pass/fail counts and failure lines parsed from jest/mocha/karma and node:test output; auto-detects the test command).
+**v2.14.0** - Native Git integration: git_status_tool / git_diff_tool (read-only, auto-safe) and git_commit_tool (approval-gated, pre-commit snapshot, auto message from the audit log).
 
 ## System Requirements
 
@@ -102,6 +102,7 @@ supported, plus `/v1/models`. Client message histories are honored for multi-tur
 - `schedule_cron_tool` / `cron_create_tool` — schedules like `30s`, `5m`, `2h`, `every 10m`, `daily 09:30`
 - `auto_debug_tool` (launch + observe + auto-fix loop; on Windows closes test apps with `taskkill /T /F`), `bickering_tool`, `plan_mode`
 - `run_tests_tool` - runs a test suite and parses output into **structured pass/fail counts** (jest/mocha/karma and node:test formats) + failure lines; auto-detects `npm test` / `node --test`
+- `git_status_tool` / `git_diff_tool` / `git_commit_tool` - **native Git awareness**: see branch + dirty state, real diffs (auto-safe, read-only); commit with an audit-log-generated or explicit message, with a pre-commit `git stash create` snapshot for recovery (never pushes)
 - MCP resources (`.mcp` directory), git worktrees, notebook editing, TODO.md, 7CODER.md auto-generation
 
 Everything listed above does what it says. Tools that were previously advertised

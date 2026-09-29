@@ -311,7 +311,8 @@ if (DANGER_MODE) {
 const AUTO_SAFE_TOOLS = [
   'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'tool_search_tool',
   'prompt_from_file', 'snip_tool', 'cron_list_tool', 'process_list_tool', 'bickering_tool',
-  'task_get_tool', 'task_list_tool', 'task_output_tool', 'skill_tool', 'synthetic_output_tool'
+  'task_get_tool', 'task_list_tool', 'task_output_tool', 'skill_tool', 'synthetic_output_tool',
+  'git_status_tool', 'git_diff_tool'
 ];
 
 // ====================== TOOL DEFINITIONS ======================
@@ -358,6 +359,9 @@ const tools = [
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
   { type: "function", function: { name: "workflow_tool", description: "Run a sequence of tool calls from a JSON plan: steps=[{tool, args, optional}]. Steps execute in order through the normal permission system; a failing step stops the workflow unless optional=true. Max 50 steps; nested workflows are rejected.", parameters: { type: "object", properties: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" }, optional: { type: "boolean" } }, required: ["tool"] } }, description: { type: "string" } }, required: ["steps"] } } },
   { type: "function", function: { name: "run_tests_tool", description: "Run a test suite and parse the output into structured pass/fail counts. Supported: jest/mocha/karma (N passing, M failing), node:test (# pass N), generic. Auto-detects (npm test / node --test) when command omitted.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_seconds: { type: "number" } } } } },
+  { type: "function", function: { name: "git_status_tool", description: "Show the working tree status (branch, staged/untracked/modified files) and last commit. Safe/read-only.", parameters: { type: "object", properties: {} } } },
+  { type: "function", function: { name: "git_diff_tool", description: "Show unstaged (or staged with staged=true) diff for a file or the whole tree. Safe/read-only.", parameters: { type: "object", properties: { path: { type: "string" }, staged: { type: "boolean" } } } } },
+  { type: "function", function: { name: "git_commit_tool", description: "Stage all changes and create a git commit. If message is omitted, one is generated from the session audit log. A pre-commit snapshot (git stash create) is recorded so /undo-style recovery is possible; nothing is pushed.", parameters: { type: "object", properties: { message: { type: "string" }, stage_all: { type: "boolean" } } } } },
   { type: "function", function: { name: "auto_approval_return", description: "Lightweight model hands over to heavy model for auto-approval description.", parameters: { type: "object", properties: { description: { type: "string" } } } } },
   { type: "function", function: { name: "computer_use", description: "Real screen control: screenshot (real capture), mouse_move/click (real cursor + click), type_text/press_key (real SendKeys). Windows-only for input actions; requires ENABLE_COMPUTER_USE=true.", parameters: { type: "object", properties: { action: { type: "string", enum: ["screenshot", "mouse_move", "click", "type_text", "press_key"] }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, key: { type: "string" } }, required: ["action"] } } },
   { type: "function", function: { name: "plan_mode", description: "Plan mode: light model improves prompt + specifies refinement loops for heavy model deep thinking. Use ONLY for complex tasks.", parameters: { type: "object", properties: { initial_task: { type: "string" } }, required: ["initial_task"] } } },
@@ -991,7 +995,10 @@ const DETERMINISTIC_EXPLAIN = {
   mcp_tool: (a) => `Call MCP tool ${a.tool_name}`,
   agent_tool: (a) => `Spawn sub-agent "${a.name}" with task: ${String(a.task || '').substring(0, 60)}`,
   workflow_tool: (a) => `Run a ${Array.isArray(a.steps) ? a.steps.length : '?'}-step tool workflow`,
-  run_tests_tool: (a) => `Run test suite: ${String(a.command || 'auto-detected').substring(0, 80)}`
+  run_tests_tool: (a) => `Run test suite: ${String(a.command || 'auto-detected').substring(0, 80)}`,
+  git_status_tool: () => 'Show git working tree status (read-only)',
+  git_diff_tool: (a) => `Show git diff${a.staged ? ' (staged)' : ''}${a.path ? ' for ' + a.path : ''} (read-only)`,
+  git_commit_tool: (a) => `Stage all and commit${a.message ? ': ' + String(a.message).substring(0, 60) : ' (auto message)'} (snapshot taken)`
 };
 
 // ====================== RISK CLASSIFICATION & PERMISSION ======================
@@ -1705,6 +1712,74 @@ function parseTestOutput(text) {
     return res;
   }
 
+// ====================== GIT INTEGRATION (D1) ======================
+function git(args, opts) {
+  return child_process.execSync("git " + args, Object.assign({ encoding: "utf8", cwd: launchDir, timeout: 30000 }, opts || {}));
+}
+function inGitRepo() {
+  try { git("rev-parse --is-inside-work-tree", { stdio: "pipe" }); return true; } catch (e) { return false; }
+}
+
+  if (name === 'git_status_tool') {
+    if (!inGitRepo()) return "Not a git repository (no .git found in the workspace).";
+    try {
+      const branch = git("rev-parse --abbrev-ref HEAD").trim();
+      const last = git("log -1 --oneline").trim();
+      const status = git("status --short").trim();
+      const linesN = status ? status.split("\n") : [];
+      const counts = { staged: 0, modified: 0, untracked: 0 };
+      for (const l of linesN) {
+        const x = l.charAt(0), y = l.charAt(1);
+        if (x !== " " && x !== "?") counts.staged++;
+        if (y === "M" || x === "M") counts.modified++;
+        if (l.startsWith("??")) counts.untracked++;
+      }
+      let out = "[GIT] branch " + branch + " | last: " + last + " | staged:" + counts.staged + " modified:" + counts.modified + " untracked:" + counts.untracked;
+      if (status) out += "\n" + status.substring(0, 4000);
+      return out;
+    } catch (e) { return "Git status error: " + e.message; }
+  }
+
+  if (name === 'git_diff_tool') {
+    if (!inGitRepo()) return "Not a git repository.";
+    try {
+      const stagedFlag = args.staged ? " --cached" : "";
+      const scope = (typeof args.path === "string" && args.path.trim()) ? " -- " + JSON.stringify(sanitizePath(args.path)) : "";
+      const diff = git("diff" + stagedFlag + scope).trim();
+      if (!diff) return "[GIT] no changes" + (stagedFlag ? " (staged)" : "") + (scope ? " for " + args.path : "") + ".";
+      return "[GIT] diff" + (stagedFlag ? " (staged)" : "") + ":\n" + diff.substring(0, 8000);
+    } catch (e) { return "Git diff error: " + e.message; }
+  }
+
+  if (name === 'git_commit_tool') {
+    if (!inGitRepo()) return "Not a git repository.";
+    let message = (typeof args.message === "string" && args.message.trim()) ? args.message.trim() : "";
+    if (!message) {
+      // Generate from the session audit log (most common tool verbs of this session)
+      try {
+        const verbs = {};
+        if (fs.existsSync(auditPath)) {
+          for (const line of fs.readFileSync(auditPath, "utf8").split("\n")) {
+            try { const e = JSON.parse(line); if (e.type === "tool") verbs[e.tool] = (verbs[e.tool] || 0) + 1; } catch (er) {}
+          }
+        }
+        const top = Object.keys(verbs).sort((a, b) => verbs[b] - verbs[a]).slice(0, 3);
+        message = "chore: session changes (" + (top.length ? "tools: " + top.join(", ") : "no tool activity") + ")";
+      } catch (e) { message = "chore: session changes"; }
+    }
+    try {
+      // Pre-commit snapshot for recovery: stash create keeps it retrievable without touching the tree
+      let snapshot = "";
+      try { const sh = git("stash create").trim(); if (sh) { git("update-ref -m \"7coder pre-commit snapshot\" refs/7coder/snapshots/" + sh + " " + sh, { stdio: "pipe" }); snapshot = sh; } } catch (e) {}
+      if (args.stage_all !== false) git("add -A");
+      const staged = git("diff --cached --name-only").trim();
+      if (!staged) return "[GIT] nothing to commit (no staged changes).";
+      git("commit -m " + JSON.stringify(message));
+      const last = git("log -1 --oneline").trim();
+      return "[OK] committed: " + last + (snapshot ? "\n(snapshot " + snapshot.substring(0, 12) + " recorded for recovery)" : "");
+    } catch (e) { return "Git commit error: " + e.message; }
+  }
+
   if (name === 'synthetic_output_tool') {
     const schema = args.schema;
     if (!schema || typeof schema !== 'object' || Array.isArray(schema) || !schema.properties) {
@@ -1996,7 +2071,8 @@ async function safeExecuteToolInner(toolCall, conversation) {
       agent_tool: 'MEDIUM', schedule_cron_tool: 'HIGH', cron_create_tool: 'HIGH',
       cron_delete_tool: 'MEDIUM', process_kill_tool: 'HIGH',
       run_command: 'HIGH', bash_tool: 'HIGH', powershell_tool: 'HIGH',
-      task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH', run_tests_tool: 'HIGH'
+      task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH', run_tests_tool: 'HIGH',
+      git_status_tool: 'LOW', git_diff_tool: 'LOW', git_commit_tool: 'HIGH'
     };
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 

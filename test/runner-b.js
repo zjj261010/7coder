@@ -756,6 +756,48 @@ scenarios.push({
 });
 
 
+// --- B18: git integration (D1: status/diff/commit, real repo) ---
+scenarios.push({
+  name: 'git-integration',
+  fn: async () => {
+    const cwd = freshCwd('b-git');
+    spawnSync('git', ['init'], { cwd });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd });
+    fs.writeFileSync(path.join(cwd, 'app.txt'), 'v1' + String.fromCharCode(10));
+    spawnSync('git', ['add', '.'], { cwd });
+    spawnSync('git', ['commit', '-m', 'init'], { cwd });
+    fs.writeFileSync(path.join(cwd, 'app.txt'), 'v2' + String.fromCharCode(10));
+    fs.writeFileSync(path.join(cwd, 'new.txt'), 'n' + String.fromCharCode(10));
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'gs1', type: 'function', function: { name: 'git_status_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'gs2', type: 'function', function: { name: 'git_diff_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'gs3', type: 'function', function: { name: 'git_commit_tool', arguments: JSON.stringify({ message: 'feat: bump app to v2' }) } }] },
+      { role: 'assistant', content: 'GIT-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({ port: m.port, args: [], env: { PERMISSION_MODE: 'default' }, cwd, timeoutMs: 120000, stdinSteps: [ { t: 'do git work\n', d: 80 }, { t: '/execute-task-now\n', d: 2500 }, { t: 'y\n', d: 15000 }, { t: '/bye\n', d: 500 } ] });
+    const log = readLog(m.log);
+    const gs1 = tr(log, 'gs1');
+    record('git: status shows branch + dirty counts (auto-safe, no approval needed in default mode)', gs1 && gs1.c.includes('[GIT] branch') && gs1.c.includes('untracked:1'), gs1 ? gs1.c.substring(0, 120) : 'no result');
+    const gs2 = tr(log, 'gs2');
+    record('git: diff shows the v1->v2 change', gs2 && gs2.c.includes('-v1') && gs2.c.includes('+v2'), gs2 ? gs2.c.substring(0, 120) : 'no result');
+    const gs3 = tr(log, 'gs3');
+    const committed = spawnSync('git', ['log', '-1', '--oneline'], { encoding: 'utf8', cwd });
+    record('git: commit created with requested message + snapshot recorded', gs3 && gs3.c.includes('[OK] committed') && committed.stdout.includes('feat: bump app to v2') && gs3.c.includes('snapshot'), 'gs3=' + (gs3 ? gs3.c.substring(0, 100) : 'none') + ' log=' + committed.stdout.trim());
+    // non-repo path
+    const m2 = startMock([{ role: 'assistant', content: null, tool_calls: [{ id: 'gs4', type: 'function', function: { name: 'git_status_tool', arguments: '{}' } }] }, { role: 'assistant', content: 'NR-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const os = require('os');
+    const cwd2 = fs.mkdtempSync(path.join(os.tmpdir(), 'b-git-norepo-'));
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'default' }, cwd: cwd2, timeoutMs: 60000 });
+    const gs4 = tr(readLog(m2.log), 'gs4');
+    record('git: non-repo workspace -> clear error', gs4 && gs4.c.includes('Not a git repository'), gs4 ? gs4.c : 'no result');
+    stopMock(m); stopMock(m2);
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {
