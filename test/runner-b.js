@@ -842,11 +842,18 @@ scenarios.push({
       ] }));
       const list = JSON.parse((await httpReq(srvPort, 'GET', '/api/sessions', null)).body);
       record('sessions: GET lists both saved sessions newest first', list.sessions.length === 2 && list.sessions[0].file === 's2.json', JSON.stringify(list.sessions));
-      const load = JSON.parse((await httpReq(srvPort, 'POST', '/api/sessions/load', { file: 's1.json' })).body);
+      const loadResp = await httpReq(srvPort, 'POST', '/api/sessions/load', { file: 's1.json' });
+      console.log('LOAD-DBG status=' + loadResp.status + ' body=' + loadResp.body.substring(0, 200));
+      const load = JSON.parse(loadResp.body);
       const hasTool = load.messages.some(x => x.role === 'tool');
       record('sessions: load returns sanitized user/assistant turns', load.messages.length === 2 && !hasTool && load.messages[0].content === 'SEED-ONE', JSON.stringify(load.messages).substring(0, 120));
       const save = JSON.parse((await httpReq(srvPort, 'POST', '/api/sessions/save', { messages: [{ role: 'user', content: 'web-save-test' }, { role: 'assistant', content: 'ok' }, { role: 'tool', content: 'x' }] })).body);
       record('sessions: save stores sanitized web conversation', save.ok && save.turns === 2, JSON.stringify(save));
+      // in-place: saving again with the returned file name overwrites, not duplicates
+      const first = JSON.parse((await httpReq(srvPort, 'POST', '/api/sessions/save', { messages: [{ role: 'user', content: 'first-turn' }] })).body);
+      const second = JSON.parse((await httpReq(srvPort, 'POST', '/api/sessions/save', { messages: [{ role: 'user', content: 'second-turn' }], file: first.file })).body);
+      record('sessions: in-place save updates the same record', first.file === second.file && second.turns === 1, JSON.stringify({ f1: first.file, f2: second.file }));
+
       const trav = await httpReq(srvPort, 'POST', '/api/sessions/load', { file: '../../index.js' });
       record('sessions: path traversal in file name rejected', trav.status === 400, 'status=' + trav.status);
       // open endpoint (dry run - no window spawned)

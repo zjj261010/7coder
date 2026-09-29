@@ -2659,7 +2659,10 @@ function startHttpServer() {
             .map(m => ({ role: m.role, content: m.content }));
           const sdir = path.join(launchDir, '.7coder', 'sessions');
           fs.mkdirSync(sdir, { recursive: true });
-          const name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+          // 客户端可携带 file 名原地覆盖同一会话记录；否则生成新记录
+          const wanted = String(JSON.parse(body).file || "");
+          let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+          if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && fs.existsSync(path.join(sdir, wanted))) name = wanted;
           fs.writeFileSync(path.join(sdir, name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean }), "utf8");
           audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
           res.writeHead(200, { 'Content-Type': 'application/json' });
