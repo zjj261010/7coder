@@ -703,6 +703,25 @@ scenarios.push({
       stdinSteps: [{ t: '/bye\n', d: 400 }]
     });
     record('resume: corrupted session.json -> clean fresh start', r3.code === 0 && r3.out.includes('Welcome'), 'exit=' + r3.code);
+    // regression 1: tool_calls must be stripped from saved assistant turns
+    fs.writeFileSync(sess, JSON.stringify({ savedAt: 'x', messages: [
+      { role: 'system', content: 'sys' },
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'text + call', tool_calls: [{ id: 'x1', function: { name: 'write_file', arguments: '{}' } }] }
+    ] }));
+    const r4 = await runCli({
+      port: m.port, args: ['--resume'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 30000,
+      stdinSteps: [{ t: '/bye\n', d: 400 }]
+    });
+    const saved4 = JSON.parse(fs.readFileSync(sess, 'utf8'));
+    const leaked = saved4.messages.some(x => x.tool_calls);
+    record('resume: tool_calls stripped from saved turns (pairing-safe)', !leaked, 'leaked=' + leaked);
+    // regression 2: /clear deletes the session file
+    const r5 = await runCli({
+      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 30000,
+      stdinSteps: [{ t: '/clear\n', d: 300 }, { t: '/bye\n', d: 400 }]
+    });
+    record('resume: /clear removes the saved session', !fs.existsSync(sess), 'file exists after clear');
     stopMock(m);
   }
 });

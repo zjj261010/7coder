@@ -2266,7 +2266,11 @@ const sessionPath = path.join(launchDir, '.7coder', 'session.json');
 function saveSession() {
   try {
     if (messages.length <= 1) return; // system only - nothing to save
-    const keep = messages.filter(m => m.role === 'system' || m.role === 'user' || m.role === 'assistant');
+    // Strip tool_calls from assistant turns: the tool results are filtered out,
+    // so keeping the calls would break assistant(tool_calls) -> tool pairing on load.
+    const keep = messages
+      .filter(m => m.role === 'system' || m.role === 'user' || m.role === 'assistant')
+      .map(m => (m.role === 'assistant' && m.tool_calls) ? { role: 'assistant', content: m.content || '' } : m);
     const body = JSON.stringify({ savedAt: new Date().toISOString(), messages: keep });
     if (body.length > 2 * 1024 * 1024) { console.warn('[WARN] session too large to save (>2MB)'); return; }
     fs.mkdirSync(path.join(launchDir, '.7coder'), { recursive: true });
@@ -2729,6 +2733,7 @@ async function main() {
       if (trimmed === '/clear') {
         if (taskRunning) { console.log('A task is running - wait before /clear.'); safePrompt(); return; }
         messages = [{ role: 'system', content: systemPrompt }];
+        try { if (fs.existsSync(sessionPath)) fs.unlinkSync(sessionPath); } catch (e) {}
         currentPrompt = ''; // a half-typed draft should not survive a fresh conversation
         console.log('[OK] Conversation cleared.');
         safePrompt();
