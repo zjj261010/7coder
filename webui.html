@@ -52,9 +52,24 @@
   <button class="ghost" id="openWs" title="在服务器上打开工作区文件夹">📁 工作区</button>
   <button class="ghost" id="openCfg" title="打开配置文件（.env）">⚙ 配置</button>
   <button class="ghost" id="hist">历史会话</button>
+  <button class="ghost" id="settingsBtn" title="配置端点/密钥/模型（写入工作区 .env 与 models.json）">模型设置</button>
   <input id="key" type="password" placeholder="API Key（未设可留空）" autocomplete="off">
   <button class="ghost" id="new">新会话</button>
 </header>
+<div id="setPanel" style="display:none; background:var(--panel); border-bottom:1px solid var(--line); padding:12px 16px; max-height:340px; overflow-y:auto; font-size:13px;">
+  <strong>全局设置（写入工作区 .env，重启后仍生效）</strong>
+  <div style="display:grid; grid-template-columns: 130px 1fr; gap:6px 10px; margin:8px 0; align-items:center;">
+    <span>Endpoint</span><input id="setEndpoint" style="background:#10131a;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;">
+    <span>API Key</span><input id="setKey" type="password" style="background:#10131a;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;" placeholder="留空 = 无密钥本地服务">
+    <span>主模型</span><input id="setModel" style="background:#10131a;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;">
+  </div>
+  <button id="saveSettings">保存全局设置</button>
+  <hr style="border:0;border-top:1px solid var(--line);margin:12px 0;">
+  <strong>模型 Profiles（各自独立端点/密钥，写入 models.json）</strong>
+  <div id="profRows" style="margin:8px 0;"></div>
+  <button class="ghost" id="addProf" style="font-size:12px;">＋添加模型</button>
+  <button id="saveProfiles" style="margin-left:8px;">保存 Profiles</button>
+</div>
 <div id="histPanel" style="display:none; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; max-height:260px; overflow-y:auto;">
   <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
     <strong style="font-size:13px;">历史会话</strong>
@@ -96,6 +111,7 @@
     return h;
   }
 
+  function refreshInfo() {
   fetch('/api/info', { headers: headers() }).then(function (r) { return r.json(); }).then(function (info) {
     document.getElementById('ws').textContent = '工作区: ' + (info.workspace || '?');
     var modeSel = document.getElementById('modeSel');
@@ -122,7 +138,11 @@
     });
     if (info.keyRequired) keyInput.placeholder = 'API Key（必填）';
     document.title = '7coder - ' + (info.model || '');
-  }).catch(function () { document.getElementById('model').textContent = '模型: (info 不可用)'; });
+  })
+    .catch(function () { document.getElementById('model').textContent = '模型: (info 不可用)'; });
+  }
+  refreshInfo();
+
 
   document.getElementById('modeSel').addEventListener('change', function () {
     var sel = this;
@@ -185,7 +205,11 @@
     history.push({ role: 'user', content: text });
     setBusy(true);
     statusEl.textContent = '思考中 / 工具执行中…';
-    var bubble = addMsg('bot', '<span class="cursor"></span>');
+    var bubble = addMsg('bot', '');
+    // 两个独立容器: 思维链 details + 正文 div — 避免 innerHTML 整体替换时销毁彼此
+    var contentEl = document.createElement('div');
+    contentEl.innerHTML = '<span class="cursor"></span>';
+    bubble.appendChild(contentEl);
     var acc = '';
     var thinkEl = null, thinkBody = null, thinkAcc = '';
     var first = true;
@@ -224,7 +248,7 @@
                   thinkEl.className = 'think';
                   thinkEl.open = true;
                   thinkEl.innerHTML = '<summary>思考过程</summary><div class="think-body" style="color:var(--dim); font-size:12px; white-space:pre-wrap;"></div>';
-                  bubble.insertBefore(thinkEl, bubble.firstChild);
+                  bubble.insertBefore(thinkEl, contentEl);
                   thinkBody = thinkEl.querySelector('.think-body');
                 }
                 thinkAcc += d.reasoning;
@@ -236,7 +260,7 @@
                 if (thinkEl) thinkEl.open = false;
                 if (first) { statusEl.textContent = ''; first = false; }
                 acc += d.content;
-                bubble.innerHTML = render(acc) + '<span class="cursor"></span>';
+                contentEl.innerHTML = render(acc) + '<span class="cursor"></span>';
                 log.scrollTop = log.scrollHeight;
               }
             } catch (e) { if (e.message && e.message.indexOf('upstream') >= 0) throw e; }
@@ -246,7 +270,7 @@
       }
       return pump();
     }).then(function () {
-      bubble.innerHTML = render(acc) || '(空回复)';
+      contentEl.innerHTML = render(acc) || '(空回复)';
       if (acc) history.push({ role: 'assistant', content: acc });
       finish();
     }).catch(function (e) {
@@ -323,6 +347,82 @@
       })
       .catch(function (e) { addMsg('err', '载入失败: ' + e.message); });
   }
+
+  // ===== 模型设置面板 =====
+  var setPanel = document.getElementById('setPanel');
+  var profRows = document.getElementById('profRows');
+  document.getElementById('settingsBtn').addEventListener('click', function () {
+    if (setPanel.style.display === 'block') { setPanel.style.display = 'none'; return; }
+    setPanel.style.display = 'block';
+    fetch('/api/settings', { headers: headers() })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        document.getElementById('setEndpoint').value = j.endpoint || '';
+        document.getElementById('setKey').value = j.apiKey || '';
+        document.getElementById('setModel').value = j.model || '';
+        renderProfRows(j.profiles || {});
+      })
+      .catch(function (e) { addMsg('err', '读取设置失败: ' + e.message); });
+  });
+  function renderProfRows(profiles) {
+    profRows.textContent = '';
+    Object.keys(profiles).forEach(function (name) {
+      addProfRow(name, profiles[name].endpoint || '', profiles[name].apiKey || '');
+    });
+  }
+  function addProfRow(name, endpoint, key) {
+    var row = document.createElement('div');
+    row.style.cssText = "display:grid; grid-template-columns: 140px 1fr 1fr 60px; gap:6px; margin-bottom:6px;";
+    function mk(val, ph, isPw) {
+      var inp = document.createElement('input');
+      inp.value = val || ''; inp.placeholder = ph;
+      if (isPw) inp.type = 'password';
+      inp.style.cssText = "background:#10131a;color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px;";
+      return inp;
+    }
+    var n = mk(name, '模型名', false); n.className = 'pf-name';
+    var ep = mk(endpoint, 'endpoint', false); ep.className = 'pf-endpoint';
+    var kk = mk(key, 'apiKey', true); kk.className = 'pf-key';
+    var del = document.createElement('button');
+    del.className = 'ghost'; del.textContent = '删除'; del.style.fontSize = '11px';
+    del.addEventListener('click', function () { row.remove(); });
+    row.appendChild(n); row.appendChild(ep); row.appendChild(kk); row.appendChild(del);
+    profRows.appendChild(row);
+  }
+  document.getElementById('addProf').addEventListener('click', function () { addProfRow('', '', ''); });
+  document.getElementById('saveProfiles').addEventListener('click', function () {
+    var profiles = {};
+    var rows = profRows.children;
+    for (var i = 0; i < rows.length; i++) {
+      var ins = rows[i].querySelectorAll('input');
+      var name = ins[0].value.trim();
+      if (!name) continue;
+      profiles[name] = { endpoint: ins[1].value.trim(), apiKey: ins[2].value };
+    }
+    fetch('/api/models-config', { method: 'POST', headers: headers(), body: JSON.stringify({ profiles: profiles }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) throw new Error(j.error.message);
+        addMsg('sys', '模型 Profiles 已保存并即时生效: ' + (j.models || []).join(', '));
+        refreshInfo();
+      })
+      .catch(function (e) { addMsg('err', '保存失败: ' + e.message); });
+  });
+  document.getElementById('saveSettings').addEventListener('click', function () {
+    var body = {
+      endpoint: document.getElementById('setEndpoint').value.trim(),
+      apiKey: document.getElementById('setKey').value,
+      model: document.getElementById('setModel').value.trim()
+    };
+    fetch('/api/settings', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) throw new Error(j.error.message);
+        addMsg('sys', '全局设置已保存并即时生效（endpoint/key/主模型，写入工作区 .env）。');
+        refreshInfo();
+      })
+      .catch(function (e) { addMsg('err', '保存失败: ' + e.message); });
+  });
 
   document.getElementById('new').addEventListener('click', function () {
     if (busy) { statusEl.textContent = '任务运行中，请先停止。'; return; }

@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.14.0** - Native Git integration: git_status_tool / git_diff_tool (read-only, auto-safe) and git_commit_tool (approval-gated, pre-commit snapshot, auto message from the audit log).
+**v2.16.0** - In-UI model settings: configure endpoint / API key / main model and per-model profiles (models.json) directly from the web UI - takes effect immediately and persists (workspace .env + models.json). Also fixes the reasoning-block collapse (separate containers).
 
 ## System Requirements
 
@@ -162,6 +162,10 @@ Drop a .env into the workspace and it overrides the install-dir .env for
 that project only - models, endpoint, API keys, permission mode, everything.
 The workspace .env is a protected file: the AI can use its values but never
 edit the file.
+
+The web UI 模型设置 panel configures all of this **live**: global endpoint/key/main
+model (persisted to the workspace .env, effective immediately) plus per-model
+profiles (models.json) with add/edit/delete rows.
 
 ## Multi-Model
 

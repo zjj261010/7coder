@@ -862,6 +862,41 @@ scenarios.push({
 });
 
 
+// --- B20: settings + models-config API (runtime endpoint/key/model config) ---
+scenarios.push({
+  name: 'settings-api',
+  fn: async () => {
+    const cwd = freshCwd('b-set');
+    const mockA = startMock([{ role: 'assistant', content: 'FROM-MOCK-A' }]);
+    const mockB = startMock([{ role: 'assistant', content: 'FROM-MOCK-B' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 395;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'key-a', OPENAI_ENDPOINT: 'http://127.0.0.1:' + mockA.port + '/v1', HEAVY_MODEL: 'model-a', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const cfg = JSON.parse((await httpReq(srvPort, 'GET', '/api/settings', null)).body);
+      record('set: GET /api/settings returns current endpoint/key/model', cfg.endpoint.indexOf(':' + mockA.port) >= 0 && cfg.apiKey === 'key-a' && cfg.model === 'model-a', JSON.stringify(cfg));
+      const sw = JSON.parse((await httpReq(srvPort, 'POST', '/api/settings', { endpoint: 'http://127.0.0.1:' + mockB.port + '/v1', apiKey: 'key-b', model: 'model-b' })).body);
+      record('set: POST /api/settings switches runtime globals', sw.ok === true && sw.model === 'model-b', JSON.stringify(sw));
+      const def = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] });
+      record('set: default chat now routes to the NEW endpoint/model', def.status === 200 && def.body.includes('FROM-MOCK-B') && def.body.includes('"model":"model-b"'), def.body.substring(0, 100));
+      const mc = JSON.parse((await httpReq(srvPort, 'POST', '/api/models-config', { profiles: { 'profile-c': { endpoint: 'http://127.0.0.1:' + mockA.port + '/v1', apiKey: 'key-c' } } })).body);
+      record('set: models-config writes + reloads profiles', mc.ok === true && mc.models.indexOf('profile-c') >= 0, JSON.stringify(mc));
+      const profChat = await httpReq(srvPort, 'POST', '/v1/chat/completions', { model: 'PROFILE-C', messages: [{ role: 'user', content: 'x' }] });
+      record('set: profiled model chat routes via models.json', profChat.status === 200 && profChat.body.includes('FROM-MOCK-A'), profChat.body.substring(0, 80));
+      const envFile = fs.readFileSync(path.join(cwd, '.env'), 'utf8');
+      record('set: persisted to workspace .env (restart-safe)', envFile.includes('OPENAI_ENDPOINT=http://127.0.0.1:' + mockB.port + '/v1') && envFile.includes('HEAVY_MODEL=model-b') && envFile.includes('OPENAI_API_KEY=key-b'), envFile.replace(/\n/g, ' | '));
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(mockA); stopMock(mockB);
+    }
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {
