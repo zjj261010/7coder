@@ -272,6 +272,7 @@
     }).then(function () {
       contentEl.innerHTML = render(acc) || '(空回复)';
       if (acc) history.push({ role: 'assistant', content: acc });
+      autoSaveSession();
       finish();
     }).catch(function (e) {
       var aborted = e.name === 'AbortError';
@@ -324,16 +325,21 @@
     }
   });
   document.getElementById('closeHist').addEventListener('click', function () { histPanel.style.display = 'none'; });
-  document.getElementById('saveSess').addEventListener('click', function () {
-    if (!history.length) { addMsg('sys', '当前会话为空。'); return; }
+  // 自动保存: 每轮对话结束（助手回复完成）后自动存档，无需手动点击
+  var autoSaving = false;
+  function autoSaveSession() {
+    if (autoSaving || !history.length) return;
+    autoSaving = true;
     fetch('/api/sessions/save', { method: 'POST', headers: headers(), body: JSON.stringify({ messages: history }) })
       .then(function (r) { return r.json(); })
-      .then(function (j) {
-        if (j.error) throw new Error(j.error.message);
-        addMsg('sys', '会话已保存: ' + j.file + '（' + j.turns + ' 轮）');
-      })
-      .catch(function (e) { addMsg('err', '保存失败: ' + e.message); });
+      .then(function () { autoSaving = false; })
+      .catch(function () { autoSaving = false; });
+  }
+  // 页面关闭前兜底保存
+  window.addEventListener('beforeunload', function () {
+    if (history.length) autoSaveSession();
   });
+
   function loadSessionFile(file) {
     fetch('/api/sessions/load', { method: 'POST', headers: headers(), body: JSON.stringify({ file: file }) })
       .then(function (r) { return r.json(); })
