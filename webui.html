@@ -313,9 +313,28 @@
           if (!ss.length) { list.textContent = '（暂无历史会话——REPL 里跑过任务或点保存后会出现）'; return; }
           ss.forEach(function (se) {
             var item = document.createElement('div');
-            item.style.cssText = 'padding:6px 8px; cursor:pointer; border-bottom:1px solid var(--line);';
-            item.textContent = (se.savedAt || '?') + ' · ' + se.turns + ' 轮 · ' + (se.preview || '(无预览)');
-            item.addEventListener('click', function () { loadSessionFile(se.file); });
+            item.style.cssText = 'padding:6px 8px; cursor:pointer; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center;';
+            var info = document.createElement('span');
+            info.textContent = (se.savedAt || '?') + ' · ' + se.turns + ' 轮 · ' + (se.preview || '(无预览)');
+            info.addEventListener('click', function () { loadSessionFile(se.file); });
+            info.style.cssText = 'flex:1; cursor:pointer; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;';
+            var del = document.createElement('button');
+            del.className = 'ghost';
+            del.textContent = '删除';
+            del.style.cssText = 'font-size:11px; padding:2px 8px; margin-left:8px; color:var(--err); border-color:var(--err);';
+            del.addEventListener('click', function (e) {
+              e.stopPropagation();
+              fetch('/api/sessions/delete', { method: 'POST', headers: headers(), body: JSON.stringify({ file: se.file }) })
+                .then(function (r) { return r.json(); })
+                .then(function (j) {
+                  if (j.error) throw new Error(j.error.message);
+                  item.remove();
+                  if (!list.children.length) list.textContent = '（暂无历史会话）';
+                })
+                .catch(function (err) { addMsg('err', '删除失败: ' + err.message); });
+            });
+            item.appendChild(info);
+            item.appendChild(del);
             list.appendChild(item);
           });
         })

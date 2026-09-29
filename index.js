@@ -2641,6 +2641,32 @@ function startHttpServer() {
       });
       return;
     }
+    if (req.method === 'POST' && req.url === '/api/sessions/delete') {
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const wanted = String(JSON.parse(body).file || "");
+          if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
+          const f = path.join(launchDir, '.7coder', 'sessions', wanted);
+          if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
+          fs.unlinkSync(f);
+          audit({ ts: new Date().toISOString(), type: 'session_delete', file: wanted });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, deleted: wanted }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: e.message } }));
+        }
+      });
+      return;
+    }
     if (req.method === 'POST' && req.url === '/api/sessions/save') {
       if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
