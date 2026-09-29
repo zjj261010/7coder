@@ -612,6 +612,30 @@ details.think .think-body {
   }
   refreshInfo();
 
+  // 页面加载时自动载入最近的会话存档，刷新不丢上下文
+  (function () {
+    fetch('/api/sessions', { headers: headers() }).then(function (r) { return r.json(); }).then(function (j) {
+      var ss = j.sessions || [];
+      if (!ss.length) return;
+      var target = null;
+      try { target = localStorage.getItem('7coder-sess-file'); } catch (e) {}
+      if (!target || !ss.some(function (s) { return s.file === target; })) target = ss[0].file;
+      if (!target) return;
+      fetch('/api/sessions/load', { method: 'POST', headers: headers(), body: JSON.stringify({ file: target }) })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          if (j.error || !j.messages || !j.messages.length) return;
+          history = j.messages.slice();
+          rememberSessFile(target);
+          history.forEach(function (m) {
+            addMsg(m.role === 'user' ? 'user' : 'bot', esc(m.content));
+          });
+          addMsg('sys', '已恢复上次会话（' + history.length + ' 轮）。');
+        })
+        .catch(function () {});
+    }).catch(function () {});
+  })();
+
   /* ===== Event listeners ===== */
   sendBtn.addEventListener('click', send);
   stopBtn.addEventListener('click', function () { if (ctrl) ctrl.abort(); });
