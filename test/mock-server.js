@@ -24,6 +24,11 @@ http.createServer((req, res) => {
     if (body.indexOf('"stream":true') >= 0) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       const chunk = (delta, fin) => res.write('data: ' + JSON.stringify({ id, object: 'chat.completion.chunk', created: 1, model: 'mock', choices: [{ index: 0, delta, finish_reason: fin || null }] }) + '\n\n');
+      if (step.reasoning) {
+        const r = step.reasoning;
+        chunk({ reasoning_content: r.substring(0, Math.max(1, Math.floor(r.length / 2))) }, null);
+        chunk({ reasoning_content: r.substring(Math.max(1, Math.floor(r.length / 2))) }, null);
+      }
       if (step.tool_calls) {
         chunk({ role: 'assistant', tool_calls: step.tool_calls.map((tc, idx) => ({ index: idx, id: tc.id, type: 'function', function: tc.function })) }, null);
       } else if (step.content) {

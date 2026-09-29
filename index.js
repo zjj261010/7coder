@@ -821,7 +821,7 @@ async function describeWithVision(imageUrl) {
 // ====================== LIGHT/HEAVY CALLER ======================
 // Parses an OpenAI SSE stream and assembles a normal `choice` object.
 // Calls onDelta(text) for every content fragment (used for live output).
-function parseSSEStream(stream, onDelta) {
+function parseSSEStream(stream, onDelta, onReasoning) {
   return new Promise((resolve, reject) => {
     // Decode with Node's StringDecoder so a multibyte UTF-8 char split across
     // TCP chunks is reassembled instead of torn into U+FFFD replacement chars.
@@ -874,7 +874,11 @@ const ch = parsed.choices && parsed.choices[0];
         if (!ch) continue;
         sawAnything = true;
         const delta = ch.delta || {};
-        if (delta.reasoning_content) sawReasoning = true;
+        if (delta.reasoning_content) {
+          sawReasoning = true;
+          message.reasoning = (message.reasoning || '') + delta.reasoning_content;
+          if (onReasoning) onReasoning(delta.reasoning_content);
+        }
         if (delta.content) {
           message.content += delta.content;
           if (onDelta) onDelta(delta.content);
@@ -912,7 +916,8 @@ async function callOpenAI(currentMessages, options = {}) {
     toolChoice = "auto",
     temperature = TEMPERATURE,
     maxTokens = MAX_TOKENS,
-    onDelta = null
+    onDelta = null,
+    onReasoning = null,
   } = options;
 
   const mcfg = resolveModelConfig(model);
@@ -938,7 +943,7 @@ async function callOpenAI(currentMessages, options = {}) {
           timeout: 420000,
           responseType: 'stream'
         });
-        const choice = await parseSSEStream(response.data, onDelta);
+        const choice = await parseSSEStream(response.data, onDelta, onReasoning);
         if (choice && (choice.message.content || (choice.message.tool_calls && choice.message.tool_calls.length))) {
           return choice;
         }
@@ -2247,6 +2252,7 @@ async function compressConversationIfNeeded(currentMessages) {
 
 async function processWithTools(currentMessages, opts = {}) {
   const onDelta = opts.onDelta || null;
+  const onReasoning = opts.onReasoning || null;
   const reqModel = opts.model || HEAVY_MODEL;
   // Cancellation token (A5): an HTTP client that disconnects mid-stream can
   // stop the run at the next step/tool boundary instead of running to
@@ -2255,7 +2261,7 @@ async function processWithTools(currentMessages, opts = {}) {
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     if (cancelled()) return '[aborted: client disconnected]';
     await compressConversationIfNeeded(currentMessages);
-    const choice = await callOpenAI(currentMessages, { onDelta, model: reqModel });
+    const choice = await callOpenAI(currentMessages, { onDelta, onReasoning, model: reqModel });
     const assistantMsg = choice.message;
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
@@ -2270,7 +2276,7 @@ async function processWithTools(currentMessages, opts = {}) {
   }
   // Step limit reached - force a final answer without any more tool calls.
   currentMessages.push({ role: 'user', content: `Tool step limit (${MAX_TOOL_STEPS}) reached. Wrap up now and give your final answer without calling more tools.` });
-  const finalChoice = await callOpenAI(currentMessages, { useTools: false, onDelta, model: reqModel });
+  const finalChoice = await callOpenAI(currentMessages, { useTools: false, onDelta, onReasoning, model: reqModel });
   currentMessages.push(finalChoice.message);
   return finalChoice.message.content || '';
 }
@@ -2411,6 +2417,14 @@ function saveSession() {
     if (body.length > 2 * 1024 * 1024) { console.warn('[WARN] session too large to save (>2MB)'); return; }
     fs.mkdirSync(path.join(launchDir, '.7coder'), { recursive: true });
     fs.writeFileSync(sessionPath, body, 'utf8');
+    // timestamped history copy for the web session browser (newest 20 kept)
+    try {
+      const sdir = path.join(launchDir, '.7coder', 'sessions');
+      fs.mkdirSync(sdir, { recursive: true });
+      fs.writeFileSync(path.join(sdir, new Date().toISOString().replace(/[:.]/g, '-') + '.json'), body, 'utf8');
+      const olds = fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort();
+      while (olds.length > 20) { try { fs.unlinkSync(path.join(sdir, olds.shift())); } catch (e2) { break; } }
+    } catch (e2) {}
   } catch (e) { console.warn('[WARN] session save failed: ' + e.message); }
 }
 function loadSession() {
@@ -2573,6 +2587,142 @@ function startHttpServer() {
       }));
       return;
     }
+    if (req.method === 'GET' && req.url === '/api/sessions') {
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      try {
+        const sdir = path.join(launchDir, '.7coder', 'sessions');
+        const list = fs.existsSync(sdir)
+          ? fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort().reverse().map(f => {
+              try {
+                const j = JSON.parse(fs.readFileSync(path.join(sdir, f), 'utf8'));
+                const firstUser = (j.messages || []).find(m => m.role === 'user');
+                return { file: f, savedAt: j.savedAt || '?', turns: (j.messages || []).length, preview: firstUser ? String(firstUser.content).substring(0, 80) : '' };
+              } catch (e) { return { file: f, savedAt: '?', turns: 0, preview: '(unreadable)' };
+              }
+            })
+          : [];
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ sessions: list }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/sessions/load') {
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const wanted = String(JSON.parse(body).file || "");
+          if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
+          const f = path.join(launchDir, '.7coder', 'sessions', wanted);
+          if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
+          const j = JSON.parse(fs.readFileSync(f, "utf8"));
+          const msgs = (j.messages || [])
+            .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+            .map(m => ({ role: m.role, content: m.content }));
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ messages: msgs, savedAt: j.savedAt || "?" }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: e.message } }));
+        }
+      });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/sessions/save') {
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const msgs = JSON.parse(body).messages;
+          if (!Array.isArray(msgs)) throw new Error("messages must be an array");
+          const clean = msgs
+            .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+            .map(m => ({ role: m.role, content: m.content }));
+          const sdir = path.join(launchDir, '.7coder', 'sessions');
+          fs.mkdirSync(sdir, { recursive: true });
+          const name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+          fs.writeFileSync(path.join(sdir, name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean }), "utf8");
+          audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: e.message } }));
+        }
+      });
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/api/open') {
+      const loopbackBind = ['127.0.0.1', 'localhost', '::1'].includes(HTTP_BIND);
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const j = JSON.parse(body);
+          const target = j.target;
+          if (target !== "workspace" && target !== "config") throw new Error("target must be workspace or config");
+          if (j.dry) {
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ ok: true, dry: true }));
+            return;
+          }
+          let openPath;
+          if (target === "workspace") {
+            openPath = launchDir;
+          } else {
+            const wsEnv = path.join(launchDir, ".env");
+            if (fs.existsSync(wsEnv)) openPath = wsEnv;
+            else {
+              const ex = path.join(appDir, ".env");
+              if (!fs.existsSync(ex)) {
+                try { fs.copyFileSync(path.join(appDir, ".env.example"), wsEnv); openPath = wsEnv; }
+                catch (e2) { openPath = ex; }
+              } else openPath = ex;
+            }
+          }
+          let cmd, cmdArgs;
+          if (process.platform === "win32") { cmd = "cmd.exe"; cmdArgs = ["/c", "start", "", openPath]; }
+          else if (process.platform === "darwin") { cmd = "open"; cmdArgs = [openPath]; }
+          else { cmd = "xdg-open"; cmdArgs = [openPath]; }
+          const c = child_process.spawn(cmd, cmdArgs, { detached: true, stdio: "ignore" });
+          c.on("error", () => {});
+          c.unref();
+          audit({ ts: new Date().toISOString(), type: 'open', target, path: openPath });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, target, path: openPath }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: e.message } }));
+        }
+      });
+      return;
+    }
+
     if (req.method === 'POST' && req.url === '/api/mode') {
       if (HTTP_API_KEY) {
         const auth = req.headers.authorization || '';
@@ -2670,7 +2820,7 @@ function startHttpServer() {
               if (clientGone || res.destroyed) { clearInterval(ka); return; }
               try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; clearInterval(ka); }
             }, 5000);
-            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel });
+            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null) });
             clearInterval(ka);
             // Give the socket-close event a moment to land when the client
             // aborted at the very end of the run - then skip the summary.

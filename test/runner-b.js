@@ -798,6 +798,70 @@ scenarios.push({
 });
 
 
+// --- B19: web UI features - reasoning stream, sessions API, open endpoint ---
+scenarios.push({
+  name: 'ui-features',
+  fn: async () => {
+    const cwd = freshCwd('b-ui');
+    const m = startMock([
+      { role: 'assistant', reasoning: 'THINK-A then THINK-B', content: 'UI-ANSWER' },
+      { role: 'assistant', content: 'UI-2' },
+      { role: 'assistant', content: 'UI-3' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 390;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      // reasoning passthrough
+      const st = await httpReq(srvPort, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'x' }] });
+      let content = '', reasoning = '';
+      for (const line of st.body.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const pl = line.substring(5).trim();
+        if (!pl || pl === '[DONE]') continue;
+        try { const j = JSON.parse(pl); const d = j.choices[0].delta; if (d.reasoning) reasoning += d.reasoning; if (d.content) content += d.content; } catch (e) {}
+      }
+      record('ui: reasoning deltas streamed as delta.reasoning', reasoning === 'THINK-A then THINK-B', JSON.stringify(reasoning));
+      record('ui: content still assembled alongside reasoning', content === 'UI-ANSWER', JSON.stringify(content));
+      // sessions api: seed two files directly (REPL save format)
+      const sdir = path.join(cwd, '.7coder', 'sessions');
+      fs.mkdirSync(sdir, { recursive: true });
+      fs.writeFileSync(path.join(sdir, 's1.json'), JSON.stringify({ savedAt: '2026-01-01T00:00:00Z', messages: [
+        { role: 'system', content: 'sys' },
+        { role: 'user', content: 'SEED-ONE' },
+        { role: 'assistant', content: 'ok' },
+        { role: 'tool', content: 'dangling-tool-msg' }
+      ] }));
+      fs.writeFileSync(path.join(sdir, 's2.json'), JSON.stringify({ savedAt: '2026-01-02T00:00:00Z', messages: [
+        { role: 'user', content: 'SEED-TWO' },
+        { role: 'assistant', content: 'ok2' }
+      ] }));
+      const list = JSON.parse((await httpReq(srvPort, 'GET', '/api/sessions', null)).body);
+      record('sessions: GET lists both saved sessions newest first', list.sessions.length === 2 && list.sessions[0].file === 's2.json', JSON.stringify(list.sessions));
+      const load = JSON.parse((await httpReq(srvPort, 'POST', '/api/sessions/load', { file: 's1.json' })).body);
+      const hasTool = load.messages.some(x => x.role === 'tool');
+      record('sessions: load returns sanitized user/assistant turns', load.messages.length === 2 && !hasTool && load.messages[0].content === 'SEED-ONE', JSON.stringify(load.messages).substring(0, 120));
+      const save = JSON.parse((await httpReq(srvPort, 'POST', '/api/sessions/save', { messages: [{ role: 'user', content: 'web-save-test' }, { role: 'assistant', content: 'ok' }, { role: 'tool', content: 'x' }] })).body);
+      record('sessions: save stores sanitized web conversation', save.ok && save.turns === 2, JSON.stringify(save));
+      const trav = await httpReq(srvPort, 'POST', '/api/sessions/load', { file: '../../index.js' });
+      record('sessions: path traversal in file name rejected', trav.status === 400, 'status=' + trav.status);
+      // open endpoint (dry run - no window spawned)
+      const openDry = JSON.parse((await httpReq(srvPort, 'POST', '/api/open', { target: 'workspace', dry: true })).body);
+      record('open: dry run validates target', openDry.ok === true, JSON.stringify(openDry));
+      const openBad = await httpReq(srvPort, 'POST', '/api/open', { target: 'desktop' });
+      record('open: invalid target -> 400', openBad.status === 400, 'status=' + openBad.status);
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

@@ -49,9 +49,20 @@
     <option value="denial">denial · 全部拒绝</option>
   </select>
   <span class="spacer"></span>
+  <button class="ghost" id="openWs" title="在服务器上打开工作区文件夹">📁 工作区</button>
+  <button class="ghost" id="openCfg" title="打开配置文件（.env）">⚙ 配置</button>
+  <button class="ghost" id="hist">历史会话</button>
   <input id="key" type="password" placeholder="API Key（未设可留空）" autocomplete="off">
   <button class="ghost" id="new">新会话</button>
 </header>
+<div id="histPanel" style="display:none; background:var(--panel); border-bottom:1px solid var(--line); padding:10px 16px; max-height:260px; overflow-y:auto;">
+  <div style="display:flex; gap:10px; align-items:center; margin-bottom:8px;">
+    <strong style="font-size:13px;">历史会话</strong>
+    <button class="ghost" id="saveSess" style="font-size:12px; padding:3px 10px;">保存当前会话</button>
+    <button class="ghost" id="closeHist" style="font-size:12px; padding:3px 10px;">关闭</button>
+  </div>
+  <div id="histList" style="font-size:13px;"></div>
+</div>
 <div id="log">
   <div class="sys">已连接 7coder。直接输入中文任务，Enter 发送；工具（写文件/命令等）在服务器端的工作区内执行。</div>
 </div>
@@ -176,6 +187,7 @@
     statusEl.textContent = '思考中 / 工具执行中…';
     var bubble = addMsg('bot', '<span class="cursor"></span>');
     var acc = '';
+    var thinkEl = null, thinkBody = null, thinkAcc = '';
     var first = true;
     ctrl = new AbortController();
 
@@ -206,7 +218,22 @@
               var j = JSON.parse(payload);
               if (j.error) throw new Error(j.error.message || 'upstream error');
               var d = j.choices && j.choices[0] && j.choices[0].delta;
+              if (d && d.reasoning) {
+                if (!thinkEl) {
+                  thinkEl = document.createElement('details');
+                  thinkEl.className = 'think';
+                  thinkEl.open = true;
+                  thinkEl.innerHTML = '<summary>思考过程</summary><div class="think-body" style="color:var(--dim); font-size:12px; white-space:pre-wrap;"></div>';
+                  bubble.insertBefore(thinkEl, bubble.firstChild);
+                  thinkBody = thinkEl.querySelector('.think-body');
+                }
+                thinkAcc += d.reasoning;
+                thinkBody.textContent = thinkAcc;
+                thinkEl.open = true;
+                log.scrollTop = log.scrollHeight;
+              }
               if (d && d.content) {
+                if (thinkEl) thinkEl.open = false;
                 if (first) { statusEl.textContent = ''; first = false; }
                 acc += d.content;
                 bubble.innerHTML = render(acc) + '<span class="cursor"></span>';
@@ -235,6 +262,68 @@
 
   stopBtn.addEventListener('click', function () { if (ctrl) ctrl.abort(); });
   sendBtn.addEventListener('click', send);
+  function postOpen(target) {
+    fetch('/api/open', { method: 'POST', headers: headers(), body: JSON.stringify({ target: target }) })
+      .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, j: j }; }); })
+      .then(function (res) {
+        if (!res.ok) throw new Error((res.j && res.j.error && res.j.error.message) || 'HTTP ' + res.status);
+        addMsg('sys', '已在服务器上打开' + (res.j.target === 'workspace' ? '工作区文件夹' : '配置文件') + ': ' + res.j.path);
+      })
+      .catch(function (e) { addMsg('err', '打开失败: ' + e.message); });
+  }
+  document.getElementById('openWs').addEventListener('click', function () { postOpen('workspace'); });
+  document.getElementById('openCfg').addEventListener('click', function () { postOpen('config'); });
+
+  var histPanel = document.getElementById('histPanel');
+  document.getElementById('hist').addEventListener('click', function () {
+    if (histPanel.style.display === 'none') {
+      histPanel.style.display = 'block';
+      var list = document.getElementById('histList');
+      list.textContent = '加载中…';
+      fetch('/api/sessions', { headers: headers() })
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          list.textContent = '';
+          var ss = j.sessions || [];
+          if (!ss.length) { list.textContent = '（暂无历史会话——REPL 里跑过任务或点保存后会出现）'; return; }
+          ss.forEach(function (se) {
+            var item = document.createElement('div');
+            item.style.cssText = 'padding:6px 8px; cursor:pointer; border-bottom:1px solid var(--line);';
+            item.textContent = (se.savedAt || '?') + ' · ' + se.turns + ' 轮 · ' + (se.preview || '(无预览)');
+            item.addEventListener('click', function () { loadSessionFile(se.file); });
+            list.appendChild(item);
+          });
+        })
+        .catch(function (e) { list.textContent = '加载失败: ' + e.message; });
+    } else {
+      histPanel.style.display = 'none';
+    }
+  });
+  document.getElementById('closeHist').addEventListener('click', function () { histPanel.style.display = 'none'; });
+  document.getElementById('saveSess').addEventListener('click', function () {
+    if (!history.length) { addMsg('sys', '当前会话为空。'); return; }
+    fetch('/api/sessions/save', { method: 'POST', headers: headers(), body: JSON.stringify({ messages: history }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) throw new Error(j.error.message);
+        addMsg('sys', '会话已保存: ' + j.file + '（' + j.turns + ' 轮）');
+      })
+      .catch(function (e) { addMsg('err', '保存失败: ' + e.message); });
+  });
+  function loadSessionFile(file) {
+    fetch('/api/sessions/load', { method: 'POST', headers: headers(), body: JSON.stringify({ file: file }) })
+      .then(function (r) { return r.json(); })
+      .then(function (j) {
+        if (j.error) throw new Error(j.error.message);
+        history = j.messages.slice();
+        while (log.children.length > 1) log.removeChild(log.lastChild);
+        history.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'bot', esc(m.content)); });
+        addMsg('sys', '已载入历史会话（' + history.length + ' 轮），可继续对话。');
+        histPanel.style.display = 'none';
+      })
+      .catch(function (e) { addMsg('err', '载入失败: ' + e.message); });
+  }
+
   document.getElementById('new').addEventListener('click', function () {
     if (busy) { statusEl.textContent = '任务运行中，请先停止。'; return; }
     history = [];
