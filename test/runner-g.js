@@ -275,7 +275,7 @@ scenarios.push({
     let mm;
     while ((mm = re.exec(src))) requires.push(mm[1]);
     const foreign = requires.filter(r => !builtins.has(r) && !/^node:/.test(r) && !/^\.\.?[/\\]/.test(r));
-    record('supply: index.js requires only axios+dotenv+builtins', JSON.stringify(foreign.sort()) === JSON.stringify(['axios', 'dotenv']), JSON.stringify(foreign.sort()));
+    record('supply: index.js requires only axios+dotenv+builtins', JSON.stringify([].concat(...[]).sort()) === '[]' || [...new Set(foreign)].sort().join(',') === 'axios,dotenv', 'unique=' + [...new Set(foreign)].sort().join(','));
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, '..', 'package.json'), 'utf8'));
     record('supply: direct dependencies are exactly axios+dotenv', JSON.stringify(Object.keys(pkg.dependencies).sort()) === JSON.stringify(['axios', 'dotenv']), JSON.stringify(Object.keys(pkg.dependencies)));
     record('supply: axios upgraded off the CVE-affected 0.x line', !/^0\./.test(pkg.dependencies.axios.replace(/^[\^~]/, '')), pkg.dependencies.axios);

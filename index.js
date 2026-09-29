@@ -2265,7 +2265,19 @@ async function processWithTools(currentMessages, opts = {}) {
     const assistantMsg = choice.message;
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
-      for (const tc of assistantMsg.tool_calls) {
+      // Parallel execution: read-only tools run concurrently via Promise.all;
+      // write tools force sequential execution from that point onward.
+      const READ_ONLY = new Set(['read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'tool_search_tool', 'sleep_tool', 'process_list_tool']);
+      const calls = assistantMsg.tool_calls;
+      if (calls.length > 1 && calls.every(tc => READ_ONLY.has(tc.function.name))) {
+        if (cancelled()) return '[aborted: client disconnected]';
+        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages).catch(e => 'Tool error: ' + e.message)));
+        for (let i = 0; i < calls.length; i++) {
+          currentMessages.push({ role: 'tool', tool_call_id: calls[i].id, content: capToolResult(results[i]) });
+        }
+        continue;
+      }
+      for (const tc of calls) {
         if (cancelled()) return '[aborted: client disconnected]';
         const result = await safeExecuteTool(tc, currentMessages);
         currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(result) });

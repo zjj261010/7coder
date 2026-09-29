@@ -904,6 +904,38 @@ scenarios.push({
 });
 
 
+// --- B21: parallel read-only tool execution (D6) ---
+scenarios.push({
+  name: 'parallel-tools',
+  fn: async () => {
+    const cwd = freshCwd('b-parallel');
+    fs.writeFileSync(path.join(cwd, 'a.txt'), 'alpha');
+    fs.writeFileSync(path.join(cwd, 'b.txt'), 'beta');
+    fs.writeFileSync(path.join(cwd, 'c.txt'), 'gamma');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'p1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'a.txt' }) } },
+        { id: 'p2', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'b.txt' }) } },
+        { id: 'p3', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'c.txt' }) } },
+        { id: 'p4', type: 'function', function: { name: 'list_dir', arguments: '{}' } }
+      ] },
+      { role: 'assistant', content: 'PARALLEL-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const t0 = Date.now();
+    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const elapsed = Date.now() - t0;
+    const log = readLog(m.log);
+    const results = toolResults(log).filter(t => ['p1','p2','p3','p4'].indexOf(t.id) >= 0);
+    record('parallel: all 4 read-only results collected', results.length === 4 && results.every(t => t.c.length > 0), 'count=' + results.length);
+    record('parallel: results in correct order (matches tool_call order)', results.map(t => t.id).join(',') === 'p1,p2,p3,p4', 'order=' + results.map(t => t.id).join(','));
+    record('parallel: content correct per call', results[0] && results[0].c.includes('alpha') && results[1] && results[1].c.includes('beta') && results[2] && results[2].c.includes('gamma'), '');
+    record('parallel: reply generated after parallel batch', r.out.includes('PARALLEL-DONE'), '');
+    stopMock(m);
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {
