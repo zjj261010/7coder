@@ -727,6 +727,35 @@ scenarios.push({
 });
 
 
+// --- B17: run_tests_tool structured parsing (D2) ---
+scenarios.push({
+  name: 'tests-runner',
+  fn: async () => {
+    const cwd = freshCwd('b-tests');
+    fs.writeFileSync(path.join(cwd, 'fake-runner.js'), [
+      'console.log("Tests: 1 failed, 3 passed, 4 total");',
+      'console.log("FAIL sum.test.js");',
+      'console.log("not ok 1 adds numbers");',
+      'process.exit(1);'
+    ].join('\n'));
+    fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 't', scripts: { test: 'node fake-runner.js' } }));
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ts1', type: 'function', function: { name: 'run_tests_tool', arguments: JSON.stringify({ command: 'node fake-runner.js' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ts2', type: 'function', function: { name: 'run_tests_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: 'TS-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 120000 });
+    const log = readLog(m.log);
+    const ts1 = tr(log, 'ts1');
+    record('tests: explicit command parsed (3 passed / 1 failed / failure lines)', ts1 && ts1.c.includes('3 passed, 1 failed') && ts1.c.includes('FAIL sum.test.js') && ts1.c.includes('not ok 1'), ts1 ? ts1.c.substring(0, 150) : 'no result');
+    const ts2 = tr(log, 'ts2');
+    record('tests: auto-detect via package.json scripts.test', ts2 && ts2.c.includes('3 passed, 1 failed'), ts2 ? ts2.c.substring(0, 120) : 'no result');
+    stopMock(m);
+  }
+});
+
+
 (async () => {
   const t0 = Date.now();
   for (const sc of scenarios) {

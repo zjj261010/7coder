@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.12.0** - Session persistence: the REPL conversation auto-saves after every task; `--resume` or `/resume` continues a previous session across restarts.
+**v2.13.0** - run_tests_tool: structured test-runner integration (pass/fail counts and failure lines parsed from jest/mocha/karma and node:test output; auto-detects the test command).
 
 ## System Requirements
 
@@ -101,6 +101,7 @@ supported, plus `/v1/models`. Client message histories are honored for multi-tur
 - `computer_use` — **real screenshots**; mouse/keyboard actions are simulated no-ops
 - `schedule_cron_tool` / `cron_create_tool` — schedules like `30s`, `5m`, `2h`, `every 10m`, `daily 09:30`
 - `auto_debug_tool` (launch + observe + auto-fix loop; on Windows closes test apps with `taskkill /T /F`), `bickering_tool`, `plan_mode`
+- `run_tests_tool` - runs a test suite and parses output into **structured pass/fail counts** (jest/mocha/karma and node:test formats) + failure lines; auto-detects `npm test` / `node --test`
 - MCP resources (`.mcp` directory), git worktrees, notebook editing, TODO.md, 7CODER.md auto-generation
 
 Everything listed above does what it says. Tools that were previously advertised

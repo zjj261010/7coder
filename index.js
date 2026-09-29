@@ -357,6 +357,7 @@ const tools = [
   { type: "function", function: { name: "skill_tool", description: "Invoke a user-defined skill: reads .7coder/skills/<skill_name>.md and returns its instructions to follow. Pass params for the skill to use.", parameters: { type: "object", properties: { skill_name: { type: "string" }, params: { type: "object" } }, required: ["skill_name"] } } },
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
   { type: "function", function: { name: "workflow_tool", description: "Run a sequence of tool calls from a JSON plan: steps=[{tool, args, optional}]. Steps execute in order through the normal permission system; a failing step stops the workflow unless optional=true. Max 50 steps; nested workflows are rejected.", parameters: { type: "object", properties: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" }, optional: { type: "boolean" } }, required: ["tool"] } }, description: { type: "string" } }, required: ["steps"] } } },
+  { type: "function", function: { name: "run_tests_tool", description: "Run a test suite and parse the output into structured pass/fail counts. Supported: jest/mocha/karma (N passing, M failing), node:test (# pass N), generic. Auto-detects (npm test / node --test) when command omitted.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_seconds: { type: "number" } } } } },
   { type: "function", function: { name: "auto_approval_return", description: "Lightweight model hands over to heavy model for auto-approval description.", parameters: { type: "object", properties: { description: { type: "string" } } } } },
   { type: "function", function: { name: "computer_use", description: "Real screen control: screenshot (real capture), mouse_move/click (real cursor + click), type_text/press_key (real SendKeys). Windows-only for input actions; requires ENABLE_COMPUTER_USE=true.", parameters: { type: "object", properties: { action: { type: "string", enum: ["screenshot", "mouse_move", "click", "type_text", "press_key"] }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, key: { type: "string" } }, required: ["action"] } } },
   { type: "function", function: { name: "plan_mode", description: "Plan mode: light model improves prompt + specifies refinement loops for heavy model deep thinking. Use ONLY for complex tasks.", parameters: { type: "object", properties: { initial_task: { type: "string" } }, required: ["initial_task"] } } },
@@ -989,7 +990,8 @@ const DETERMINISTIC_EXPLAIN = {
   task_create_tool: (a) => `Start background task: ${String(a.command || '').substring(0, 80)}`,
   mcp_tool: (a) => `Call MCP tool ${a.tool_name}`,
   agent_tool: (a) => `Spawn sub-agent "${a.name}" with task: ${String(a.task || '').substring(0, 60)}`,
-  workflow_tool: (a) => `Run a ${Array.isArray(a.steps) ? a.steps.length : '?'}-step tool workflow`
+  workflow_tool: (a) => `Run a ${Array.isArray(a.steps) ? a.steps.length : '?'}-step tool workflow`,
+  run_tests_tool: (a) => `Run test suite: ${String(a.command || 'auto-detected').substring(0, 80)}`
 };
 
 // ====================== RISK CLASSIFICATION & PERMISSION ======================
@@ -1645,6 +1647,64 @@ async function executeToolRaw(name, args, conversation) {
     } finally { workflowStepDepth--; }
   }
 
+// ====================== TEST RUNNER PARSING (D2) ======================
+// Turns noisy test-runner output into structured counts the model can act on.
+function parseTestOutput(text) {
+  const t = String(text);
+  const num = (re) => { const m = t.match(re); return m ? parseInt(m[1], 10) : null; };
+  let passed = num(/(\d+)+\s+pass(?:ing|ed)?/i);
+  let failed = num(/(\d+)+\s+fail(?:ing|ed)?/i) || num(/#\s*fail\s+(\d+)/i);
+  const skipped = num(/(\d+)+\s+skipped/i) || num(/#\s*skipped\s+(\d+)/i);
+  if (passed === null) passed = num(/#\s*pass\s+(\d+)/i);
+  const failures = [];
+  for (const line of t.split('\n')) {
+    if (/\u2715|\u2717|not ok|^FAIL\b/i.test(line)) {
+      failures.push(line.trim().substring(0, 200));
+    }
+    if (failures.length >= 10) break;
+  }
+  const parsed = (passed !== null || failed !== null);
+  const total = parsed ? ((passed || 0) + (failed || 0) + (skipped || 0)) : null;
+  return { parsed, passed, failed, skipped, total, failures };
+}
+
+  if (name === 'run_tests_tool') {
+    let command = String(args.command || "").trim();
+    if (!command) {
+      try {
+        const pkgPath = path.join(launchDir, 'package.json');
+        if (fs.existsSync(pkgPath)) {
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+          if (pkg.scripts && pkg.scripts.test) command = "npm test --silent";
+        }
+      } catch (e) {}
+    }
+    if (!command) {
+      try {
+        const hasTests = fs.readdirSync(launchDir).some(f => /\.test\.js$/i.test(f));
+        if (hasTests) command = "node --test";
+      } catch (e) {}
+    }
+    if (!command) return "Tests error: no command given and nothing to auto-detect (no scripts.test, no *.test.js).";
+    const timeoutMs = Math.max(10, Math.min(600, parseInt(args.timeout_seconds, 10) || 120)) * 1000;
+    console.log("[TESTS] running: " + command);
+    let out = "";
+    let exitStatus = 0;
+    try {
+      out = child_process.execSync(command, { encoding: "utf8", cwd: launchDir, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
+    } catch (e) {
+      out = (e.stdout || "") + (e.stderr || "");
+      exitStatus = e.status;
+    }
+    const r = parseTestOutput(out);
+    if (!r.parsed) return "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.'\n'Output tail:'\n'" + out.substring(out.length - 2000);
+    let res = "[TESTS] exit=" + exitStatus + " " + (r.passed || 0) + " passed, " + (r.failed || 0) + " failed, " + (r.skipped || 0) + " skipped (of " + r.total + ").";
+    res += '\n';
+    res += (r.failures.length ? "Failures:'\n'" + r.failures.join('\n') : "All green.");
+    res += "'\n''\n'Raw tail:'\n'" + out.substring(out.length - 1500);
+    return res;
+  }
+
   if (name === 'synthetic_output_tool') {
     const schema = args.schema;
     if (!schema || typeof schema !== 'object' || Array.isArray(schema) || !schema.properties) {
@@ -1936,7 +1996,7 @@ async function safeExecuteToolInner(toolCall, conversation) {
       agent_tool: 'MEDIUM', schedule_cron_tool: 'HIGH', cron_create_tool: 'HIGH',
       cron_delete_tool: 'MEDIUM', process_kill_tool: 'HIGH',
       run_command: 'HIGH', bash_tool: 'HIGH', powershell_tool: 'HIGH',
-      task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH'
+      task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH', run_tests_tool: 'HIGH'
     };
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 
