@@ -151,6 +151,37 @@ details.think .think-body {
 }
 .msg pre code { background: transparent; padding: 0; }
 
+/* Message action buttons */
+.msg-actions { display: flex; gap: 6px; margin-top: 6px; justify-content: flex-end; }
+.msg-actions button {
+  background: var(--code-bg); color: var(--dim); border: 1px solid var(--line);
+  border-radius: 4px; padding: 2px 8px; font-size: 11px; cursor: pointer;
+}
+.msg-actions button:hover { color: var(--fg); border-color: var(--dim); }
+
+/* Tool call display */
+.tool-call {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; margin: 4px 0;
+  background: var(--code-bg); border: 1px solid var(--line);
+  border-radius: 6px; font-size: 12px; color: var(--dim);
+}
+.tool-call .icon { font-size: 14px; }
+
+/* Approval buttons */
+.approval-box {
+  padding: 10px 14px; border-radius: 8px; margin: 8px 0;
+  background: #2a2015; border: 1px solid var(--warn); font-size: 13px;
+}
+.approval-box .q { margin-bottom: 8px; }
+.approval-box .btns { display: flex; gap: 8px; }
+.approval-box .btns button {
+  flex: 1; padding: 6px 12px; border-radius: 6px; cursor: pointer;
+  border: 1px solid var(--line); font-size: 13px;
+}
+.approval-box .btns .approve { background: var(--ok); color: #fff; border: 0; }
+.approval-box .btns .deny { background: var(--err); color: #fff; border: 0; }
+
 /* ===== Composer ===== */
 #composer-area { padding: 12px 16px 16px; background: var(--side); border-top: 1px solid var(--line); }
 #composer-inner { max-width: 800px; margin: 0 auto; }
@@ -488,6 +519,16 @@ details.think .think-body {
                 thinkBody.textContent = thinkAcc;
                 log.scrollTop = log.scrollHeight;
               }
+              if (d && d.tool_call) {
+                var tcDiv = document.createElement('div');
+                tcDiv.className = 'tool-call';
+                tcDiv.innerHTML = '<span class="icon">🔧</span> ' + esc(d.tool_call.name || 'tool');
+                contentEl.parentNode.insertBefore(tcDiv, contentEl);
+                log.scrollTop = log.scrollHeight;
+              }
+              if (j.approval_request) {
+                handleApproval(j.approval_request);
+              }
               if (d && d.content) {
                 if (first) { statusEl.textContent = ''; first = false; if (thinkEl) thinkEl.open = false; }
                 acc += d.content;
@@ -515,6 +556,27 @@ details.think .think-body {
     });
 
     function finish() { setBusy(false); ctrl = null; statusEl.textContent = ''; refreshSessions(); }
+
+    // 审批处理: SSE 收到 approval_request 时显示按钮并等待用户操作
+    function handleApproval(req) {
+      var box = document.createElement('div');
+      box.className = 'approval-box';
+      box.innerHTML = '<div class="q">' + esc(req.question) + '</div>' +
+        '<div class="btns"><button class="approve">✓ 批准</button><button class="deny">✗ 拒绝</button></div>';
+      bubble.appendChild(box);
+      log.scrollTop = log.scrollHeight;
+      box.querySelector('.approve').addEventListener('click', function () {
+        respondApproval(req.id, true, box);
+      });
+      box.querySelector('.deny').addEventListener('click', function () {
+        respondApproval(req.id, false, box);
+      });
+    }
+    function respondApproval(id, approved, box) {
+      box.querySelector('.btns').innerHTML = approved ? '<span style="color:var(--ok)">✓ 已批准</span>' : '<span style="color:var(--err)">✗ 已拒绝</span>';
+      fetch('/api/approve', { method: 'POST', headers: headers(), body: JSON.stringify({ id: id, approved: approved }) })
+        .catch(function (e) { addMsg('err', '审批发送失败: ' + e.message); });
+    }
   }
 
   function setBusy(b) {

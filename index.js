@@ -2141,7 +2141,16 @@ async function safeExecuteToolInner(toolCall, conversation) {
 }
 
 // ====================== APPROVAL ======================
+// HTTP approval bridge: set during HTTP streaming so askApproval can forward
+// approval requests to the web UI client instead of failing in non-interactive mode.
+var httpApprovalBridge = null;
+var approvalSeq = 0;
+var pendingApprovals = new Map(); // id -> { resolve }
+
 async function askApproval(question) {
+  if (httpApprovalBridge) {
+    return httpApprovalBridge.ask(question);
+  }
   if (!INTERACTIVE || rlClosed) {
     console.log(`\n[PERM] ${question} (auto-skipped in non-interactive mode)`);
     return false;
@@ -2253,6 +2262,7 @@ async function compressConversationIfNeeded(currentMessages) {
 async function processWithTools(currentMessages, opts = {}) {
   const onDelta = opts.onDelta || null;
   const onReasoning = opts.onReasoning || null;
+  const onToolCall = opts.onToolCall || null;
   const reqModel = opts.model || HEAVY_MODEL;
   // Cancellation token (A5): an HTTP client that disconnects mid-stream can
   // stop the run at the next step/tool boundary instead of running to
@@ -2265,6 +2275,16 @@ async function processWithTools(currentMessages, opts = {}) {
     const assistantMsg = choice.message;
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+      // Notify UI about each tool call before execution
+      if (onToolCall) {
+        for (const tc of assistantMsg.tool_calls) {
+          try {
+            var preview = {};
+            try { preview = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
+            onToolCall(tc.function.name, preview);
+          } catch (e) {}
+        }
+      }
       // Parallel execution: read-only tools run concurrently via Promise.all;
       // write tools force sequential execution from that point onward.
       const READ_ONLY = new Set(['read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'tool_search_tool', 'sleep_tool', 'process_list_tool']);
@@ -2679,6 +2699,32 @@ function startHttpServer() {
       });
       return;
     }
+    if (req.method === 'POST' && req.url === '/api/approve') {
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      let body = '';
+      req.setEncoding('utf8');
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        try {
+          const j = JSON.parse(body);
+          const id = String(j.id || '');
+          if (!pendingApprovals.has(id)) throw new Error('no pending approval with id: ' + id);
+          const resolve = pendingApprovals.get(id);
+          pendingApprovals.delete(id);
+          resolve(!!j.approved);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, approved: !!j.approved }));
+        } catch (e) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: e.message } }));
+        }
+      });
+      return;
+    }
     if (req.method === 'POST' && req.url === '/api/sessions/save') {
       if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
@@ -2933,12 +2979,28 @@ function startHttpServer() {
                 clientGone = true;
               }
             };
+            // HTTP approval bridge: forward approval requests to the web UI client.
+            // askApproval detects this bridge and uses it instead of failing silently.
+            httpApprovalBridge = {
+              ask: function (question) {
+                return new Promise(function (resolve) {
+                  var id = 'apr-' + (++approvalSeq);
+                  var r = JSON.stringify({ approval_request: { id: id, question: question } });
+                  try { res.write('data: ' + r + '\n\n'); } catch (e) { resolve(false); return; }
+                  pendingApprovals.set(id, resolve);
+                  setTimeout(function () {
+                    if (pendingApprovals.has(id)) { pendingApprovals.delete(id); resolve(false); }
+                  }, 120000);
+                });
+              }
+            };
             const ka = setInterval(() => {
               if (clientGone || res.destroyed) { clearInterval(ka); return; }
               try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; clearInterval(ka); }
             }, 5000);
-            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null) });
+            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null), onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: args } }, null) });
             clearInterval(ka);
+            httpApprovalBridge = null;
             // Give the socket-close event a moment to land when the client
             // aborted at the very end of the run - then skip the summary.
             await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
