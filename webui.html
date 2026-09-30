@@ -607,6 +607,11 @@ details.think .think-body {
       try { saved = localStorage.getItem('7coder-model'); } catch (e) {}
       if (saved && info.models.indexOf(saved) >= 0) sel.value = saved;
       else sel.value = info.model || '';
+      // P1-3: 持久化模型选择 + 回显权限模式
+      sel.addEventListener('change', function () {
+        try { localStorage.setItem('7coder-model', sel.value); } catch (e) {}
+      });
+      if (info.mode) modeSel.value = info.mode;
       $('ver').textContent = 'v' + (info.version || '?');
     }).catch(function () { $('wsChip').textContent = '⚠ 服务器未连接'; });
   }

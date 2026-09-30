@@ -4,7 +4,7 @@
 // Usage: node test/runner-f.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
-function rmrf(p) { try { if (fs.rmSync) rmrf(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
+function rmrf(p) { try { if (fs.rmSync) fs.rmSync(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
 
 const path = require('path');
 const http = require('http');
@@ -433,6 +433,7 @@ scenarios.push({
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
   const pass = results.filter(r => r.pass).length;
+  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); }
   console.log('\n===== SUITE F SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
   for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
   process.exit(pass === results.length ? 0 : 1);

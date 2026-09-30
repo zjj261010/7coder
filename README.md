@@ -20,16 +20,10 @@ dependencies + install/usage guide) can be built with
 three-step install. No internet, no npm install, no system Node required
 on the target machine.
 
-## Now on NPM!
+## Distribution
 
-Steps:
+This project is distributed as an **offline zip** with bundled runtime — see **INSTALL.md**.
 
-1. install using: `npm install -g @nodemixaholic/7coder`
-2. find your global root using `npm root -g`, append '/@nodemixaholic/7coder' to it (could be something slightly different on Windows, I'm not sure, I'm on macOS.)
-3. change directory to that
-4. find the **.env.example** file in that folder
-5. copy it to ".env" and then edit ".env" using your favorite plaintext editor (mine is nano!)
-6. you can now use 7coder by typing **7coder** in your terminal
 
 ## Cheat Sheet
 

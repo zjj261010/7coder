@@ -122,7 +122,7 @@ const VISION_MODEL = process.env.VISION_MODEL || null;
 // parseFloat('0')||fallback would silently rewrite a legitimate TEMPERATURE=0;
 // only fall back when the value is missing or not a finite number.
 const TEMPERATURE = Number.isFinite(parseFloat(process.env.TEMPERATURE)) ? parseFloat(process.env.TEMPERATURE) : 0.7;
-const MAX_TOKENS = parseInt(process.env.MAX_TOKENS, 10) || 2048;
+const MAX_TOKENS = parseInt(process.env.MAX_TOKENS, 10) || 42000;
 const VALID_PERMISSION_MODES = ['default', 'auto', 'bypass', 'denial'];
 const rawPermissionMode = (permissionModeFlag || process.env.PERMISSION_MODE || (dangerMode ? 'bypass' : 'default')).toLowerCase().trim();
 if (!VALID_PERMISSION_MODES.includes(rawPermissionMode)) {
@@ -131,7 +131,7 @@ if (!VALID_PERMISSION_MODES.includes(rawPermissionMode)) {
 }
 let PERMISSION_MODE = VALID_PERMISSION_MODES.includes(rawPermissionMode) ? rawPermissionMode : 'default';
 const ENABLE_HTTP_SERVER = process.env.ENABLE_HTTP_SERVER === 'true' || serverMode;
-const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 8000;
+const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 7103;
 const HTTP_BIND = process.env.HTTP_BIND || '127.0.0.1';
 const HTTP_API_KEY = process.env.HTTP_API_KEY || null;
 const MAX_TOOL_STEPS = parseInt(process.env.MAX_TOOL_STEPS, 10) || 30;
@@ -527,8 +527,11 @@ function isSuperDangerous(cmd) {
   // NOTE: substring matching - keep patterns specific. Do NOT add patterns like
   // "> /dev" here: it false-positives on the ubiquitous "> /dev/null" redirect.
   const dangerousPatterns = [
-    'rm -rf /', 'rm -rf *', 'format c:', 'dd if=', 'mkfs', 'shutdown', 'del /f /q c:\\',
-    'rd /s /q c:\\', 'rmdir /s /q'
+    'rm -rf /', 'format c:', 'dd if=', 'mkfs', 'del /f /q c:\\',
+    'rd /s /q c:\\',
+    // PowerShell equivalents
+    'remove-item -recurse -force', 'format-volume', 'stop-computer',
+    'clear-disk', 'initialize-disk'
   ];
   return dangerousPatterns.some(p => lower.includes(p));
 }
@@ -659,7 +662,7 @@ function parseSchedule(schedule) {
   let m;
   if ((m = s.match(/^(?:every\s+)?(\d+)\s*(s|sec|secs|seconds)$/))) return { kind: 'interval', ms: Math.max(1000, parseInt(m[1], 10) * 1000) };
   if ((m = s.match(/^(?:every\s+)?(\d+)\s*(m|min|mins|minutes)$/))) return { kind: 'interval', ms: Math.max(60000, parseInt(m[1], 10) * 60000) };
-  if ((m = s.match(/^(?:every\s+)?(\d+)\s*(h|hr|hrs|hours)$/))) return { kind: 'interval', ms: parseInt(m[1], 10) * 3600000 };
+  if ((m = s.match(/^(?:every\s+)?(\d+)\s*(h|hr|hrs|hours)$/))) { const h = parseInt(m[1], 10); if (h <= 0) return null; return { kind: 'interval', ms: h * 3600000 }; }
   if ((m = s.match(/^(?:daily|everyday)\s+(\d{1,2}):(\d{2})$/)) || (m = s.match(/^(\d{1,2}):(\d{2})$/))) {
     const hour = parseInt(m[1], 10);
     const minute = parseInt(m[2], 10);
@@ -1447,7 +1450,7 @@ async function executeToolRaw(name, args, conversation) {
       }
       return await executeToolRaw('run_command', { command: `npx ${effectiveNpx} ${toolName} ${argsToken}`.trim() }, conversation);
     } else {
-      return `[OK] MCP tool "${toolName}" executed locally (no server/npx configured) with args: ${JSON.stringify(toolArgs)}`;
+      return `MCP error: no endpoint configured. Set MCP_SERVER_URLS or MCP_NPX_PKGS in .env, or pass mcp_url/npx_pkg parameters. Args: ${JSON.stringify(toolArgs)}`;
     }
   }
 
@@ -2144,6 +2147,7 @@ async function safeExecuteToolInner(toolCall, conversation) {
 // HTTP approval bridge: set during HTTP streaming so askApproval can forward
 // approval requests to the web UI client instead of failing in non-interactive mode.
 var httpApprovalBridge = null;
+var httpApprovalRefs = 0;
 var approvalSeq = 0;
 var pendingApprovals = new Map(); // id -> { resolve }
 
@@ -2560,6 +2564,7 @@ async function executeTask() {
     else console.log(`\n7coder: ${displayReply}`);
   } catch (err) {
     console.error(`[ERROR] Error: ${err.message}`);
+    process.exitCode = 1;
   }
 }
 
@@ -2810,25 +2815,27 @@ function startHttpServer() {
       return;
     }
 
-    function writeWorkspaceEnv(updates) {
-      const wsEnv = path.join(launchDir, '.env');
-      let existing = {};
-      try { if (fs.existsSync(wsEnv)) existing = require("dotenv").parse(fs.readFileSync(wsEnv)); } catch (e) {}
-      for (const k of Object.keys(updates)) existing[k] = updates[k];
-      const out = Object.keys(existing).map(k => k + "=" + existing[k]).join("\n") + "\n";
-      fs.writeFileSync(wsEnv, out, "utf8");
-    }
-    function keyOk(req) {
-      return !HTTP_API_KEY || req.headers.authorization === `Bearer ${HTTP_API_KEY}`;
-    }
     if (req.method === 'GET' && req.url === '/api/settings') {
-      if (!keyOk(req)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: { message: "Unauthorized" } })); return; }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ endpoint: OPENAI_ENDPOINT, apiKey: OPENAI_API_KEY || "", model: HEAVY_MODEL, profiles: modelProfiles }));
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      const profiles = {};
+      for (const k of Object.keys(modelProfiles)) {
+        const p = modelProfiles[k] || {};
+        profiles[k] = { endpoint: p.endpoint || '', apiKey: (typeof p.apiKey === 'string') ? p.apiKey : '' };
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ endpoint: OPENAI_ENDPOINT, apiKey: OPENAI_API_KEY || '', model: HEAVY_MODEL, profiles }));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/settings') {
-      if (!keyOk(req)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: { message: "Unauthorized" } })); return; }
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
       let body = '';
       req.setEncoding('utf8');
       req.on('data', c => { body += c; });
@@ -2836,50 +2843,59 @@ function startHttpServer() {
         try {
           const j = JSON.parse(body);
           const updates = {};
-          if (typeof j.endpoint === "string" && j.endpoint.trim()) { OPENAI_ENDPOINT = j.endpoint.trim(); updates.OPENAI_ENDPOINT = OPENAI_ENDPOINT; }
-          if (typeof j.apiKey === "string") { OPENAI_API_KEY = j.apiKey; updates.OPENAI_API_KEY = j.apiKey; }
-          if (typeof j.model === "string" && j.model.trim()) { HEAVY_MODEL = j.model.trim(); updates.HEAVY_MODEL = HEAVY_MODEL; }
+          if (typeof j.endpoint === 'string') { OPENAI_ENDPOINT = j.endpoint.trim() || 'https://api.openai.com/v1'; process.env.OPENAI_ENDPOINT = OPENAI_ENDPOINT; updates.OPENAI_ENDPOINT = OPENAI_ENDPOINT; }
+          if (typeof j.apiKey === 'string') { OPENAI_API_KEY = j.apiKey; process.env.OPENAI_API_KEY = OPENAI_API_KEY; updates.OPENAI_API_KEY = OPENAI_API_KEY; }
+          if (typeof j.model === 'string' && j.model.trim()) { HEAVY_MODEL = j.model.trim(); process.env.HEAVY_MODEL = HEAVY_MODEL; updates.HEAVY_MODEL = HEAVY_MODEL; }
           if (Object.keys(updates).length) writeWorkspaceEnv(updates);
           audit({ ts: new Date().toISOString(), type: 'settings', keys: Object.keys(updates) });
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, endpoint: OPENAI_ENDPOINT, apiKeySet: !!OPENAI_API_KEY, model: HEAVY_MODEL }));
+          res.end(JSON.stringify({ ok: true, endpoint: OPENAI_ENDPOINT, model: HEAVY_MODEL, models: modelList() }));
         } catch (e) {
-          res.writeHead(400, { "Content-Type": "application/json" });
+          res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: e.message } }));
         }
       });
       return;
     }
     if (req.method === 'GET' && req.url === '/api/models-config') {
-      if (!keyOk(req)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: { message: "Unauthorized" } })); return; }
-      res.writeHead(200, { "Content-Type": "application/json" });
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ profiles: modelProfiles }));
       return;
     }
     if (req.method === 'POST' && req.url === '/api/models-config') {
-      if (!keyOk(req)) { res.writeHead(401, { "Content-Type": "application/json" }); res.end(JSON.stringify({ error: { message: "Unauthorized" } })); return; }
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
       let body = '';
       req.setEncoding('utf8');
       req.on('data', c => { body += c; });
       req.on('end', () => {
         try {
-          const profiles = JSON.parse(body).profiles;
-          if (!profiles || typeof profiles !== "object" || Array.isArray(profiles)) throw new Error("profiles must be an object");
+          const j = JSON.parse(body);
+          const profiles = j.profiles;
+          if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) throw new Error('profiles must be an object');
           for (const k of Object.keys(profiles)) {
-            const v = profiles[k];
-            if (!k || typeof v !== "object" || Array.isArray(v)) throw new Error("bad profile entry: " + k);
-            if (v.endpoint !== undefined && typeof v.endpoint !== "string") throw new Error("bad endpoint for " + k);
-            if (v.apiKey !== undefined && typeof v.apiKey !== "string") throw new Error("bad apiKey for " + k);
+            const p = profiles[k];
+            if (!p || typeof p !== 'object' || Array.isArray(p)) throw new Error('profile "' + k + '" must be an object');
+            if (p.endpoint !== undefined && typeof p.endpoint !== 'string') throw new Error('profile "' + k + '" endpoint must be a string');
+            if (p.apiKey !== undefined && typeof p.apiKey !== 'string') throw new Error('profile "' + k + '" apiKey must be a string');
           }
-          const sdir = path.join(launchDir, '.7coder');
-          fs.mkdirSync(sdir, { recursive: true });
-          fs.writeFileSync(path.join(sdir, "models.json"), JSON.stringify(profiles, null, 2), "utf8");
+          const wsCfgDir = path.join(launchDir, '.7coder');
+          if (!fs.existsSync(wsCfgDir)) fs.mkdirSync(wsCfgDir, { recursive: true });
+          fs.writeFileSync(path.join(wsCfgDir, 'models.json'), JSON.stringify(profiles, null, 2), 'utf8');
           loadModelProfiles();
-          audit({ ts: new Date().toISOString(), type: 'models_config', models: Object.keys(profiles) });
-          res.writeHead(200, { "Content-Type": "application/json" });
+          audit({ ts: new Date().toISOString(), type: 'models-config', models: Object.keys(profiles) });
+          res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, models: modelList() }));
         } catch (e) {
-          res.writeHead(400, { "Content-Type": "application/json" });
+          res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: e.message } }));
         }
       });
@@ -2919,6 +2935,7 @@ function startHttpServer() {
       });
       return;
     }
+
     if (req.method === 'POST' && req.url === '/v1/chat/completions') {
       if (HTTP_API_KEY) {
         const auth = req.headers.authorization || '';
@@ -3049,6 +3066,26 @@ function startHttpServer() {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'Not found' } }));
     }
+
+    function writeWorkspaceEnv(updates) {
+      const wsEnv = path.join(launchDir, ".env");
+      let existing = {};
+      try { if (fs.existsSync(wsEnv)) existing = require("dotenv").parse(fs.readFileSync(wsEnv)); } catch (e) {}
+      for (const k of Object.keys(updates)) existing[k] = updates[k];
+      // 保留注释和未知行：逐行匹配受管键原地替换，未匹配的行原样保留
+      const outLines = [];
+      const written = new Set();
+      if (fs.existsSync(wsEnv)) {
+        for (const line of fs.readFileSync(wsEnv, "utf8").split(/\r?\n/)) {
+          const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+          if (m && existing[m[1]] !== undefined) { outLines.push(m[1] + "=" + existing[m[1]]); written.add(m[1]); }
+          else outLines.push(line);
+        }
+      }
+      for (const k of Object.keys(existing)) { if (!written.has(k)) outLines.push(k + "=" + existing[k]); }
+      fs.writeFileSync(wsEnv, outLines.join("\n") + "\n", "utf8");
+    }
+
   });
 
   server.listen(HTTP_PORT, HTTP_BIND, () => {

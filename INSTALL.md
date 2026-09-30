@@ -108,7 +108,7 @@ ENABLE_HTTP_SERVER=true    # 等效于 --server
 runtime\node.exe --version
 
 :: 运行基线测试套件（离线可用，跑 mock 端点，不消耗 API 额度）
-set RUN_ONLY=cli,strict
+set RUN_ONLY=cli-exit,oneshot
 runtime\node.exe test\runner.js
 ```
 
