@@ -1,4 +1,4 @@
-// Suite R: real-endpoint comprehensive tests using qwen3.8-max.
+// Suite R: real-endpoint comprehensive tests using qwen3.7-plus.
 // Tests the full pipeline with real AI reasoning, not mocks.
 // Usage: node test/runner-r.js
 const { spawn, spawnSync, execSync } = require('child_process');
@@ -10,7 +10,7 @@ const ROOT = __dirname;
 const IDX = path.join(ROOT, '..', 'index.js');
 const EP = process.env.OPENAI_ENDPOINT || 'https://maas.qianwenaiapi.com/compatible-mode/v1';
 const KEY = process.env.OPENAI_API_KEY || '';
-const MODEL = process.env.REAL_MODEL || 'qwen3.8-max';
+const MODEL = process.env.REAL_MODEL || 'qwen3.7-plus';
 const PORT = 19500;
 const results = [];
 

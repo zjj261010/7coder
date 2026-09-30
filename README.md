@@ -168,7 +168,7 @@ index.js (or in `<workspace>/.7coder/models.json` for per-project overrides):
 
 ```json
 {
-  "qwen3.8-max": { "endpoint": "https://...", "apiKey": "sk-a" },
+  "qwen3.7-plus": { "endpoint": "https://...", "apiKey": "sk-a" },
   "local-llm":    { "endpoint": "http://127.0.0.1:1234/v1" }
 }
 ```

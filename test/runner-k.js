@@ -1,10 +1,10 @@
 // Suite K: REAL-endpoint end-to-end tests (no mocks).
 // Requires env: REAL_TEST=1 plus OPENAI_API_KEY / OPENAI_ENDPOINT / REAL_MODEL
-// (defaults to qwen3.8-max on the qwen compatible-mode endpoint). Skips
+// (defaults to qwen3.7-plus on the qwen compatible-mode endpoint). Skips
 // gracefully when REAL_TEST is unset, so CI stays offline.
 //
 // Usage:
-//   REAL_TEST=1 OPENAI_API_KEY=... OPENAI_ENDPOINT=... REAL_MODEL=qwen3.8-max node test/runner-k.js
+//   REAL_TEST=1 OPENAI_API_KEY=... OPENAI_ENDPOINT=... REAL_MODEL=qwen3.7-plus node test/runner-k.js
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
@@ -17,7 +17,7 @@ const RUN_ONLY = (process.env.RUN_ONLY || '').split(',').map(s => s.trim()).filt
 const REAL = process.env.REAL_TEST === '1';
 const ENDPOINT = process.env.OPENAI_ENDPOINT || 'https://maas.qianwenaiapi.com/compatible-mode/v1';
 const KEY = process.env.OPENAI_API_KEY || '';
-const MODEL = process.env.REAL_MODEL || 'qwen3.8-max';
+const MODEL = process.env.REAL_MODEL || 'qwen3.7-plus';
 const PORT = 18800;
 const results = [];
 
