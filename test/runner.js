@@ -317,7 +317,7 @@ scenarios.push({
       ['adv: computer_use disabled message', tr(log, 'a15') && tr(log, 'a15').c.includes('disabled'), ''],
       ['adv: auto_debug disabled message', tr(log, 'a16') && tr(log, 'a16').c.includes('disabled'), ''],
       ['adv: todo_write creates TODO.md', fs.existsSync(path.join(cwd, 'TODO.md')), ''],
-      ['adv: brief_tool writes summary', fs.existsSync(path.join(cwd, '.summary')), tr(log, 'a18') ? tr(log, 'a18').c : 'no result'],
+      ['adv: brief_tool writes summary into .7coder/summaries', fs.existsSync(path.join(cwd, '.7coder', 'summaries', '.summary')), tr(log, 'a18') ? tr(log, 'a18').c : 'no result'],
       ['adv: notebook edit', tr(log, 'a19') && tr(log, 'a19').c.includes('success'), ''],
       ['adv: worktree created', tr(log, 'a20') && tr(log, 'a20').c.includes('Entered worktree') && fs.existsSync(path.join(cwd, 'wt1')), tr(log, 'a20') ? tr(log, 'a20').c.substring(0, 80) : 'no result'],
       ['adv: process_list returns tasklist', tr(log, 'a21') && tr(log, 'a21').c.includes('PID'), ''],
@@ -490,7 +490,10 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m.port, args: ['--prompt', 'p'], env: { PERMISSION_MODE: 'bypass' }, cwd });
     const bakCount = fs.readdirSync(backupsDir).filter(f => f.endsWith('.bak')).length;
-    record('net: backups pruned to <= 100', bakCount <= 100 && bakCount >= 99, 'count=' + bakCount);
+    // DS-14 policy: per-file retention is 5, global cap is 200. The 103 pad
+    // .bak files don't belong to any timestamped group, so per-file pruning
+    // must NOT evict them; the total just has to stay under the global cap.
+    record('net: pad backups survive per-file prune, total under global cap 200', bakCount >= 103 && bakCount <= 200, 'count=' + bakCount);
     stopMock(m);
   }
 });
@@ -587,6 +590,34 @@ scenarios.push({
       cwd: cwd3, encoding: 'utf8', timeout: 60000
     });
     record('startup: one-shot task failure exits nonzero', r3.status !== 0 && r3.status !== null, 'status=' + r3.status + ' tail=' + String(r3.stderr || '').substring(0, 80));
+  }
+});
+
+scenarios.push({
+  name: 'backup-cap',
+  fn: async () => {
+    const cwd = freshCwd('backup-cap');
+    // backupFile only snapshots files that already exist, so pre-create both
+    // targets; write_file (not append_file) is used because only write_file
+    // goes through backupFile.
+    fs.writeFileSync(path.join(cwd, 'a.txt'), 'seed-a\n');
+    fs.writeFileSync(path.join(cwd, 'b.txt'), 'seed-b\n');
+    const steps = [];
+    for (let i = 1; i <= 7; i++) {
+      steps.push({ role: 'assistant', content: null, tool_calls: [{ id: 'k' + i, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'a.txt', content: 'a-line-' + i + '\n' }) } }] });
+    }
+    steps.push({ role: 'assistant', content: null, tool_calls: [{ id: 'k8', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'b.txt', content: 'b-line-1\n' }) } }] });
+    steps.push({ role: 'assistant', content: 'BACKUP-CAP-DONE' });
+    const m = startMock(steps);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 'cap'], env: { PERMISSION_MODE: 'bypass' }, cwd });
+    const bdir = path.join(cwd, '.7coder', 'backups');
+    const baks = fs.existsSync(bdir) ? fs.readdirSync(bdir).filter(f => f.endsWith('.bak')) : [];
+    const aBaks = baks.filter(f => /^a\.txt\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/.test(f));
+    const bBaks = baks.filter(f => /^b\.txt\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/.test(f));
+    record('backup-cap: a.txt keeps exactly 5 backups after 7 writes (per-file cap)', aBaks.length === 5, 'a=' + aBaks.length + ' all=' + baks.length);
+    record('backup-cap: b.txt backup not evicted by a.txt churn', bBaks.length >= 1, 'b=' + bBaks.length);
+    stopMock(m);
   }
 });
 

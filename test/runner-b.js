@@ -448,6 +448,33 @@ scenarios.push({
   }
 });
 
+// --- B22: brief_tool summary location (DS-15: .7coder/summaries, not root) ---
+scenarios.push({
+  name: 'brief-loc',
+  fn: async () => {
+    const cwd = freshCwd('b-briefloc');
+    fs.mkdirSync(path.join(cwd, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'sub', 'alpha-one.txt'), 'A');
+    fs.writeFileSync(path.join(cwd, 'sub', 'beta-two.md'), 'B');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'bl1', type: 'function', function: { name: 'brief_tool', arguments: '{"folder":"sub"}' } }] },
+      { role: 'assistant', content: 'BRIEF-LOC-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
+    const log = readLog(m.log);
+    const newSum = path.join(cwd, '.7coder', 'summaries', 'sub.summary');
+    const content = fs.existsSync(newSum) ? fs.readFileSync(newSum, 'utf8') : '';
+    const bl1 = tr(log, 'bl1') ? tr(log, 'bl1').c : '';
+    record('brief: summary written to .7coder/summaries/sub.summary', fs.existsSync(newSum), bl1 || 'no result');
+    record('brief: summary lists both files in sub', content.includes('alpha-one.txt') && content.includes('beta-two.md'), JSON.stringify(content.substring(0, 150)));
+    record('brief: no sub.summary dumped in workspace root', !fs.existsSync(path.join(cwd, 'sub.summary')), fs.existsSync(path.join(cwd, 'sub.summary')) ? 'root sub.summary exists!' : '');
+    record('brief: tool result reports the new summaries path', bl1.includes('.7coder') && bl1.includes('summaries') && bl1.includes('sub.summary'), bl1 || 'no result');
+    stopMock(m);
+  }
+});
+
+
 // ====================== RUNNER ======================
 // --- B9: LMStudio-style in-stream context-overflow error surfaces ---
 scenarios.push({

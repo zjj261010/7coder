@@ -1313,9 +1313,15 @@ async function executeToolRaw(name, args, conversation) {
   if (name === 'brief_tool') {
     try {
       const folderRel = sanitizePath(args.folder);
-      const summaryPath = path.join(launchDir, `${folderRel}.summary`);
+      const summaryPath = path.join(launchDir, '.7coder', 'summaries', folderRel + '.summary');
       const files = recursiveReaddir(args.folder);
-      const summary = `Summary of ${args.folder} (${files.length} files):\n${files.join('\n')}\n\nGenerated at ${new Date().toISOString()}`;
+      const cap = 2000;
+      let body = files.join('\n');
+      if (files.length > cap) {
+        body = files.slice(0, cap).join('\n') + '\n...(truncated, ' + (files.length - cap) + ' more files)';
+      }
+      const summary = `Summary of ${args.folder} (${files.length} files):\n${body}\n\nGenerated at ${new Date().toISOString()}`;
+      fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
       fs.writeFileSync(summaryPath, summary, 'utf8');
       return `Summary written to ${summaryPath}`;
     } catch (e) { return `Brief error: ${e.message}`; }
@@ -2376,9 +2382,6 @@ const backupsDir = path.join(launchDir, '.7coder', 'backups');
 
 function backupFile(fullPath) {
   try {
-    // Opportunistic pruning so the backup dir stays bounded even when the
-    // current target doesn't exist yet (no backup would be created).
-    pruneBackups();
     if (!fs.existsSync(fullPath)) return null;
     const rel = path.relative(launchDir, fullPath);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -2397,17 +2400,42 @@ function backupFile(fullPath) {
   }
 }
 
-// Keep at most 100 backup files (oldest get removed first).
+// Two-level backup retention: keep the newest 5 backups PER source file (so
+// heavy editing of one file can no longer evict another file's history), then
+// a global cap of 200 files across the whole backup dir (oldest removed first).
+// Files not named <prefix>.<timestamp>.bak are exempt from the per-file tier
+// but still count toward the global cap.
 function pruneBackups() {
   try {
+    // Greedy (.+) so the prefix runs up to the LAST timestamp: relative paths
+    // may themselves contain dots (e.g. "lib.v2/util.2026-...T...Z.bak").
+    const stampRe = /^(.+)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/;
     const rels = recursiveReaddir('.7coder/backups').filter(r => r.endsWith('.bak'));
-    if (rels.length <= 100) return;
-    const withTimes = rels.map(r => {
+    const groups = {};
+    const loose = [];
+    for (const r of rels) {
       const full = path.join(launchDir, r);
-      return { full, mt: fs.statSync(full).mtimeMs };
-    }).sort((a, b) => a.mt - b.mt);
-    for (let i = 0; i < withTimes.length - 100; i++) {
-      try { fs.unlinkSync(withTimes[i].full); } catch (e) {}
+      let mt;
+      try { mt = fs.statSync(full).mtimeMs; } catch (e) { continue; }
+      const m = path.relative(backupsDir, full).match(stampRe);
+      if (m) {
+        if (!groups[m[1]]) groups[m[1]] = [];
+        groups[m[1]].push({ full, mt });
+      } else {
+        loose.push({ full, mt });
+      }
+    }
+    const kept = [];
+    for (const pfx in groups) {
+      const list = groups[pfx].sort((a, b) => a.mt - b.mt);
+      for (let i = 0; i < list.length - 5; i++) {
+        try { fs.unlinkSync(list[i].full); } catch (e) {}
+      }
+      for (let i = Math.max(0, list.length - 5); i < list.length; i++) kept.push(list[i]);
+    }
+    const all = kept.concat(loose).sort((a, b) => a.mt - b.mt);
+    for (let i = 0; i < all.length - 200; i++) {
+      try { fs.unlinkSync(all[i].full); } catch (e) {}
     }
   } catch (e) {}
 }
