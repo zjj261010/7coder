@@ -475,6 +475,63 @@ scenarios.push({
 });
 
 
+// --- B23: per-request approval isolation (P0-3: concurrent streams must not
+// cross-wire or lose approvals; ids carry per-request prefixes) ---
+scenarios.push({
+  name: 'approval-iso',
+  fn: async () => {
+    const cwd = freshCwd('b-appriso');
+    const tc = (id, file) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: file, content: 'ISO-' + file }) } }] });
+    const m = startMock([tc('iso1', 'a.txt'), tc('iso2', 'b.txt'), 'FINAL-A', 'X', 'FINAL-B', 'X2']);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 421;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'k', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', HEAVY_MODEL: 'iso-model', LIGHT_MODEL: 'iso-model', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    const openStream = () => new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path: '/v1/chat/completions',
+        headers: { 'Content-Type': 'application/json' } },
+        res => { const s = { text: '' }; res.setEncoding('utf8'); res.on('data', d => s.text += d); resolve(s); });
+      req.on('error', reject);
+      req.write(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'iso test' }] }));
+      req.end();
+    });
+    const waitFor = async (obj, needle, ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) {
+        if (obj.text.includes(needle)) return true;
+        await new Promise(r => setTimeout(r, 100));
+      }
+      return obj.text.includes(needle);
+    };
+    const idIn = (obj) => { const mm = obj.text.match(/"approval_request":\{"id":"([^"]+)"/); return mm ? mm[1] : null; };
+    try {
+      await new Promise(r => setTimeout(r, 2500));
+      const sA = await openStream();
+      const gotA = await waitFor(sA, 'approval_request', 15000);
+      const sB = await openStream();
+      const gotB = await waitFor(sB, 'approval_request', 15000);
+      const idA = idIn(sA), idB = idIn(sB);
+      record('iso: both concurrent streams got their own approval request', gotA && gotB, 'A=' + gotA + ' B=' + gotB + ' tailA=' + sA.text.substring(sA.text.length - 120));
+      record('iso: approval ids differ and carry per-request prefixes', !!idA && !!idB && idA !== idB && /^apr-[a-z0-9]{6}-/.test(idA) && /^apr-[a-z0-9]{6}-/.test(idB), 'idA=' + idA + ' idB=' + idB);
+      const okA = await httpReq(srvPort, 'POST', '/api/approve', { id: idA, approved: true });
+      const doneA = await waitFor(sA, '[DONE]', 20000);
+      record('iso: approving A completes only A', okA.status === 200 && doneA, 'status=' + okA.status + ' doneA=' + doneA);
+      await new Promise(r => setTimeout(r, 1200));
+      record('iso: B stays pending while only A was approved', !sB.text.includes('[DONE]'), 'B done prematurely: ' + sB.text.includes('[DONE]'));
+      const okB = await httpReq(srvPort, 'POST', '/api/approve', { id: idB, approved: true });
+      const doneB = await waitFor(sB, '[DONE]', 20000);
+      record('iso: approving B then completes B', okB.status === 200 && doneB, 'status=' + okB.status + ' doneB=' + doneB);
+      record('iso: both writes actually executed', fs.existsSync(path.join(cwd, 'a.txt')) && fs.existsSync(path.join(cwd, 'b.txt')), 'a=' + fs.existsSync(path.join(cwd, 'a.txt')) + ' b=' + fs.existsSync(path.join(cwd, 'b.txt')));
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
+
 // ====================== RUNNER ======================
 // --- B9: LMStudio-style in-stream context-overflow error surfaces ---
 scenarios.push({

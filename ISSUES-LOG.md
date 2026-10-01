@@ -6,7 +6,7 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-01）：单文件 index.js（~3370 行），v2.16.0，DS 修复轮后 A–J 全绿 391 项（A 75/B 93/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-01 深夜）：单文件 index.js（~3410 行），v2.16.0，P0-3/DS-14/15 轮后 A–J 全绿 403 项（A 77/B 103/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 ---
@@ -93,7 +93,7 @@
 |---|------|------|------|
 | P0-1 | test/runner*.js ×10 | `rmrf` 自递归（调自身而非 fs.rmSync），工作区清理静默无效 | ✅ 22d2845 全部改为 fs.rmSync（保留 Node 13 回退）；"目录确实被删"专项断言未加 → 断言部分并入 OPT-11 |
 | P0-2 | index.js:665 | cron `every 0h` → ms=0 → armNext 同步无限递归崩溃 | 🔶 代码已修（`h <= 0` 返回 null）；"every 0h 被拒绝"断言未补（现仅 bogus 用例） |
-| P0-3 | index.js:2149 | HTTP 审批桥为模块级单例：并发流式客户端互相覆盖/摘除，审批丢失或串线 | ⬜ 未处理。改法：bridge 按请求创建经 processWithTools opts 传入；pendingApprovals 按连接隔离；补并发审批测试 |
+| P0-3 | index.js:2181-2199, 3060-3098 | HTTP 审批桥为模块级单例：并发流式客户端互相覆盖/摘除，审批丢失或串线 | ✅ 主会话实施（2026-10-01 深夜）：桥改为按请求局部对象，经 processWithTools opts.approvalBridge → safeExecuteTool → safeExecuteToolInner → askApproval 全链透传（workflow 内层经 executeToolRaw 第 4 参）；审批 id 带 6 位随机连接前缀防跨连接抢答；请求结束 dispose 清理未决审批；子代理/REPL/非流式路径行为不变；新增 approval-iso 并发场景 6 项断言（双流各得审批、id 前缀互异、批准 A 仅完成 A、B 保持挂起、批 B 后完成、写入真实落地） |
 | P0-4 | index.js（GET /api/settings） | 明文下发 apiKey（未设 HTTP_API_KEY 时本机任意进程可读） | ⛔ 用户决策（2026-09-30）：不修，与使用场景无关 |
 
 ### P1 — 中
@@ -142,11 +142,11 @@
 | # | 方向 | 内容 | 状态 |
 |---|------|------|------|
 | OPT-1 | 安全 | 审计日志参数脱敏（=P2-5） | ⬜ |
-| OPT-2 | 安全 | 未设 HTTP_API_KEY 时对写操作类 /api/*（settings/models-config/mode/sessions/save/delete/open/approve）默认拒绝或一次性确认 | ⬜（注意：P0-4 已⛔，本条是独立决策点，实施前先问用户） |
+| OPT-2 | 安全 | 未设 HTTP_API_KEY 时对写操作类 /api/* 默认拒绝或一次性确认 | ⛔ 用户决策（2026-10-01）：维持现状不修——本机个人工具，loopback 默认 + 文档已有 LAN 警告；如未来需 LAN 长期暴露再重开（含 .env 重写劫持上游的升级说明，见 DS 系列核对表） |
 | OPT-3 | 结构 | index.js 拆分 tools/ + http-server.js + repl.js + security.js + context.js | ⬜（当前 ~3240 行；Win7/Node13 约束下需保持单入口） |
 | OPT-4 | 测试 | 10 个 runner 公共件（rmrf/runCli/startMock/freshCwd）抽 test/_shared.js | ⬜（P0-1 正是复制粘贴的代价） |
 | OPT-5 | 测试 | test/ 残渣清理：现存 313 个 cur-script-/mock-log-* 文件 + 222 个 w-* 目录；runner 结束时自清理 | ⬜ |
-| OPT-6 | 并发 | 审批/会话按连接隔离后支持多客户端并发（依赖 P0-3） | ⬜ |
+| OPT-6 | 并发 | 多客户端并发的进一步增强（依赖的 P0-3 已关闭） | ⬜（审批隔离已就绪；剩余为会话保存的并发语义） |
 | OPT-7 | 测试 | RUN_ONLY 空匹配时非零退出 | ✅ 随 DS-9 关闭（10 个 runner exit 1） |
 | OPT-8 | 测试 | 补回归断言：cron `every 0h` 拒绝（P0-2 剩余半）、run_tests_tool 真换行（随 P1-1）、writeWorkspaceEnv 注释保留（P1-4 剩余半）、rmrf 真删目录（P0-1 剩余半） | ⬜ |
 | OPT-9 | 文档 | 冻结的历史文档（KNOWN-ISSUES.md、REVIEW-CHECKLIST-2026-09-30.md）移入 docs/history/ 或删除 | ⬜ |
@@ -179,8 +179,8 @@
 | DS-11 | index.js:1781 | 快照 catch 静默吞错。**半不实**：报告称"snapshot 照旧赋值→文案误报"不成立（赋值在 update-ref 成功后才执行，execSync 失败即抛→catch→snapshot=""→文案正确省略）；成立的部分是失败无任何提示 | ✅ catch 加 console.warn；runner-b:787 快照断言补 for-each-ref 实校验（不再仅查字符串） |
 | DS-12 | index.js:2150 | httpApprovalRefs 死变量（声明后从未读写） | ✅ 死变量 httpApprovalRefs 已删（grep 确认无引用） |
 | DS-13 | index.js:1769-1775 | 自动提交信息统计全量 audit.jsonl（跨会话累积），新任务会引用几个月前的工具名，无信息量 | ⬜ 暂不修（低价值；根治需 audit 加 runId，随 OPT-3 结构调整一并考虑） |
-| DS-14 | index.js:2373-2385 | 备份上限 100 为**全目录共享**：写几个大文件即挤掉其它文件的全部历史备份，用户不知情（=旧 P2-1 升级：改为每文件 N 份 + 总量上限） | ⬜ 本轮不修 |
-| DS-15 | index.js:1309-1318 | brief_tool 的 `.summary` 落工作区根（=旧 P2-1 家族）且无条数上限 | ⬜ 本轮不修（随 P2-1 收纳一并做） |
+| DS-14 | index.js:2377-2412 | 备份上限 100 为**全目录共享**：写几个大文件即挤掉其它文件的全部历史备份（=旧 P2-1 升级） | ✅ GLM-5.3-Flash 完成且本轮真实落盘（1726b14）：每文件留最新 5 份 + 全局 200 兜底；backup-cap 场景断言 a.txt 7 写留 5、b.txt 不被挤掉；主会话 diff 终检 + 独立复跑 |
+| DS-15 | index.js:1313-1323 | brief_tool 的 `.summary` 落工作区根（=旧 P2-1 家族）且无条数上限 | ✅ GLM-5.3-Flash 完成（1726b14）：改写 .7coder/summaries/<folder>.summary + 2000 条截断；brief-loc 场景 4 项断言 |
 
 ### DS 系列执行记录（2026-10-01 晚：GLM-5.3-Flash 工作流 + 主会话终检）
 

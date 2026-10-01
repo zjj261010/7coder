@@ -1059,7 +1059,7 @@ Reply ONLY with YES or NO.`;
 // ====================== TOOL EXECUTION ======================
 // `conversation` is the current message array (used by snip_tool); tools that
 // spawn their own sub-conversations must NOT push into it mid-tool-call.
-async function executeToolRaw(name, args, conversation) {
+async function executeToolRaw(name, args, conversation, approvalBridge) {
   if (name === 'read_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path || ''));
@@ -1685,7 +1685,7 @@ async function executeToolRaw(name, args, conversation) {
         continue;
       }
       const stepArgs = (st.args && typeof st.args === 'object' && !Array.isArray(st.args)) ? st.args : {};
-      const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation);
+      const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation, approvalBridge);
       const firstLine = String(res).split('\n')[0];
       transcript.push('step ' + (i + 1) + ' (' + toolName + '): ' + firstLine.substring(0, 160));
       if (!st.optional && /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Edit error|Workflow error)/.test(String(res))) {
@@ -2050,12 +2050,12 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
 // ====================== SAFE TOOL EXECUTION ======================
 // Auditing wrapper: records every tool call (args preview, status, duration)
 // to .7coder/audit.jsonl, then delegates to the real implementation.
-async function safeExecuteTool(toolCall, conversation) {
+async function safeExecuteTool(toolCall, conversation, approvalBridge) {
   const t0 = Date.now();
   const func = toolCall.function;
   let argsPreview = {};
   try { const a = JSON.parse(func.arguments || '{}'); for (const k of Object.keys(a)) argsPreview[k] = String(JSON.stringify(a[k])).substring(0, 200); } catch (e) { argsPreview = { raw: String(func.arguments || '').substring(0, 200) }; }
-  const res = await safeExecuteToolInner(toolCall, conversation);
+  const res = await safeExecuteToolInner(toolCall, conversation, approvalBridge);
   const first = String(res).split('\n')[0];
   const status = /^BLOCKED/.test(res) ? 'blocked'
     : /declined/i.test(res) ? 'declined'
@@ -2065,7 +2065,7 @@ async function safeExecuteTool(toolCall, conversation) {
   return res;
 }
 
-async function safeExecuteToolInner(toolCall, conversation) {
+async function safeExecuteToolInner(toolCall, conversation, approvalBridge) {
   const func = toolCall.function;
   let args;
   try { args = JSON.parse(func.arguments || '{}'); } catch (e) { return `Parse error: ${e.message}`; }
@@ -2089,7 +2089,7 @@ async function safeExecuteToolInner(toolCall, conversation) {
 
     if (!protectedRead && (AUTO_SAFE_TOOLS.includes(name) || (name === 'write_file' && args.path && args.path.toLowerCase().includes('7coder.md')))) {
       console.log(`[TOOL] Auto-executing safe tool: ${name}`);
-      return await executeToolRaw(name, args, conversation);
+      return await executeToolRaw(name, args, conversation, approvalBridge);
     }
 
     if (['run_command', 'bash_tool', 'powershell_tool', 'task_create_tool'].includes(name)) {
@@ -2102,7 +2102,7 @@ async function safeExecuteToolInner(toolCall, conversation) {
 
     if (mode === 'bypass' || DANGER_MODE) {
       console.log(`[TOOL] [DANGER MODE] Executing tool: ${name}`);
-      return await executeToolRaw(name, args, conversation);
+      return await executeToolRaw(name, args, conversation, approvalBridge);
     }
 
     // Deterministic risk classes (A8): the common tools need no light-model
@@ -2164,7 +2164,7 @@ async function safeExecuteToolInner(toolCall, conversation) {
       if (workflowStepDepth > 0 && !protectedWrite) {
         console.log('[PERM] workflow inner step inherits plan approval: ' + name);
       } else {
-      const approved = await askApproval(`Execute ${name}${protectedWrite ? ' (PROTECTED FILE - make sure you really want this)' : ''}? (y/n) `);
+      const approved = await askApproval(`Execute ${name}${protectedWrite ? ' (PROTECTED FILE - make sure you really want this)' : ''}? (y/n) `, approvalBridge);
       if (!approved) return 'User declined the tool action.';
       }
     }
@@ -2179,15 +2179,17 @@ async function safeExecuteToolInner(toolCall, conversation) {
 }
 
 // ====================== APPROVAL ======================
-// HTTP approval bridge: set during HTTP streaming so askApproval can forward
-// approval requests to the web UI client instead of failing in non-interactive mode.
-var httpApprovalBridge = null;
+// HTTP approval bridge registry. Each streaming HTTP request creates its OWN
+// bridge object (see /v1/chat/completions) and threads it down through
+// processWithTools -> safeExecuteTool -> askApproval, so concurrent clients
+// can never overwrite/detach each other's approvals. Ids carry a per-request
+// random prefix so one connection cannot answer another's pending approval.
 var approvalSeq = 0;
-var pendingApprovals = new Map(); // id -> { resolve }
+var pendingApprovals = new Map(); // id -> resolve
 
-async function askApproval(question) {
-  if (httpApprovalBridge) {
-    return httpApprovalBridge.ask(question);
+async function askApproval(question, approvalBridge) {
+  if (approvalBridge) {
+    return approvalBridge.ask(question);
   }
   if (!INTERACTIVE || rlClosed) {
     console.log(`\n[PERM] ${question} (auto-skipped in non-interactive mode)`);
@@ -2306,6 +2308,9 @@ async function processWithTools(currentMessages, opts = {}) {
   // stop the run at the next step/tool boundary instead of running to
   // completion for a ghost client.
   const cancelled = opts.cancel || (() => false);
+  // Per-request approval bridge (P0-3): threaded down to askApproval so
+  // concurrent streaming clients each talk to their own SSE connection.
+  const approvalBridge = opts.approvalBridge || null;
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     if (cancelled()) return '[aborted: client disconnected]';
     await compressConversationIfNeeded(currentMessages);
@@ -2329,7 +2334,7 @@ async function processWithTools(currentMessages, opts = {}) {
       const calls = assistantMsg.tool_calls;
       if (calls.length > 1 && calls.every(tc => READ_ONLY.has(tc.function.name))) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages).catch(e => 'Tool error: ' + e.message)));
+        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge).catch(e => 'Tool error: ' + e.message)));
         for (let i = 0; i < calls.length; i++) {
           currentMessages.push({ role: 'tool', tool_call_id: calls[i].id, content: capToolResult(results[i]) });
         }
@@ -2337,7 +2342,7 @@ async function processWithTools(currentMessages, opts = {}) {
       }
       for (const tc of calls) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const result = await safeExecuteTool(tc, currentMessages);
+        const result = await safeExecuteTool(tc, currentMessages, approvalBridge);
         currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(result) });
       }
       continue;
@@ -3052,28 +3057,44 @@ function startHttpServer() {
                 clientGone = true;
               }
             };
-            // HTTP approval bridge: forward approval requests to the web UI client.
-            // askApproval detects this bridge and uses it instead of failing silently.
-            httpApprovalBridge = {
+            // Per-request approval bridge (P0-3): local to THIS streaming
+            // response, threaded into processWithTools -> askApproval.
+            // Concurrent clients each get their own bridge, so one finishing
+            // or disconnecting can never detach another's approvals. Ids
+            // carry a random per-request prefix so /api/approve cannot be
+            // answered cross-connection by id guessing.
+            const approvalBridge = {
+              prefix: 'apr-' + Math.random().toString(36).substring(2, 8) + '-',
+              pending: [], // { id, timer }
               ask: function (question) {
+                const bridge = this;
                 return new Promise(function (resolve) {
-                  var id = 'apr-' + (++approvalSeq);
-                  var r = JSON.stringify({ approval_request: { id: id, question: question } });
+                  const id = bridge.prefix + (++approvalSeq);
+                  const r = JSON.stringify({ approval_request: { id: id, question: question } });
                   try { res.write('data: ' + r + '\n\n'); } catch (e) { resolve(false); return; }
                   pendingApprovals.set(id, resolve);
-                  setTimeout(function () {
+                  const timer = setTimeout(function () {
                     if (pendingApprovals.has(id)) { pendingApprovals.delete(id); resolve(false); }
                   }, 120000);
+                  bridge.pending.push({ id: id, timer: timer });
                 });
+              },
+              dispose: function () {
+                for (const p of this.pending) {
+                  clearTimeout(p.timer);
+                  const resolve = pendingApprovals.get(p.id);
+                  if (resolve) { pendingApprovals.delete(p.id); resolve(false); }
+                }
+                this.pending = [];
               }
             };
             const ka = setInterval(() => {
               if (clientGone || res.destroyed) { clearInterval(ka); return; }
               try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; clearInterval(ka); }
             }, 5000);
-            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null), onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: args } }, null) });
+            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null), onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: args } }, null), approvalBridge: approvalBridge });
             clearInterval(ka);
-            httpApprovalBridge = null;
+            approvalBridge.dispose();
             // Give the socket-close event a moment to land when the client
             // aborted at the very end of the run - then skip the summary.
             await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
