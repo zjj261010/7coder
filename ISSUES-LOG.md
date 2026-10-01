@@ -155,6 +155,55 @@
 
 ---
 
+## 2026-10-01（下午）—— deepseek4.1flash 审阅报告核对（DS 系列）
+
+> 输入：`deepseek4.1flash审阅.md`（51KB，含其自行撤回的 P0-1 误判）。
+> 核对方式：逐条对照当前代码验证（本会话 2026-10-01），非转述。
+> 总评：报告整体质量高、自我纠错诚实（P0-1 撤回正确，8 个工具确实全部可达）；
+> 实测部分与本地一致（A–J 390/390、B 现为 93 项）。但仍有 **4 条不实/过实** 与 **1 条半不实**，见下表"报告不实条目"。
+
+### 核对为真的新问题（DS 系列，已按风险分级）
+
+| # | 位置 | 问题（核对结论） | 状态 |
+|---|------|------|------|
+| DS-1 | index.js:84-89, 3160 | flushExit(code) 直接 process.exit(code)，一次性任务失败路径 exitCode=1 被 3160 的 flushExit(0) 覆盖——脚本化调用无法感知失败（报告实测复现，代码核对成立；=旧 P1-5 的"剩余半"实为未修） | 🔧 本轮指派 GLM-5.3-Flash |
+| DS-2 | index.js:2992, 3044 | 流式 chunk 与非流式响应的 model 字段硬编码 HEAVY_MODEL，忽略请求的 model（reqModel 已解析但未传入）——多模型 UI 读到错误模型名 | 🔧 本轮指派 |
+| DS-3 | index.js:2616 | /api/info 不返回 version，webui 恒显 "v?"（=旧 P1-2，复核仍在） | 🔧 本轮指派 |
+| DS-4 | index.js:1739-1744 | git_status_tool 口径双计："M " 同时计入 staged 与 modified；"MM" 同样（=旧 P2-11，复核仍在）。修复需同步对齐 runner-b git-integration 断言 | 🔧 本轮指派（含测试对齐） |
+| DS-5 | index.js:1569-1571 | escapeSendKeys 先转义元字符后插入 {ENTER}/{TAB}，占位符花括号是"生"的：`type_text("{ENTER}\nx")` 会凭空多按一次回车 | 🔧 本轮指派（单遍映射重写） |
+| DS-6 | test/runner-r.js:11-14 | 无 REAL_TEST 跳过守卫（runner-k 有），离线必跑出 1/10 红 + 退出码 1；且未被 package.json scripts 引用 | 🔧 本轮指派（守卫 + scripts 入口） |
+| DS-7 | test/runner-g.js:278 | 恒真断言：`JSON.stringify([].concat(...[]).sort()) === '[]' \|\|` 左支永真，供应链检查形同虚设（同文件另有 3 处裸 true 断言，威胁低） | 🔧 本轮指派（删左支） |
+| DS-8 | test/mock-server.js:9, chaos-mock.js:14 | `'\\mock-log-'` 字面反斜杠 vs runner 端 path.join——POSIX 上文件名永不一致，所有基于 mock 日志的断言全灭（与 C4 目标冲突） | 🔧 本轮指派 |
+| DS-9 | 全部 runner | RUN_ONLY 空匹配 0/0 → exit 0 假绿（=OPT-7，报告复核确认结构成立） | 🔧 本轮指派（10 个 runner） |
+| DS-10 | README.md:130-131, 185, 191；LICENSE:1 | README 称鼠标/键盘注入"not implemented"（A7 已实现，自相矛盾）；"non-streaming UI"（流式早已支持）；"no modern JS syntax"（=旧 P2-8）；LICENSE 标题 "Sub-Revision 3 (SPL-R5 SR2)" 同行自相矛盾 | 🔧 本轮指派 |
+| DS-11 | index.js:1781 | 快照 catch 静默吞错。**半不实**：报告称"snapshot 照旧赋值→文案误报"不成立（赋值在 update-ref 成功后才执行，execSync 失败即抛→catch→snapshot=""→文案正确省略）；成立的部分是失败无任何提示 | 🔧 本轮指派（仅加 warn；顺带补 runner-b:787 的 ref 存在性断言） |
+| DS-12 | index.js:2150 | httpApprovalRefs 死变量（声明后从未读写） | 🔧 本轮指派 |
+| DS-13 | index.js:1769-1775 | 自动提交信息统计全量 audit.jsonl（跨会话累积），新任务会引用几个月前的工具名，无信息量 | ⬜ 暂不修（低价值；根治需 audit 加 runId，随 OPT-3 结构调整一并考虑） |
+| DS-14 | index.js:2373-2385 | 备份上限 100 为**全目录共享**：写几个大文件即挤掉其它文件的全部历史备份，用户不知情（=旧 P2-1 升级：改为每文件 N 份 + 总量上限） | ⬜ 本轮不修 |
+| DS-15 | index.js:1309-1318 | brief_tool 的 `.summary` 落工作区根（=旧 P2-1 家族）且无条数上限 | ⬜ 本轮不修（随 P2-1 收纳一并做） |
+
+### 报告中不实 / 过实的条目（记录在案，防再引用）
+
+| 报告条目 | 核对结论 |
+|---|---|
+| P1-8 ask_user 在服务端挂起 | **不成立**：其所述暴露面（环境变量 ENABLE_HTTP_SERVER=true 且未带 --server）同样进入 main() 的 `if (ENABLE_HTTP_SERVER)` 分支（index.js:3139）→ rl.close() → rlClosed=true → 1303 行守卫返回 skipped。三条路径（--server / env 开关 / stdin EOF）均已覆盖 |
+| T11 kill-orphans.ps1 "对全机所有 node.exe 执行 Stop-Process" | **过实**：脚本按命令行正则过滤（mock-server/chaos-mock/cur-script/7coder index.js --server），不匹配的不杀；"硬编码路径"亦不实（正则仅含相对模式） |
+| "本工作区没有 .git（只有 .gitignore）" | **不实**：本仓库 git 正常（当日多次提交推送）；其"残渣已提交进仓库"的推断已由报告自行标注未证实 |
+| 第七节前言 "git-integration 4 条与 tests-runner 2 条现在应当全部失败" | **报告内部残留矛盾**：与同报告实测 93/93 直接冲突，系撤回 P0-1 前的旧文本未清理 |
+| P0-2 明文密钥（GET /api/settings 与 /api/models-config） | 行为属实，但**用户已决策 ⛔（2026-09-30，与使用场景无关）**；models-config GET 同类，维持 ⛔ 一并记录 |
+| P0-4 无 key 时管理接口裸奔 | 属实，=OPT-2；报告补充的".env 重写可劫持上游"升级说明已并入 OPT-2 描述。**维持待用户决策，不自行实施** |
+| P0-3 审批桥全局单例 | 属实（复核 index.js:2149/3001/3020），维持 ⬜。**本轮不指派给弱模型**（涉及 processWithTools 管线改造 + 并发测试，单独一轮实施） |
+
+### 与既有条目的状态联动
+
+- 旧 P1-5（退出码）由 🔶 改判：代码侧从未真正修复（flushExit 吞码），本轮 DS-1 指派重修。
+- 旧 P2-11（git 口径）= DS-4，升为本轮修复。
+- 旧 P1-2（version）= DS-3、旧 P2-8（README 语法描述）并入 DS-10、OPT-7 = DS-9：均转 🔧。
+- 报告确认已修复项（cron 0h、run_tests 换行、webui 持久化、writeWorkspaceEnv 注释、--prompt "" fail-fast）与 ISSUES-LOG 现状一致，无需变动。
+- KNOWN-ISSUES 373→390 计数过时：该文档已冻结，本文件头部已是实测新数，无需动作（OPT-10 自动汇总后彻底根治）。
+
+---
+
 ## 2026-10-01 —— HTTP 路由丢失事故（提交 22d2845）
 
 > 夜间排查 settings-api 场景挂起时发现，为历次拼接（splice）操作累积损伤的总爆发。
