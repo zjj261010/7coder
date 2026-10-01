@@ -84,7 +84,10 @@ REPL commands: /clear, /undo <file>, /btw <note>, /execute-task-now, /bye
 function flushExit(code) {
   const pending = () => (process.stdout.writableLength || 0) + (process.stderr.writableLength || 0);
   const deadline = Date.now() + 2000; // never hang if a stream never drains
-  const tryExit = () => { if (pending() === 0 || Date.now() > deadline) process.exit(code); else setTimeout(tryExit, 50); };
+  // An explicit nonzero code wins; otherwise a process.exitCode set by a failed
+  // task must survive the flush (success paths pass 0 and stay 0).
+  const exitWith = code || process.exitCode || 0;
+  const tryExit = () => { if (pending() === 0 || Date.now() > deadline) process.exit(exitWith); else setTimeout(tryExit, 50); };
   tryExit();
 }
 
@@ -146,6 +149,7 @@ const MCP_NPX_PKGS = (process.env.MCP_NPX_PKGS || '').split(',').map(s => s.trim
 const ENABLE_AUTO_DEBUG = process.env.ENABLE_AUTO_DEBUG === 'true';
 const DEBUG_TEST_MINUTES = parseInt(process.env.DEBUG_TEST_MINUTES, 10) || 3;
 const BICKER_ROUNDS = parseInt(process.env.BICKER_ROUNDS, 10) || 5;
+const APP_VERSION = require('./package.json').version;
 
 // Structured audit log (D5): every tool call and permission-mode change is
 // appended as one JSON line to .7coder/audit.jsonl. Disable with AUDIT_LOG=false.
@@ -1566,9 +1570,34 @@ async function executeToolRaw(name, args, conversation) {
       fs.writeFileSync(file, ps, 'utf8');
       child_process.execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${file}"`, { stdio: 'ignore', timeout: 30000 });
     };
-    const escapeSendKeys = (text) => String(text)
-      .replace(/([+^%~(){}[\]])/g, '{$1}')
-      .replace(/\r\n/g, '{ENTER}').replace(/\r|\n/g, '{ENTER}').replace(/\t/g, '{TAB}');
+    const escapeSendKeys = (text) => {
+      // Single pass, in order: \r\n and \r and \n -> {ENTER} (CRLF collapses to
+      // one ENTER), \t -> {TAB}, then brace-escape SendKeys metacharacters.
+      // Escaping AFTER newline insertion would leave raw braces inside {ENTER}
+      // placeholders and SendKeys would re-interpret them (extra key presses).
+      const s = String(text);
+      let out = '';
+      for (let i = 0; i < s.length; i++) {
+        const c = s.charAt(i);
+        if (c === '\r') {
+          if (s.charAt(i + 1) === '\n') i++; // consume the \n of a CRLF pair
+          out += '{ENTER}';
+        } else if (c === '\n') {
+          out += '{ENTER}';
+        } else if (c === '\t') {
+          out += '{TAB}';
+        } else if (c === '{') {
+          out += '{{}';
+        } else if (c === '}') {
+          out += '{}}';
+        } else if ('+^%~()[]'.indexOf(c) !== -1) {
+          out += '{' + c + '}';
+        } else {
+          out += c;
+        }
+      }
+      return out;
+    };
     if (action === 'mouse_move' || action === 'click') {
       if (process.platform !== 'win32') return `[WARN] ${action} is Windows-only in this build (got ${process.platform}).`;
       const x = Math.max(0, Math.floor(Number(args.x) || 0));
@@ -1739,7 +1768,7 @@ function inGitRepo() {
       for (const l of linesN) {
         const x = l.charAt(0), y = l.charAt(1);
         if (x !== " " && x !== "?") counts.staged++;
-        if (y === "M" || x === "M") counts.modified++;
+        if (y !== " " && y !== "?") counts.modified++;
         if (l.startsWith("??")) counts.untracked++;
       }
       let out = "[GIT] branch " + branch + " | last: " + last + " | staged:" + counts.staged + " modified:" + counts.modified + " untracked:" + counts.untracked;
@@ -1778,7 +1807,7 @@ function inGitRepo() {
     try {
       // Pre-commit snapshot for recovery: stash create keeps it retrievable without touching the tree
       let snapshot = "";
-      try { const sh = git("stash create").trim(); if (sh) { git("update-ref -m \"7coder pre-commit snapshot\" refs/7coder/snapshots/" + sh + " " + sh, { stdio: "pipe" }); snapshot = sh; } } catch (e) {}
+      try { const sh = git("stash create").trim(); if (sh) { git("update-ref -m \"7coder pre-commit snapshot\" refs/7coder/snapshots/" + sh + " " + sh, { stdio: "pipe" }); snapshot = sh; } } catch (e) { console.warn('[WARN] pre-commit snapshot failed: ' + e.message); }
       if (args.stage_all !== false) git("add -A");
       const staged = git("diff --cached --name-only").trim();
       if (!staged) return "[GIT] nothing to commit (no staged changes).";
@@ -2147,7 +2176,6 @@ async function safeExecuteToolInner(toolCall, conversation) {
 // HTTP approval bridge: set during HTTP streaming so askApproval can forward
 // approval requests to the web UI client instead of failing in non-interactive mode.
 var httpApprovalBridge = null;
-var httpApprovalRefs = 0;
 var approvalSeq = 0;
 var pendingApprovals = new Map(); // id -> { resolve }
 
@@ -2613,7 +2641,7 @@ function startHttpServer() {
   }
   if (req.method === 'GET' && req.url === '/api/info') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList() }));
+    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList() }));
     return;
   }
     if (req.method === 'GET' && req.url === '/v1/models') {
@@ -2989,7 +3017,7 @@ function startHttpServer() {
               if (clientGone || res.destroyed) return;
               try {
                 res.write(`data: ${JSON.stringify({
-                  id: responseId, object: 'chat.completion.chunk', created, model: HEAVY_MODEL,
+                  id: responseId, object: 'chat.completion.chunk', created, model: reqModel,
                   choices: [{ index: 0, delta, finish_reason: finishReason || null }]
                 })}\n\n`);
               } catch (e) {
@@ -3041,7 +3069,7 @@ function startHttpServer() {
             id: responseId,
             object: 'chat.completion',
             created,
-            model: HEAVY_MODEL,
+            model: reqModel,
             choices: [{
               index: 0,
               message: { role: 'assistant', content: result },

@@ -113,7 +113,7 @@ scenarios.push({
     let m = startChaos('500');
     await new Promise(r => setTimeout(r, 600));
     let r = await runCli({ port: m.port, args: ['--prompt', 't', '-p'], env: { MAX_RETRIES: '1', PERMISSION_MODE: 'bypass' }, cwd: freshCwd('b-chaos500') });
-    record('chaos: upstream 500 -> clean max-retries error, no crash', r.code === 0 && r.out.includes('Max retries reached'), r.out.substring(0, 120));
+    record('chaos: upstream 500 -> clean max-retries error, nonzero exit, no crash', r.code === 1 && r.out.includes('Max retries reached'), 'code=' + r.code + ' ' + r.out.substring(0, 120));
     stopMock(m);
 
     // 429 -> retried, then succeeds
@@ -784,7 +784,8 @@ scenarios.push({
     record('git: diff shows the v1->v2 change', gs2 && gs2.c.includes('-v1') && gs2.c.includes('+v2'), gs2 ? gs2.c.substring(0, 120) : 'no result');
     const gs3 = tr(log, 'gs3');
     const committed = spawnSync('git', ['log', '-1', '--oneline'], { encoding: 'utf8', cwd });
-    record('git: commit created with requested message + snapshot recorded', gs3 && gs3.c.includes('[OK] committed') && committed.stdout.includes('feat: bump app to v2') && gs3.c.includes('snapshot'), 'gs3=' + (gs3 ? gs3.c.substring(0, 100) : 'none') + ' log=' + committed.stdout.trim());
+    const snapRefs = spawnSync('git', ['for-each-ref', 'refs/7coder/snapshots'], { encoding: 'utf8', cwd });
+    record('git: commit created with requested message + snapshot recorded', gs3 && gs3.c.includes('[OK] committed') && committed.stdout.includes('feat: bump app to v2') && gs3.c.includes('snapshot') && snapRefs.stdout.trim() !== '', 'gs3=' + (gs3 ? gs3.c.substring(0, 100) : 'none') + ' log=' + committed.stdout.trim() + ' refs=' + (snapRefs.stdout.trim() || '(empty)'));
     // non-repo path
     const m2 = startMock([{ role: 'assistant', content: null, tool_calls: [{ id: 'gs4', type: 'function', function: { name: 'git_status_tool', arguments: '{}' } }] }, { role: 'assistant', content: 'NR-DONE' }]);
     await new Promise(r => setTimeout(r, 600));
@@ -944,7 +945,7 @@ scenarios.push({
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
   const pass = results.filter(r => r.pass).length;
-  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); }
+  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUITE B SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
   for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
   process.exit(pass === results.length ? 0 : 1);

@@ -296,7 +296,9 @@ scenarios.push({
     // plus a unit test of the escape function itself.
     const srcLines = fs.readFileSync(IDX, 'utf8').split('\n');
     const escStart = srcLines.findIndex(l => l.includes('const escapeSendKeys'));
-    const escFn = escStart >= 0 ? srcLines.slice(escStart, escStart + 3).join('\n') : '';
+    let escEnd = escStart; // function may span many lines; slice to its closing '};'
+    while (escEnd >= 0 && escEnd < srcLines.length && srcLines[escEnd].trim() !== '};') escEnd++;
+    const escFn = escStart >= 0 ? srcLines.slice(escStart, Math.min(escEnd + 1, srcLines.length)).join('\n') : '';
     const escSrc = escFn;
     const escapeSendKeys = eval('(' + escSrc.replace('const escapeSendKeys = ', '').trim().replace(/;$/, '') + ')');
     record('input: escapeSendKeys braces special chars correctly', escapeSendKeys('h{e}llo+^%~()') === 'h{{}e{}}llo{+}{^}{%}{~}{(}{)}', escapeSendKeys('h{e}llo'));
@@ -448,7 +450,7 @@ scenarios.push({
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
   const pass = results.filter(r => r.pass).length;
-  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); }
+  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUITE I SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
   for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
   process.exit(pass === results.length ? 0 : 1);

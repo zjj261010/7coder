@@ -109,9 +109,12 @@ scenarios.push({
   fn: async () => {
     const r1 = spawnSync(NODE_BIN, [IDX, '--help'], { encoding: 'utf8' });
     record('cli: --help exits 0 with usage', r1.status === 0 && r1.stdout.includes('Usage'), 'status=' + r1.status);
-    const r2 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'http://127.0.0.1:9/v1', MAX_RETRIES: '1' }), timeout: 30000 });
+    const m2 = startMock([{ role: 'assistant', content: 'LOCAL-OK' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const r2 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', MAX_RETRIES: '1' }), timeout: 30000 });
     const out2 = r2.stdout + r2.stderr;
     record('cli: missing API key starts anyway for local endpoints (no exit, no warn)', r2.status === 0 && !out2.includes('OPENAI_API_KEY is not set'), 'status=' + r2.status + ' out=' + out2.substring(0, 120));
+    stopMock(m2);
     const r3 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'https://api.openai.com/v1', MAX_RETRIES: '1' }), timeout: 60000 });
     const out3 = r3.stdout + r3.stderr;
     record('cli: missing API key warns for remote endpoints', out3.includes('OPENAI_API_KEY is not set'), out3.substring(0, 120));
@@ -576,6 +579,14 @@ scenarios.push({
     record('startup: REPL main calls use streaming', sreq.length >= 1, '');
     record('startup: streamed text appears in stdout', r2.out.includes('STREAMED-REPLY-TEXT'), r2.out.substring(0, 150));
     stopMock(m2);
+
+    // one-shot failure must exit nonzero (flushExit must not swallow process.exitCode)
+    const cwd3 = freshCwd('startup-exit');
+    const r3 = spawnSync(NODE_BIN, [IDX, '--prompt', 'hi'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:1/v1', MAX_RETRIES: '1' }),
+      cwd: cwd3, encoding: 'utf8', timeout: 60000
+    });
+    record('startup: one-shot task failure exits nonzero', r3.status !== 0 && r3.status !== null, 'status=' + r3.status + ' tail=' + String(r3.stderr || '').substring(0, 80));
   }
 });
 
@@ -588,7 +599,7 @@ scenarios.push({
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
   const pass = results.filter(r => r.pass).length;
-  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); }
+  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
   for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
   process.exit(pass === results.length ? 0 : 1);

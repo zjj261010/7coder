@@ -6,6 +6,8 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
+if (!process.env.REAL_TEST) { console.log('SUITE R SKIPPED: set REAL_TEST=1 plus OPENAI_API_KEY / OPENAI_ENDPOINT / REAL_MODEL to run real-endpoint tests.'); process.exit(0); }
+
 const ROOT = __dirname;
 const IDX = path.join(ROOT, '..', 'index.js');
 const EP = process.env.OPENAI_ENDPOINT || 'https://maas.qianwenaiapi.com/compatible-mode/v1';

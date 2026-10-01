@@ -3,10 +3,11 @@
 // GET on any other path -> fixed blob without consuming a step (for web_fetch/download tests).
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 const script = JSON.parse(fs.readFileSync(process.env.MOCK_SCRIPT, 'utf8'));
 const PORT = parseInt(process.env.MOCK_PORT, 10) || 17600;
 let i = 0;
-const logPath = __dirname + '\\mock-log-' + PORT + '.jsonl';
+const logPath = path.join(__dirname, 'mock-log-' + PORT + '.jsonl');
 fs.writeFileSync(logPath, '');
 http.createServer((req, res) => {
   if (req.method === 'GET') {

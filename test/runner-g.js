@@ -275,7 +275,7 @@ scenarios.push({
     let mm;
     while ((mm = re.exec(src))) requires.push(mm[1]);
     const foreign = requires.filter(r => !builtins.has(r) && !/^node:/.test(r) && !/^\.\.?[/\\]/.test(r));
-    record('supply: index.js requires only axios+dotenv+builtins', JSON.stringify([].concat(...[]).sort()) === '[]' || [...new Set(foreign)].sort().join(',') === 'axios,dotenv', 'unique=' + [...new Set(foreign)].sort().join(','));
+    record('supply: index.js requires only axios+dotenv+builtins', [...new Set(foreign)].sort().join(',') === 'axios,dotenv', 'unique=' + [...new Set(foreign)].sort().join(','));
     const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, '..', 'package.json'), 'utf8'));
     record('supply: direct dependencies are exactly axios+dotenv', JSON.stringify(Object.keys(pkg.dependencies).sort()) === JSON.stringify(['axios', 'dotenv']), JSON.stringify(Object.keys(pkg.dependencies)));
     record('supply: axios upgraded off the CVE-affected 0.x line', !/^0\./.test(pkg.dependencies.axios.replace(/^[\^~]/, '')), pkg.dependencies.axios);
@@ -436,7 +436,7 @@ scenarios.push({
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
   const pass = results.filter(r => r.pass).length;
-  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); }
+  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUITE G SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
   for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
   process.exit(pass === results.length ? 0 : 1);

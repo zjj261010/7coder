@@ -28,7 +28,8 @@
     "start": "node index.js",
     "server": "node index.js --server",
     "test": "node test/runner.js",
-    "test:b": "node test/runner-b.js"
+    "test:b": "node test/runner-b.js",
+    "test:r": "node test/runner-r.js"
   },
   "dependencies": {
     "axios": "^1.20.0",

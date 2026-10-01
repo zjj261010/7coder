@@ -4,6 +4,7 @@
 // '429-then-ok' and 'chaos-sse' fall back to scripted replies (MOCK_SCRIPT).
 const http = require('http');
 const fs = require('fs');
+const path = require('path');
 const FAULT = process.env.FAULT_MODE || '500';
 const PORT = parseInt(process.env.MOCK_PORT, 10) || 17800;
 const script = (process.env.MOCK_SCRIPT && fs.existsSync(process.env.MOCK_SCRIPT))
@@ -11,7 +12,7 @@ const script = (process.env.MOCK_SCRIPT && fs.existsSync(process.env.MOCK_SCRIPT
   : [{ role: 'assistant', content: 'MOCK-DEFAULT' }];
 let i = 0;
 let postCount = 0;
-const logPath = __dirname + '\\mock-log-' + PORT + '.jsonl';
+const logPath = path.join(__dirname, 'mock-log-' + PORT + '.jsonl');
 fs.writeFileSync(logPath, '');
 
 http.createServer((req, res) => {

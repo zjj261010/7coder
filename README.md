@@ -92,7 +92,7 @@ supported, plus `/v1/models`. Client message histories are honored for multi-tur
 - `glob_tool` / `grep_tool` / `list_dir`
 - `web_fetch_tool` / `web_search_tool` / `web_browser_tool` / `download_tool` (streamed, 500 MB cap)
 - `process_list_tool` / `process_kill_tool` — `tasklist` / `taskkill /T /F` on Windows (kills the whole child tree), `ps`/`kill` elsewhere
-- `computer_use` — **real screenshots**; mouse/keyboard actions are simulated no-ops
+- `computer_use` — **real screenshots**; mouse/keyboard input is really injected on Windows, other platforms warn
 - `schedule_cron_tool` / `cron_create_tool` — schedules like `30s`, `5m`, `2h`, `every 10m`, `daily 09:30`
 - `auto_debug_tool` (launch + observe + auto-fix loop; on Windows closes test apps with `taskkill /T /F`), `bickering_tool`, `plan_mode`
 - `run_tests_tool` - runs a test suite and parses output into **structured pass/fail counts** (jest/mocha/karma and node:test formats) + failure lines; auto-detects `npm test` / `node --test`
@@ -127,8 +127,9 @@ blocked at every level; the HTTP endpoint is localhost-only by default.
 
 Enable with `ENABLE_COMPUTER_USE=true` in `.env`.
 Screenshots are real on Windows, macOS, and Linux. Mouse/keyboard input
-injection is **not implemented** — those actions return an explicit
-"simulated" notice to the model.
+injection is real on **Windows** (mouse move/click via user32, typing and
+key presses via SendKeys); on other platforms those input actions return
+a Windows-only warning instead of being injected.
 
 ## Session Continuity & Context Safety
 
@@ -182,13 +183,13 @@ Then switch models per request via the web UI model dropdown or the OpenAI
 - **Structured audit log** - every tool call and permission change is appended as JSON lines to `.7coder/audit.jsonl` (machine-readable, 5 MB rotation, `AUDIT_LOG=false` to disable).
 - **Ralph Wiggum self-iteration loop** — still available (`ENABLE_RALPH_MODE=true`)
 - **Anti-frustration system** — detects when you’re mad and makes the model extra calm/helpful
-- **HTTP OpenAI endpoint** — works with any non-streaming OpenAI-compatible UI
+- **HTTP OpenAI endpoint** — works with any OpenAI-compatible UI (streaming and non-streaming)
 - **Light model** for risk checks, explanations, and moderation (saves tokens)
 - **Dream mode** (`DREAM_ALLOW=true`) — self-consolidates 7CODER.md after ≥5h idle
 
 ## Compatibility
 
-- Node.js 13.14.0 → latest (no modern JS syntax used)
+- Node.js 13.14.0 → latest (syntax stays within what Node.js 13.14 supports)
 - Windows 7 SP1 → Windows 11, macOS, Linux
 - Any OpenAI-compatible API (OpenAI, Groq, local LLMs, etc.)
 

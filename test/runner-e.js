@@ -344,7 +344,7 @@ scenarios.push({
       const r1 = await httpReq(srvPort, 'POST', '/v1/chat/completions', { model: 'client-says-what', messages: [{ role: 'user', content: 'one' }] }, null, agent);
       const r2 = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'two' }] }, null, agent);
       record('keepalive: two requests on one connection both 200', r1.status === 200 && r2.status === 200, r1.status + '/' + r2.status);
-      record('contract: client model field ignored, server model reported', JSON.parse(r1.body).model === 'heavy-e8', '');
+      record('contract: response echoes client model; default falls back to server model', JSON.parse(r1.body).model === 'client-says-what' && JSON.parse(r2.body).model === 'heavy-e8', JSON.parse(r1.body).model + ' / ' + JSON.parse(r2.body).model);
       // 100-turn history + a stray tool-role message
       const msgs = [];
       for (let i = 0; i < 50; i++) { msgs.push({ role: 'user', content: 'u' + i }); msgs.push({ role: 'assistant', content: 'a' + i }); }
@@ -450,7 +450,7 @@ scenarios.push({
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
   const pass = results.filter(r => r.pass).length;
-  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); }
+  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUITE E SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
   for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
   process.exit(pass === results.length ? 0 : 1);
