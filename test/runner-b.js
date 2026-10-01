@@ -16,6 +16,8 @@ const NODE_BIN = process.env.NODE_BIN || process.execPath;
 const RUN_ONLY = (process.env.RUN_ONLY || '').split(',').map(s => s.trim()).filter(Boolean);
 let port = 17850;
 const results = [];
+const ownArtifacts = [];
+const ownWorkdirs = [];
 
 function record(name, pass, detail) {
   results.push({ name, pass, detail: detail || '' });
@@ -30,7 +32,9 @@ function startProcess(mockFile, scriptObj, extraEnv) {
     env: Object.assign({}, process.env, { MOCK_SCRIPT: scriptPath, MOCK_PORT: String(port) }, extraEnv || {}),
     stdio: 'ignore'
   });
-  return { child, port, log: path.join(ROOT, 'mock-log-' + port + '.jsonl') };
+  const logPath = path.join(ROOT, 'mock-log-' + port + '.jsonl');
+  ownArtifacts.push(scriptPath, logPath);
+  return { child, port, log: logPath };
 }
 const startMock = (s) => startProcess('mock-server.js', s);
 const startChaos = (fault, s) => startProcess('chaos-mock.js', s, { FAULT_MODE: fault });
@@ -55,6 +59,7 @@ function freshCwd(name) {
   for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
     if (fs.existsSync(dir)) dir = dir + '-' + Date.now(); // unique-suffix fallback (stale dir undeletable)
   fs.mkdirSync(dir, { recursive: true });
+  ownWorkdirs.push(dir);
   return dir;
 }
 
@@ -665,6 +670,7 @@ scenarios.push({
       { role: 'assistant', content: null, tool_calls: [{ id: 'au1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'ok.txt', content: 'fine' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'au2', type: 'function', function: { name: 'read_file', arguments: '{"path":"ghost.txt"}' } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'au3', type: 'function', function: { name: 'run_command', arguments: '{"command":"rm -rf /"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'au4', type: 'function', function: { name: 'run_command', arguments: '{"command":"echo check Bearer sk-audit-secret-12345"}' } }] },
       { role: 'assistant', content: 'AUDIT-DONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -679,6 +685,8 @@ scenarios.push({
     record('audit: ok / error / blocked statuses recorded', byTool.write_file === 'ok' && byTool.read_file === 'error' && byTool.run_command === 'blocked', JSON.stringify(byTool));
     const wf = entries.find(e => e.tool === 'write_file');
     record('audit: args preview truncated and present', wf && wf.args && String(wf.args.path).includes('ok.txt') && JSON.stringify(wf.args).length < 400, JSON.stringify(wf && wf.args));
+    const au4 = entries.find(e => e.tool === 'run_command' && JSON.stringify(e.args || {}).includes('echo check'));
+    record('audit: secrets redacted in args preview (Bearer/sk- tokens masked)', au4 && JSON.stringify(au4.args).includes('Bearer ***') && !JSON.stringify(au4.args).includes('sk-audit-secret-12345'), au4 ? JSON.stringify(au4.args) : 'no echo-check entry');
     stopMock(m);
   }
 });
@@ -826,6 +834,7 @@ scenarios.push({
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'ts1', type: 'function', function: { name: 'run_tests_tool', arguments: JSON.stringify({ command: 'node fake-runner.js' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'ts2', type: 'function', function: { name: 'run_tests_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ts3', type: 'function', function: { name: 'run_tests_tool', arguments: JSON.stringify({ command: 'echo no-summary-output' }) } }] },
       { role: 'assistant', content: 'TS-DONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -835,6 +844,8 @@ scenarios.push({
     record('tests: explicit command parsed (3 passed / 1 failed / failure lines)', ts1 && ts1.c.includes('3 passed, 1 failed') && ts1.c.includes('FAIL sum.test.js') && ts1.c.includes('not ok 1'), ts1 ? ts1.c.substring(0, 150) : 'no result');
     const ts2 = tr(log, 'ts2');
     record('tests: auto-detect via package.json scripts.test', ts2 && ts2.c.includes('3 passed, 1 failed'), ts2 ? ts2.c.substring(0, 120) : 'no result');
+    const ts3 = tr(log, 'ts3');
+    record('tests: no-summary output uses real newlines (no literal backslash-n text)', ts3 && ts3.c.includes('[TESTS] command finished') && ts3.c.includes('\n') && !ts3.c.includes("'\\n'"), ts3 ? JSON.stringify(ts3.c.substring(0, 140)) : 'no result');
     stopMock(m);
   }
 });
@@ -969,6 +980,9 @@ scenarios.push({
     });
     await new Promise(r => setTimeout(r, 2500));
     try {
+      // Pre-seed a .env with a comment + unmanaged key; POST /api/settings
+      // must rewrite it in place without dropping either (OPT-8c).
+      fs.writeFileSync(path.join(cwd, '.env'), '# KEEP-ME-COMMENT\nTEMP_X=1\n');
       const cfg = JSON.parse((await httpReq(srvPort, 'GET', '/api/settings', null)).body);
       record('set: GET /api/settings returns current endpoint/key/model', cfg.endpoint.indexOf(':' + mockA.port) >= 0 && cfg.apiKey === 'key-a' && cfg.model === 'model-a', JSON.stringify(cfg));
       const sw = JSON.parse((await httpReq(srvPort, 'POST', '/api/settings', { endpoint: 'http://127.0.0.1:' + mockB.port + '/v1', apiKey: 'key-b', model: 'model-b' })).body);
@@ -981,6 +995,7 @@ scenarios.push({
       record('set: profiled model chat routes via models.json', profChat.status === 200 && profChat.body.includes('FROM-MOCK-A'), profChat.body.substring(0, 80));
       const envFile = fs.readFileSync(path.join(cwd, '.env'), 'utf8');
       record('set: persisted to workspace .env (restart-safe)', envFile.includes('OPENAI_ENDPOINT=http://127.0.0.1:' + mockB.port + '/v1') && envFile.includes('HEAVY_MODEL=model-b') && envFile.includes('OPENAI_API_KEY=key-b'), envFile.replace(/\n/g, ' | '));
+      record('set: comments preserved when .env is rewritten by POST /api/settings', envFile.includes('# KEEP-ME-COMMENT'), envFile.replace(/\n/g, ' | '));
     } finally {
       try { srv.kill(); } catch (e) {}
       stopMock(mockA); stopMock(mockB);
@@ -1028,6 +1043,9 @@ scenarios.push({
     console.log('--- scenario: ' + sc.name + ' (' + NODE_BIN.substring(0, 40) + ')');
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
+  // OPT-11: delete this run's own artifacts (cur-script-*, mock-log-*, w-* workdirs) before exiting.
+  try { for (const f of ownArtifacts) { try { fs.unlinkSync(f); } catch (e) {} } } catch (e) {}
+  for (const d of ownWorkdirs) rmrf(d);
   const pass = results.filter(r => r.pass).length;
   if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUITE B SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');

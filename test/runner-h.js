@@ -16,6 +16,8 @@ const NODE_BIN = process.env.NODE_BIN || process.execPath;
 const RUN_ONLY = (process.env.RUN_ONLY || '').split(',').map(s => s.trim()).filter(Boolean);
 let port = 18450;
 const results = [];
+const ownArtifacts = [];
+const ownWorkdirs = [];
 
 function record(name, pass, detail) {
   results.push({ name, pass, detail: detail || '' });
@@ -30,7 +32,9 @@ function startMock(scriptObj) {
     env: Object.assign({}, process.env, { MOCK_SCRIPT: scriptPath, MOCK_PORT: String(port) }),
     stdio: 'ignore'
   });
-  return { child, port, log: path.join(ROOT, 'mock-log-' + port + '.jsonl') };
+  const logPath = path.join(ROOT, 'mock-log-' + port + '.jsonl');
+  ownArtifacts.push(scriptPath, logPath);
+  return { child, port, log: logPath };
 }
 function stopMock(m) { try { m.child.kill(); } catch (e) {} }
 
@@ -53,6 +57,7 @@ function freshCwd(name) {
   for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
     if (fs.existsSync(dir)) dir = dir + '-' + Date.now(); // unique-suffix fallback (stale dir undeletable)
   fs.mkdirSync(dir, { recursive: true });
+  ownWorkdirs.push(dir);
   return dir;
 }
 
@@ -529,6 +534,9 @@ scenarios.push({
     console.log('--- scenario: ' + sc.name + ' (' + NODE_BIN.substring(0, 40) + ')');
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
+  // OPT-11: delete this run's own artifacts (cur-script-*, mock-log-*, w-* workdirs) before exiting.
+  try { for (const f of ownArtifacts) { try { fs.unlinkSync(f); } catch (e) {} } } catch (e) {}
+  for (const d of ownWorkdirs) rmrf(d);
   const pass = results.filter(r => r.pass).length;
   if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUITE H SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');

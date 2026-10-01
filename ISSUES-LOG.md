@@ -9,6 +9,26 @@
 > 规模快照（2026-10-01 深夜）：单文件 index.js（~3410 行），v2.16.0，P0-3/DS-14/15 轮后 A–J 全绿 403 项（A 77/B 103/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
+<!-- assert-count:start -->
+| 文件 | 静态断言点数 |
+| --- | ---: |
+| runner-b.js | 96 |
+| runner-c.js | 37 |
+| runner-d.js | 26 |
+| runner-e.js | 23 |
+| runner-f.js | 24 |
+| runner-g.js | 32 |
+| runner-h.js | 28 |
+| runner-i.js | 33 |
+| runner-j.js | 18 |
+| runner-k.js | 11 |
+| runner-r.js | 11 |
+| runner.js | 53 |
+| **合计** | **392** |
+
+注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
+<!-- assert-count:end -->
+
 ---
 
 ## 2026-09-27 —— 首轮代码审阅 + 八轮多维测试
@@ -141,17 +161,17 @@
 
 | # | 方向 | 内容 | 状态 |
 |---|------|------|------|
-| OPT-1 | 安全 | 审计日志参数脱敏（=P2-5） | ⬜ |
+| OPT-1 | 安全 | 审计日志参数脱敏（=P2-5） | ✅ sanitizeAuditArgs：敏感键名→***，其余值清洗 Bearer/sk- 令牌；audit-log 场景断言明文不落盘 |
 | OPT-2 | 安全 | 未设 HTTP_API_KEY 时对写操作类 /api/* 默认拒绝或一次性确认 | ⛔ 用户决策（2026-10-01）：维持现状不修——本机个人工具，loopback 默认 + 文档已有 LAN 警告；如未来需 LAN 长期暴露再重开（含 .env 重写劫持上游的升级说明，见 DS 系列核对表） |
-| OPT-3 | 结构 | index.js 拆分 tools/ + http-server.js + repl.js + security.js + context.js | ⬜（当前 ~3240 行；Win7/Node13 约束下需保持单入口） |
-| OPT-4 | 测试 | 10 个 runner 公共件（rmrf/runCli/startMock/freshCwd）抽 test/_shared.js | ⬜（P0-1 正是复制粘贴的代价） |
-| OPT-5 | 测试 | test/ 残渣清理：现存 313 个 cur-script-/mock-log-* 文件 + 222 个 w-* 目录；runner 结束时自清理 | ⬜ |
-| OPT-6 | 并发 | 多客户端并发的进一步增强（依赖的 P0-3 已关闭） | ⬜（审批隔离已就绪；剩余为会话保存的并发语义） |
+| OPT-3 | 结构 | index.js（现 ~3420 行）按职责拆分模块；DS-13（audit 加 runId）随此一并 | ⬜ 用户决策暂缓（2026-10-02）：等功能需求触发或专项多轮安排；10-01 两起拼接事故说明迁移本身即高风险 |
+| OPT-4 | 测试 | 12 个 runner 公共件抽 test/_shared.js | ⬜ 用户决策暂缓（2026-10-02）；OPT-11 的十处同型改动再次印证其价值，重开时优先 |
+| OPT-5 | 测试 | test/ 残渣清理 | ✅ 2026-10-02 存量清零（102 cur-script + 100 mock-log + 170 w-* + 4 杂项，14MB→~0）；增量由 OPT-11 自清理兜底 |
+| OPT-6 | 并发 | 多客户端会话保存语义（审批隔离 P0-3 已就绪） | ⬜ 用户决策挂起（2026-10-02）：常用多标签时再做，需先定分桶语义 |
 | OPT-7 | 测试 | RUN_ONLY 空匹配时非零退出 | ✅ 随 DS-9 关闭（10 个 runner exit 1） |
-| OPT-8 | 测试 | 补回归断言：cron `every 0h` 拒绝（P0-2 剩余半）、run_tests_tool 真换行（随 P1-1）、writeWorkspaceEnv 注释保留（P1-4 剩余半）、rmrf 真删目录（P0-1 剩余半） | ⬜ |
-| OPT-9 | 文档 | 冻结的历史文档（KNOWN-ISSUES.md、REVIEW-CHECKLIST-2026-09-30.md）移入 docs/history/ 或删除 | ⬜ |
-| OPT-10 | 文档 | scripts/count-assertions.js 从各 runner 自动汇总断言数写入本文档头部，杜绝口径漂移（根治 P1-7） | ⬜ |
-| OPT-11 | 测试 | runner 退出前清理本次运行产生的 cur-script-*/mock-log-*（OPT-5 的增量半） | ⬜ |
+| OPT-8 | 测试 | 四条补断言（cron 0h / run_tests 真换行 / .env 注释保留 / rmrf 真删） | ✅ 全部落地于 adv-tools(a23)、tests-runner(ts3)、settings-api、rmrf-check 场景 |
+| OPT-9 | 文档 | 冻结的历史文档移入 docs/history/ | ✅ 三份（含 deepseek 审阅原文）已归档并提交 |
+| OPT-10 | 文档 | scripts/count-assertions.js 自动统计（--write 回填标记段） | ✅ 已入库并在 Node 13 运行时验证；静态口径 392 与实测 403 并列标注互不混淆 |
+| OPT-11 | 测试 | runner 退出前自清理本次产物（ownArtifacts/ownWorkdirs 追踪） | ✅ 10 个 runner（k/r 用 tmpdir 无需）；验证：连续三套运行残渣零新增 |
 
 ---
 
@@ -235,5 +255,5 @@
 
 1. **唯一事实来源**：本文件。修复某条后：改状态列 + 附提交号；新问题追加到当日期小节；跨日期的大问题可新建日期小节用 INC-/NEW- 编号。
 2. **提交纪律**：状态变更与对应代码修复同一提交；提交信息引用条目号（如 `fix(P1-1): ...`）。
-3. **归档建议（OPT-9）**：KNOWN-ISSUES.md 与 REVIEW-CHECKLIST-2026-09-30.md 已冻结，可在下个版本删除或移入 `docs/history/`（删除前把仍有价值的历史叙述并入本文件）。
+3. **归档（OPT-9 已执行 2026-10-02）**：KNOWN-ISSUES.md、REVIEW-CHECKLIST-2026-09-30.md、deepseek4.1flash审阅.md 已移入 `docs/history/`，只读历史快照，不再更新。
 4. **套件计数防漂移（OPT-10）**：建议加 `scripts/count-assertions.js` 从各 runner 统计断言数写入本文档头部，替代手写。

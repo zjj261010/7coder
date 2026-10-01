@@ -195,11 +195,26 @@ function authHeadersFor(key) {
   return h;
 }
 
+// Redact secrets from the audit log's args preview: a run_command like
+// `curl -H "Authorization: Bearer sk-..."` would otherwise land verbatim in
+// .7coder/audit.jsonl. Keys that look secret-bearing are fully masked; all
+// other values get Bearer/sk- token patterns scrubbed.
+function sanitizeAuditArgs(args) {
+  if (!args || typeof args !== 'object') return args;
+  const out = {};
+  for (const k of Object.keys(args)) {
+    if (/key|token|secret|password|authorization|apikey/i.test(k)) out[k] = '***';
+    else out[k] = String(args[k]).replace(/Bearer\s+[A-Za-z0-9._~+\/=\-]+/gi, 'Bearer ***').replace(/sk-[A-Za-z0-9]{8,}/g, 'sk-***');
+  }
+  return out;
+}
+
 function audit(entry) {
   if (!AUDIT_ENABLED) return;
   try {
     if (!auditDirReady) { fs.mkdirSync(path.join(launchDir, '.7coder'), { recursive: true }); auditDirReady = true; }
     try { if (fs.existsSync(auditPath) && fs.statSync(auditPath).size > 5 * 1024 * 1024) fs.renameSync(auditPath, auditPath.replace(/\.jsonl$/, '.old.jsonl')); } catch (e) {}
+    if (entry.args) entry.args = sanitizeAuditArgs(entry.args);
     fs.appendFileSync(auditPath, JSON.stringify(entry) + '\n');
   } catch (e) {}
 }

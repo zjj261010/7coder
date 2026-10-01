@@ -14,6 +14,8 @@ const NODE_BIN = process.env.NODE_BIN || process.execPath;
 const RUN_ONLY = (process.env.RUN_ONLY || '').split(',').map(s => s.trim()).filter(Boolean);
 let port = 17600;
 const results = [];
+const ownArtifacts = [];
+const ownWorkdirs = [];
 
 function record(name, pass, detail) {
   results.push({ name, pass, detail: detail || '' });
@@ -28,7 +30,9 @@ function startMock(scriptObj) {
     env: Object.assign({}, process.env, { MOCK_SCRIPT: scriptPath, MOCK_PORT: String(port) }),
     stdio: 'ignore'
   });
-  return { child, port, log: path.join(ROOT, 'mock-log-' + port + '.jsonl') };
+  const logPath = path.join(ROOT, 'mock-log-' + port + '.jsonl');
+  ownArtifacts.push(scriptPath, logPath);
+  return { child, port, log: logPath };
 }
 function stopMock(m) { try { m.child.kill(); } catch (e) {} }
 
@@ -51,6 +55,7 @@ function freshCwd(name) {
   for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
     if (fs.existsSync(dir)) dir = dir + '-' + Date.now(); // unique-suffix fallback (stale dir undeletable)
   fs.mkdirSync(dir, { recursive: true });
+  ownWorkdirs.push(dir);
   return dir;
 }
 
@@ -274,6 +279,7 @@ scenarios.push({
       { role: 'assistant', content: null, tool_calls: [{ id: 'a2', type: 'function', function: { name: 'schedule_cron_tool', arguments: JSON.stringify({ schedule: 'every 2h', command: 'echo tick' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'a3', type: 'function', function: { name: 'schedule_cron_tool', arguments: JSON.stringify({ schedule: 'bogus', command: 'echo x' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'a4', type: 'function', function: { name: 'cron_list_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'a23', type: 'function', function: { name: 'schedule_cron_tool', arguments: JSON.stringify({ schedule: 'every 0h', command: 'echo z' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'a5', type: 'function', function: { name: 'task_create_tool', arguments: JSON.stringify({ command: 'ping -n 2 127.0.0.1', description: 'quick' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'a6', type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":2600}' } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'a7', type: 'function', function: { name: 'task_output_tool', arguments: '{}' } }] },
@@ -307,6 +313,7 @@ scenarios.push({
       ['adv: cron valid schedule', tr(log, 'a2') && tr(log, 'a2').c.includes('every 2h'), ''],
       ['adv: cron bogus rejected', tr(log, 'a3') && tr(log, 'a3').c.includes('Unsupported schedule'), ''],
       ['adv: cron_list shows job', tr(log, 'a4') && tr(log, 'a4').c.includes('every 2h'), ''],
+      ['adv: cron every 0h rejected (h<=0 is Unsupported schedule)', tr(log, 'a23') && tr(log, 'a23').c.includes('Unsupported schedule'), tr(log, 'a23') ? tr(log, 'a23').c.substring(0, 120) : 'no result'],
       ['adv: task_output has ping output', tr(log, 'a7') && tr(log, 'a7').c.includes('Ping'), tr(log, 'a7') ? tr(log, 'a7').c.substring(0, 60) : 'no result'],
       ['adv: task_list shows completed', tr(log, 'a8') && tr(log, 'a8').c.includes('completed'), ''],
       ['adv: sub-agent reads file and returns', tr(log, 'a9') && tr(log, 'a9').c.includes('SUB-ANSWER-42'), tr(log, 'a9') ? tr(log, 'a9').c.substring(0, 80) : 'no result'],
@@ -621,6 +628,19 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'rmrf-check',
+  fn: async () => {
+    const dir = path.join(ROOT, 'w-rmrf-probe');
+    rmrf(dir); // idempotent start: clear any stale probe dir from a previous run
+    fs.mkdirSync(path.join(dir, 'nested'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'nested', 'f.txt'), 'probe\n');
+    record('rmrf-check: nested probe tree created', fs.existsSync(path.join(dir, 'nested', 'f.txt')), dir);
+    rmrf(dir);
+    record('rmrf-check: rmrf deletes the whole tree', !fs.existsSync(dir), dir);
+  }
+});
+
 // ====================== RUNNER ======================
 (async () => {
   const t0 = Date.now();
@@ -629,6 +649,9 @@ scenarios.push({
     console.log('--- scenario: ' + sc.name + ' (' + NODE_BIN.substring(0, 40) + ')');
     try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
   }
+  // OPT-11: delete this run's own artifacts (cur-script-*, mock-log-*, w-* workdirs) before exiting.
+  try { for (const f of ownArtifacts) { try { fs.unlinkSync(f); } catch (e) {} } } catch (e) {}
+  for (const d of ownWorkdirs) rmrf(d);
   const pass = results.filter(r => r.pass).length;
   if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
   console.log('\n===== SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
