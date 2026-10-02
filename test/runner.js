@@ -18,15 +18,20 @@ const scenarios = [];
 scenarios.push({
   name: 'cli-exit',
   fn: async () => {
-    const r1 = spawnSync(NODE_BIN, [IDX, '--help'], { encoding: 'utf8' });
+    // AST-12: every spawn runs in a fresh cwd - never the repo root (which
+    // used to collect 7CODER.md / .7coder_last_interaction), and r3 must not
+    // reach the real internet: '.example' is the IANA-reserved TLD, so DNS
+    // fails immediately while still counting as a remote endpoint for the
+    // no-API-key warning (localEndpoint regex only matches loopback hosts).
+    const r1 = spawnSync(NODE_BIN, [IDX, '--help'], { encoding: 'utf8', cwd: freshCwd('cli-exit-r1') });
     record('cli: --help exits 0 with usage', r1.status === 0 && r1.stdout.includes('Usage'), 'status=' + r1.status);
     const m2 = startMock([{ role: 'assistant', content: 'LOCAL-OK' }]);
     await new Promise(r => setTimeout(r, 600));
-    const r2 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', MAX_RETRIES: '1' }), timeout: 30000 });
+    const r2 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', cwd: freshCwd('cli-exit-r2'), env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', MAX_RETRIES: '1' }), timeout: 30000 });
     const out2 = r2.stdout + r2.stderr;
     record('cli: missing API key starts anyway for local endpoints (no exit, no warn)', r2.status === 0 && !out2.includes('OPENAI_API_KEY is not set'), 'status=' + r2.status + ' out=' + out2.substring(0, 120));
     stopMock(m2);
-    const r3 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'https://api.openai.com/v1', MAX_RETRIES: '1' }), timeout: 60000 });
+    const r3 = spawnSync(NODE_BIN, [IDX, '--prompt', 'x'], { encoding: 'utf8', cwd: freshCwd('cli-exit-r3'), env: Object.assign({}, process.env, { OPENAI_API_KEY: '', OPENAI_ENDPOINT: 'https://invalid-mdns-resolver-test.example/v1', MAX_RETRIES: '1' }), timeout: 60000 });
     const out3 = r3.stdout + r3.stderr;
     record('cli: missing API key warns for remote endpoints', out3.includes('OPENAI_API_KEY is not set'), out3.substring(0, 120));
   }

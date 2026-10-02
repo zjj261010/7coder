@@ -512,6 +512,85 @@ scenarios.push({
 });
 
 
+// --- B26: AST-06/AST-07 - server contracts behind the webui session fixes ---
+// AST-06: the webui autoSaveSession now FIRST-saves without a `file` field;
+//   this pins the server half of that contract: no file -> server mints
+//   web-*.json, returns it, and a follow-up save carrying it reuses the name.
+//   (The front-end half is browser code - no DOM harness here, review-only.)
+// AST-07: business errors must reach the browser as SSE
+//   `data: {"error":{"message":...}}` events (headers sent immediately, so
+//   still HTTP 200). Two wordings occur: "Max retries reached." (retry-
+//   exhausted, index.js throws it at the wrap site) and "upstream error: ..."
+//   (in-stream context overflow, rethrown verbatim by the retry gate). The
+//   old webui parser only rethrew messages containing 'upstream', so the
+//   FIRST wording was swallowed - that is exactly the AST-07 bug.
+scenarios.push({
+  name: 'webui-firstsave',
+  fn: async () => {
+    const cwd = freshCwd('b-webui1st');
+    const m = startChaos('500'); // every upstream POST fails; server runs MAX_RETRIES=1
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 340;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      // AST-06: first save carries NO file field
+      const fs1 = await httpReq(srvPort, 'POST', '/api/sessions/save', { messages: [{ role: 'user', content: 'AST06-Q' }, { role: 'assistant', content: 'AST06-A' }] });
+      let minted = '';
+      try { minted = JSON.parse(fs1.body).file || ''; } catch (e) {}
+      record('webui1st: save without file -> 200 and response carries file', fs1.status === 200 && /^web-.*[.]json$/.test(minted), 'status=' + fs1.status + ' body=' + fs1.body.substring(0, 120));
+      record('webui1st: minted session file exists under .7coder/sessions', !!minted && fs.existsSync(path.join(cwd, '.7coder', 'sessions', minted)), minted);
+      // follow-up save reusing the minted name updates in place (no second file)
+      const fs2 = await httpReq(srvPort, 'POST', '/api/sessions/save', { messages: [{ role: 'user', content: 'AST06-Q' }, { role: 'assistant', content: 'AST06-A2' }], file: minted });
+      let reused = '';
+      try { reused = JSON.parse(fs2.body).file || ''; } catch (e) {}
+      record('webui1st: save with returned file reuses it in place', fs2.status === 200 && reused === minted, 'reused=' + reused);
+      // AST-07 wording 1: retry-exhausted failure ("Max retries reached." -
+      // deliberately NOT containing 'upstream', the case the old filter ate)
+      const bad = await httpReq(srvPort, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'hi' }] });
+      let errMsg = '';
+      for (const line of bad.body.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const pl = line.substring(5).trim();
+        if (!pl || pl === '[DONE]') continue;
+        try { const j = JSON.parse(pl); if (j.error) errMsg = j.error.message || ''; } catch (e) {}
+      }
+      record('webui1st: retry-exhausted failure reaches client as SSE data:{error} (no upstream substring)', bad.status === 200 && errMsg.indexOf('Max retries reached') >= 0, 'msg=' + JSON.stringify(errMsg) + ' body=' + bad.body.substring(0, 100));
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+    // AST-07 wording 2: in-stream context overflow keeps its "upstream error:"
+    // prefix end-to-end (retry gate rethrows it verbatim).
+    const m2 = startChaos('lmstudio-ctx');
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort2 = port + 340;
+    const srv2 = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort2) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const bad2 = await httpReq(srvPort2, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'hi' }] });
+      let errMsg2 = '';
+      for (const line of bad2.body.split('\n')) {
+        if (!line.startsWith('data:')) continue;
+        const pl = line.substring(5).trim();
+        if (!pl || pl === '[DONE]') continue;
+        try { const j = JSON.parse(pl); if (j.error) errMsg2 = j.error.message || ''; } catch (e) {}
+      }
+      record('webui1st: in-stream overflow reaches client as SSE data:{error} with upstream wording', bad2.status === 200 && errMsg2.indexOf('upstream error') >= 0 && errMsg2.indexOf('context length') >= 0, 'msg=' + JSON.stringify(errMsg2).substring(0, 150));
+    } finally {
+      try { srv2.kill(); } catch (e) {}
+      stopMock(m2);
+    }
+  }
+});
+
+
 // --- B11: runtime permission-mode switching (/api/mode) ---
 scenarios.push({
   name: 'mode-switch',
@@ -917,6 +996,17 @@ scenarios.push({
       const envFile = fs.readFileSync(path.join(cwd, '.env'), 'utf8');
       record('set: persisted to workspace .env (restart-safe)', envFile.includes('OPENAI_ENDPOINT=http://127.0.0.1:' + mockB.port + '/v1') && envFile.includes('HEAVY_MODEL=model-b') && envFile.includes('OPENAI_API_KEY=key-b'), envFile.replace(/\n/g, ' | '));
       record('set: comments preserved when .env is rewritten by POST /api/settings', envFile.includes('# KEEP-ME-COMMENT'), envFile.replace(/\n/g, ' | '));
+      // AST-08: a newline inside a settings value must not inject a new .env line
+      const inj = await httpReq(srvPort, 'POST', '/api/settings', { apiKey: 'k\nPERMISSION_MODE=bypass' });
+      record('ast08: newline-in apiKey rejected with 400', inj.status === 400, 'status=' + inj.status + ' body=' + inj.body.substring(0, 120));
+      const inj2 = await httpReq(srvPort, 'POST', '/api/settings', { endpoint: 'http://x/\nPERMISSION_MODE=bypass' });
+      record('ast08: newline-in endpoint rejected with 400', inj2.status === 400, 'status=' + inj2.status);
+      const badScheme = await httpReq(srvPort, 'POST', '/api/settings', { endpoint: 'ftp://evil.example/v1' });
+      record('ast08: non-http(s) endpoint scheme rejected with 400', badScheme.status === 400, 'status=' + badScheme.status);
+      const envAfter = fs.readFileSync(path.join(cwd, '.env'), 'utf8');
+      record('ast08: no injected line reached .env', envAfter.indexOf('PERMISSION_MODE') < 0, envAfter.replace(/\n/g, ' | '));
+      const cur = JSON.parse((await httpReq(srvPort, 'GET', '/api/settings', null)).body);
+      record('ast08: rejected saves leave runtime globals untouched', cur.apiKey === 'key-b' && cur.model === 'model-b', JSON.stringify({ apiKey: cur.apiKey, model: cur.model }));
     } finally {
       try { srv.kill(); } catch (e) {}
       stopMock(mockA); stopMock(mockB);
@@ -967,6 +1057,7 @@ scenarios.push({
     }
     fs.writeFileSync(path.join(cwd1, 'a.txt'), 'v1');
     try { spawnSync('git', ['add', '.'], { cwd: cwd1 }); spawnSync('git', ['commit', '-m', 'base'], { cwd: cwd1 }); } catch (e) {}
+    fs.writeFileSync(path.join(cwd1, 'a.txt'), 'v2'); // give the commit tool something real to stage (the .gitignore side effect is gone)
     const m1 = startMock([
       { role: 'assistant', content: null, tool_calls: [
         { id: 'as1', type: 'function', function: { name: 'git_diff_tool', arguments: JSON.stringify({ path: 'x" & echo PWNED-AST1 > pwned1.txt' }) } },
@@ -1050,6 +1141,98 @@ scenarios.push({
     }
     record('ast11: denial-mode rejection audits as blocked (was ok)', denialStatus === 'blocked', 'status=' + denialStatus);
     stopMock(m5);
+
+    // AST-04a: .7coder/models.json holds API keys - reading it must require
+    // approval (default mode, non-interactive -> declined), not auto-execute.
+    const cwd6 = freshCwd('b-ast6');
+    fs.mkdirSync(path.join(cwd6, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd6, '.7coder', 'models.json'), JSON.stringify({ 'profile-x': { endpoint: 'http://127.0.0.1:9/v1', apiKey: 'fake-key-AST04' } }));
+    const m6 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as7', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: '.7coder/models.json' }) } }] },
+      { role: 'assistant', content: 'AST4-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m6.port, args: ['--prompt', 't'], env: {}, cwd: cwd6, timeoutMs: 60000 }); // default mode
+    const as7 = tr(readLog(m6.log), 'as7');
+    record('ast04: default-mode read of models.json is declined (HIGH approval), key not leaked', as7 && /declined/i.test(as7.c) && as7.c.indexOf('fake-key-AST04') < 0, 'as7=' + (as7 ? as7.c.substring(0, 120) : 'none'));
+    stopMock(m6);
+
+    // AST-04a2: even bypass mode must not WRITE models.json (protected write).
+    const cwd6b = freshCwd('b-ast6b');
+    fs.mkdirSync(path.join(cwd6b, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd6b, '.7coder', 'models.json'), '{"keep":true}');
+    const m6b = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as8', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: '.7coder/models.json', content: '{"evil":true}' }) } }] },
+      { role: 'assistant', content: 'AST4B-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m6b.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd6b, timeoutMs: 60000 });
+    const as8 = tr(readLog(m6b.log), 'as8');
+    record('ast04: bypass-mode write to models.json is BLOCKED as protected', as8 && as8.c.includes('BLOCKED: protected file') && fs.readFileSync(path.join(cwd6b, '.7coder', 'models.json'), 'utf8') === '{"keep":true}', 'as8=' + (as8 ? as8.c.substring(0, 120) : 'none'));
+    stopMock(m6b);
+
+    // AST-04b: git_commit_tool (stage_all default) must never stage .7coder/
+    // runtime state (audit.jsonl) into the user's repository.
+    const cwd7 = freshCwd('b-ast7');
+    spawnSync('git', ['init'], { cwd: cwd7 });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd: cwd7 });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd: cwd7 });
+    fs.writeFileSync(path.join(cwd7, 'code.txt'), 'v1');
+    spawnSync('git', ['add', '.'], { cwd: cwd7 });
+    spawnSync('git', ['commit', '-m', 'base'], { cwd: cwd7 });
+    fs.writeFileSync(path.join(cwd7, 'code.txt'), 'v2');
+    fs.mkdirSync(path.join(cwd7, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd7, '.7coder', 'audit.jsonl'), '{"type":"tool","tool":"write_file","status":"ok"}');
+    const m7 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as9', type: 'function', function: { name: 'git_commit_tool', arguments: JSON.stringify({ message: 'ast04: code change only' }) } }] },
+      { role: 'assistant', content: 'AST4C-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m7.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd7, timeoutMs: 60000 });
+    const as9 = tr(readLog(m7.log), 'as9');
+    const lsOut = spawnSync('git', ['ls-files'], { encoding: 'utf8', cwd: cwd7 });
+    const tracked = lsOut.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+    record('ast04: git_commit_tool stages no .7coder/ runtime state', as9 && as9.c.includes('[OK] committed') && tracked.every(l => l.indexOf('.7coder/') !== 0), 'as9=' + (as9 ? as9.c.substring(0, 80) : 'none') + ' ls-files=' + tracked.join(','));
+    stopMock(m7);
+  }
+});
+
+// --- B25: AST-05 - a failed download must never destroy an existing dest file ---
+scenarios.push({
+  name: 'ast-download',
+  fn: async () => {
+    const cwd = freshCwd('b-astdl');
+    const readWs = rel => { try { return fs.readFileSync(path.join(cwd, rel), 'utf8'); } catch (e) { return '(gone: ' + e.code + ')'; } };
+    fs.writeFileSync(path.join(cwd, 'keepme.txt'), 'ORIGINAL');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'dl1', type: 'function', function: { name: 'download_tool', arguments: JSON.stringify({ url: 'http://127.0.0.1:1/x', path: 'keepme.txt' }) } }
+      ] },
+      { role: 'assistant', content: 'ASTDL-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    // round 1: connection refused -> dest must survive untouched, no residue
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const dl1 = tr(readLog(m.log), 'dl1');
+    const residue1 = fs.readdirSync(cwd).filter(f => f.indexOf('.part-') >= 0);
+    record('astdl: refused download reports Download error', dl1 && dl1.c.includes('Download error'), 'dl1=' + (dl1 ? dl1.c.substring(0, 100) : 'none'));
+    record('astdl: refused download leaves existing dest untouched', readWs('keepme.txt') === 'ORIGINAL', 'content=' + readWs('keepme.txt'));
+    record('astdl: no .part- residue after failure', residue1.length === 0, 'residue=' + residue1.join(','));
+    // round 2: mock 200 (GET serves a fixed blob without consuming a step)
+    const m2 = startMock([
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'dl3', type: 'function', function: { name: 'download_tool', arguments: JSON.stringify({ url: 'http://127.0.0.1:' + m.port + '/blob.bin', path: 'out/ok.bin' }) } }
+      ] },
+      { role: 'assistant', content: 'ASTDL2-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const dl3 = tr(readLog(m2.log), 'dl3');
+    const residue2 = fs.readdirSync(cwd).filter(f => f.indexOf('.part-') >= 0);
+    record('astdl: 200 download writes the body verbatim', dl3 && dl3.c.includes('[OK] Downloaded') && readWs(path.join('out', 'ok.bin')) === 'MOCKBLOB-1234567890-MOCKBLOB', 'dl3=' + (dl3 ? dl3.c.substring(0, 100) : 'none') + ' content=' + readWs(path.join('out', 'ok.bin')));
+    record('astdl: keepme.txt still ORIGINAL after the successful run', readWs('keepme.txt') === 'ORIGINAL', 'content=' + readWs('keepme.txt'));
+    record('astdl: no .part- residue after success', residue2.length === 0, 'residue=' + residue2.join(','));
+    stopMock(m); stopMock(m2);
   }
 });
 

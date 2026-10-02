@@ -33,7 +33,7 @@ const stage = path.join(REPO, 'dist', `7coder-v${version}-offline`);
 
 const COPY_FILES = [
   'index.js', 'package.json', 'package-lock.json', 'README.md', 'INSTALL.md',
-  'KNOWN-ISSUES.md', 'LICENSE', '.env.example', '7coder.bat', 'webui.html'
+  'LICENSE', '.env.example', '7coder.bat', 'webui.html'
 ];
 const COPY_DIRS = ['node_modules', 'test'];
 
@@ -44,7 +44,7 @@ function copyRec(src, dest) {
   if (st.isDirectory()) {
     fs.mkdirSync(dest, { recursive: true });
     for (const e of fs.readdirSync(src)) {
-      if (e === '.cache' || e === 'w-' || e.startsWith('mock-log-') || e.startsWith('cur-script-') || e.endsWith('.summary')) continue;
+      if (e === '.cache' || e.startsWith('w-') || e.startsWith('mock-log-') || e.startsWith('cur-') || e.endsWith('.summary')) continue;
       copyRec(path.join(src, e), path.join(dest, e));
     }
   } else {

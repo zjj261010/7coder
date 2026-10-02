@@ -13,3 +13,6 @@ dist/
 test/cur-*.json
 test/c3-outside/
 test/d1-outside/
+
+# 7coder runtime state (audit log, sessions, models.json with api keys)
+.7coder/

@@ -503,7 +503,8 @@ function sanitizePath(userPath) {
 const PROTECTED_FILES = [
   '.env', '.env.local', '.env.development', '.env.production',
   '.gitconfig', '.bashrc', '.zshrc', '.profile', '.npmrc', '.netrc',
-  'id_rsa', 'id_ed25519', 'credentials.json'
+  'id_rsa', 'id_ed25519', 'credentials.json',
+  'models.json' // AST-04: .7coder/models.json stores provider apiKeys
 ];
 
 function isProtectedTarget(name, args) {
@@ -1243,16 +1244,21 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
     } catch (e) { return `Fetch error: ${e.message}`; }
   }
   if (name === 'download_tool') {
-    let dest = null;
+    // AST-05: transactional write. The body streams into a temporary sibling
+    // file; `dest` is replaced only after the stream completed. Any failure
+    // cleans up just the temp file and never touches an existing dest.
+    let temp = null;
+    let writer = null;
     try {
       const destRel = sanitizePath(args.path);
       if (!destRel) return 'Download error: destination path required';
       if (!args.url || !/^https?:\/\//i.test(args.url)) return 'Download error: url must start with http:// or https://';
-      dest = path.join(launchDir, destRel);
+      const dest = path.join(launchDir, destRel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       const MAX_BYTES = 500 * 1024 * 1024;
       const response = await axios({ method: 'get', url: args.url, responseType: 'stream', timeout: 60000 });
-      const writer = fs.createWriteStream(dest);
+      temp = dest + '.part-' + Date.now();
+      writer = fs.createWriteStream(temp);
       let received = 0;
       await new Promise((resolve, reject) => {
         response.data.on('data', chunk => {
@@ -1267,9 +1273,18 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
         writer.on('finish', resolve);
         response.data.pipe(writer);
       });
+      try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch (e2) {}
+      fs.renameSync(temp, dest);
+      temp = null; // ownership transferred - the catch path must not delete it
       return `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)`;
     } catch (e) {
-      try { if (dest && fs.existsSync(dest)) fs.unlinkSync(dest); } catch (e2) {}
+      // Close the write handle first (Windows cannot unlink an open file),
+      // then remove ONLY the temp file. dest is never modified here.
+      if (writer) {
+        try { writer.destroy(); } catch (e2) {}
+        await new Promise(r => { let done = false; const fin = () => { if (!done) { done = true; r(); } }; try { writer.once('close', fin); } catch (e3) {} setTimeout(fin, 500); });
+      }
+      if (temp) { try { fs.unlinkSync(temp); } catch (e2) {} }
       return `Download error: ${e.message}`;
     }
   }
@@ -1848,7 +1863,11 @@ function inGitRepo() {
       // Pre-commit snapshot for recovery: stash create keeps it retrievable without touching the tree
       let snapshot = "";
       try { const sh = git(["stash", "create"]).trim(); if (sh) { git(["update-ref", "-m", "7coder pre-commit snapshot", "refs/7coder/snapshots/" + sh, sh], { stdio: "pipe" }); snapshot = sh; } } catch (e) { console.warn('[WARN] pre-commit snapshot failed: ' + e.message); }
-      if (args.stage_all !== false) git(["add", "-A"]);
+      // AST-04: .7coder/ holds secrets (models.json apiKeys, audit log).
+      // Keep it out of commits via pathspec exclusion - we never edit the
+      // user's .gitignore and never untrack files they committed on purpose;
+      // add -A just cannot sweep .7coder/ in anymore.
+      if (args.stage_all !== false) git(["add", "-A", "--", ":(exclude).7coder/"]);
       const staged = git(["diff", "--cached", "--name-only"]).trim();
       if (!staged) return "[GIT] nothing to commit (no staged changes).";
       git(["commit", "-m", message]); // message is ONE argv entry - no shell quoting at all
@@ -2953,10 +2972,40 @@ function startHttpServer() {
         try {
           const j = JSON.parse(body);
           const updates = {};
-          if (typeof j.endpoint === 'string') { OPENAI_ENDPOINT = j.endpoint.trim() || 'https://api.openai.com/v1'; process.env.OPENAI_ENDPOINT = OPENAI_ENDPOINT; updates.OPENAI_ENDPOINT = OPENAI_ENDPOINT; }
-          if (typeof j.apiKey === 'string') { OPENAI_API_KEY = j.apiKey; process.env.OPENAI_API_KEY = OPENAI_API_KEY; updates.OPENAI_API_KEY = OPENAI_API_KEY; }
-          if (typeof j.model === 'string' && j.model.trim()) { HEAVY_MODEL = j.model.trim(); process.env.HEAVY_MODEL = HEAVY_MODEL; updates.HEAVY_MODEL = HEAVY_MODEL; }
-          if (Object.keys(updates).length) writeWorkspaceEnv(updates);
+          // AST-08: values land in .env as KEY=value lines, so CR/LF/NUL would
+          // inject attacker-controlled env vars. Validate before touching anything.
+          let newEndpoint = null, newKey = null, newModel = null;
+          if (typeof j.endpoint === 'string') {
+            if (/[\r\n\u0000]/.test(j.endpoint)) throw new Error('endpoint must not contain CR, LF or NUL characters');
+            const ep = j.endpoint.trim();
+            if (ep && !/^https?:\/\//i.test(ep)) throw new Error('endpoint must start with http:// or https://');
+            newEndpoint = ep || 'https://api.openai.com/v1'; // empty string resets to the default
+            updates.OPENAI_ENDPOINT = newEndpoint;
+          }
+          if (typeof j.apiKey === 'string') {
+            if (/[\r\n\u0000]/.test(j.apiKey)) throw new Error('apiKey must not contain CR, LF or NUL characters');
+            newKey = j.apiKey;
+            updates.OPENAI_API_KEY = newKey;
+          }
+          if (typeof j.model === 'string' && j.model.trim()) {
+            if (/[\r\n\u0000]/.test(j.model)) throw new Error('model must not contain CR, LF or NUL characters');
+            newModel = j.model.trim();
+            updates.HEAVY_MODEL = newModel;
+          }
+          // AST-08: persist BEFORE mutating the runtime globals - a failed disk
+          // write must leave the running configuration unchanged (500, no update).
+          if (Object.keys(updates).length) {
+            try {
+              writeWorkspaceEnv(updates);
+            } catch (e2) {
+              res.writeHead(500, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: { message: 'failed to persist settings: ' + e2.message } }));
+              return;
+            }
+          }
+          if (newEndpoint !== null) { OPENAI_ENDPOINT = newEndpoint; process.env.OPENAI_ENDPOINT = OPENAI_ENDPOINT; }
+          if (newKey !== null) { OPENAI_API_KEY = newKey; process.env.OPENAI_API_KEY = OPENAI_API_KEY; }
+          if (newModel !== null) { HEAVY_MODEL = newModel; process.env.HEAVY_MODEL = HEAVY_MODEL; }
           audit({ ts: new Date().toISOString(), type: 'settings', keys: Object.keys(updates) });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, endpoint: OPENAI_ENDPOINT, model: HEAVY_MODEL, models: modelList() }));

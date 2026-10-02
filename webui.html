@@ -399,12 +399,15 @@ details.think .think-body {
   /* ===== Session persistence ===== */
   var sessionPath = null;
   function autoSaveSession() {
-    if (autoSaving || !history.length || !sessFile) return;
+    if (autoSaving || !history.length) return;
     autoSaving = true;
     var msgs = history.slice();
-    fetch('/api/sessions/save', { method: 'POST', headers: headers(), body: JSON.stringify({ messages: msgs, file: sessFile }) })
+    // 首存不带 file：服务端生成 web-*.json 并在响应里返回，再由 rememberSessFile 记住
+    var body = { messages: msgs };
+    if (sessFile) body.file = sessFile;
+    fetch('/api/sessions/save', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
-      .then(function (j) { if (j.file) sessFile = j.file; autoSaving = false; })
+      .then(function (j) { if (j.file) rememberSessFile(j.file); autoSaving = false; })
       .catch(function () { autoSaving = false; });
   }
   function rememberSessFile(f) { sessFile = f; try { localStorage.setItem('7coder-sess-file', f); } catch (e) {} }
@@ -503,39 +506,38 @@ details.think .think-body {
             if (!line.startsWith('data:')) continue;
             var payload = line.substring(5).trim();
             if (!payload || payload === '[DONE]') continue;
-            try {
-              var j = JSON.parse(payload);
-              if (j.error) throw new Error(j.error.message || 'upstream error');
-              var d = j.choices && j.choices[0] && j.choices[0].delta;
-              if (d && d.reasoning) {
-                if (!thinkEl) {
-                  thinkEl = document.createElement('details');
-                  thinkEl.className = 'think'; thinkEl.open = true;
-                  thinkEl.innerHTML = '<summary>思考过程</summary><div class="think-body"></div>';
-                  thinkBody = thinkEl.querySelector('.think-body');
-                  bubble.insertBefore(thinkEl, contentEl);
-                }
-                thinkAcc += d.reasoning;
-                thinkBody.textContent = thinkAcc;
-                log.scrollTop = log.scrollHeight;
+            var j;
+            try { j = JSON.parse(payload); } catch (pe) { continue; } // 非法 JSON 行：无害，跳过
+            if (j.error) throw new Error(j.error.message || 'upstream error'); // 业务错误：原样上抛给外层 .catch 展示
+            var d = j.choices && j.choices[0] && j.choices[0].delta;
+            if (d && d.reasoning) {
+              if (!thinkEl) {
+                thinkEl = document.createElement('details');
+                thinkEl.className = 'think'; thinkEl.open = true;
+                thinkEl.innerHTML = '<summary>思考过程</summary><div class="think-body"></div>';
+                thinkBody = thinkEl.querySelector('.think-body');
+                bubble.insertBefore(thinkEl, contentEl);
               }
-              if (d && d.tool_call) {
-                var tcDiv = document.createElement('div');
-                tcDiv.className = 'tool-call';
-                tcDiv.innerHTML = '<span class="icon">🔧</span> ' + esc(d.tool_call.name || 'tool');
-                contentEl.parentNode.insertBefore(tcDiv, contentEl);
-                log.scrollTop = log.scrollHeight;
-              }
-              if (j.approval_request) {
-                handleApproval(j.approval_request);
-              }
-              if (d && d.content) {
-                if (first) { statusEl.textContent = ''; first = false; if (thinkEl) thinkEl.open = false; }
-                acc += d.content;
-                contentEl.innerHTML = render(acc) + '<span class="cursor"></span>';
-                log.scrollTop = log.scrollHeight;
-              }
-            } catch (e) { if (e.message && e.message.indexOf('upstream') >= 0) throw e; }
+              thinkAcc += d.reasoning;
+              thinkBody.textContent = thinkAcc;
+              log.scrollTop = log.scrollHeight;
+            }
+            if (d && d.tool_call) {
+              var tcDiv = document.createElement('div');
+              tcDiv.className = 'tool-call';
+              tcDiv.innerHTML = '<span class="icon">🔧</span> ' + esc(d.tool_call.name || 'tool');
+              contentEl.parentNode.insertBefore(tcDiv, contentEl);
+              log.scrollTop = log.scrollHeight;
+            }
+            if (j.approval_request) {
+              handleApproval(j.approval_request);
+            }
+            if (d && d.content) {
+              if (first) { statusEl.textContent = ''; first = false; if (thinkEl) thinkEl.open = false; }
+              acc += d.content;
+              contentEl.innerHTML = render(acc) + '<span class="cursor"></span>';
+              log.scrollTop = log.scrollHeight;
+            }
           }
           return pump();
         });
