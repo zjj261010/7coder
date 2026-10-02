@@ -5,108 +5,16 @@
 //   NODE_BIN=path\to\node.exe   run against another runtime (e.g. Node 13)
 const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
-function rmrf(p) { try { if (fs.rmSync) fs.rmSync(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
-
 const path = require('path');
 const http = require('http');
 
-const ROOT = __dirname;
-const IDX = path.join(__dirname, '..', 'index.js');
-const NODE_BIN = process.env.NODE_BIN || process.execPath;
-const RUN_ONLY = (process.env.RUN_ONLY || '').split(',').map(s => s.trim()).filter(Boolean);
+// OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
+const S = require('./_shared').create({ suite: 'B', wsPrefix: 'w-b-' });
+const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 17850;
-const results = [];
-const ownArtifacts = [];
-const ownWorkdirs = [];
-
-function record(name, pass, detail) {
-  results.push({ name, pass, detail: detail || '' });
-  console.log((pass ? 'PASS' : 'FAIL') + '  ' + name + (pass ? '' : '  :: ' + String(detail).substring(0, 300)));
-}
-
-function startProcess(mockFile, scriptObj, extraEnv) {
-  port += 1;
-  const scriptPath = path.join(ROOT, 'cur-script-' + port + '.json');
-  fs.writeFileSync(scriptPath, JSON.stringify(scriptObj || [{ role: 'assistant', content: 'MOCK-DEFAULT' }]));
-  const child = spawn(NODE_BIN, [path.join(ROOT, mockFile)], {
-    env: Object.assign({}, process.env, { MOCK_SCRIPT: scriptPath, MOCK_PORT: String(port) }, extraEnv || {}),
-    stdio: 'ignore'
-  });
-  const logPath = path.join(ROOT, 'mock-log-' + port + '.jsonl');
-  ownArtifacts.push(scriptPath, logPath);
-  return { child, port, log: logPath };
-}
+function startProcess(mockFile, scriptObj, extraEnv) { port += 1; return startProcessAt(port, mockFile, scriptObj, extraEnv); }
 const startMock = (s) => startProcess('mock-server.js', s);
 const startChaos = (fault, s) => startProcess('chaos-mock.js', s, { FAULT_MODE: fault });
-function stopMock(m) { try { m.child.kill(); } catch (e) {} }
-
-function readLog(p) {
-  if (!fs.existsSync(p)) return [];
-  return fs.readFileSync(p, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
-}
-function toolResults(log) {
-  const out = [];
-  for (const r of log) for (const m of (r.messages || [])) if (m.role === 'tool') out.push({ id: m.tool_call_id, c: String(m.content) });
-  const seen = new Set(); const uniq = [];
-  for (const t of out) if (!seen.has(t.id)) { seen.add(t.id); uniq.push(t); }
-  return uniq;
-}
-function tr(log, id) { return toolResults(log).find(t => t.id === id); }
-
-function freshCwd(name) {
-  let dir = path.join(ROOT, 'w-b-' + name);
-  rmrf(dir, { recursive: true, force: true });
-  for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
-    if (fs.existsSync(dir)) dir = dir + '-' + Date.now(); // unique-suffix fallback (stale dir undeletable)
-  fs.mkdirSync(dir, { recursive: true });
-  ownWorkdirs.push(dir);
-  return dir;
-}
-
-function runCli(opts) {
-  const { args, env, cwd, stdinSteps, timeoutMs } = opts;
-  return new Promise(resolve => {
-    const p = spawn(NODE_BIN, [IDX].concat(args || []), {
-      env: Object.assign({}, process.env, {
-        OPENAI_API_KEY: 'x',
-        OPENAI_ENDPOINT: 'http://127.0.0.1:' + opts.port + '/v1'
-      }, env || {}),
-      cwd: cwd || ROOT
-    });
-    let out = '';
-    p.stdout.on('data', d => out += d.toString());
-    p.stderr.on('data', d => out += d.toString());
-    const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (e) {} }, timeoutMs || 90000);
-    p.on('close', code => { clearTimeout(to); resolve({ code, out }); });
-(async () => {
-      if (stdinSteps) {
-        for (const s of stdinSteps) {
-          p.stdin.write(s.t);
-          if (s.d) await new Promise(r => setTimeout(r, s.d));
-        }
-        p.stdin.end();
-      } else {
-        p.stdin.end();
-      }
-    })().catch(() => {});
-  });
-}
-
-function httpReq(portNo, method, urlPath, bodyObj, headers) {
-  return new Promise((resolve, reject) => {
-    const data = bodyObj === null ? null : (typeof bodyObj === 'string' ? bodyObj : JSON.stringify(bodyObj));
-    const req = http.request({ host: '127.0.0.1', port: portNo, method: method, path: urlPath,
-      headers: Object.assign({}, data !== null ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}, headers || {}) },
-      res => {
-        let out = '';
-        res.on('data', d => out += d.toString());
-        res.on('end', () => resolve({ status: res.statusCode, body: out }));
-      });
-    req.on('error', reject);
-    if (data !== null) req.write(data);
-    req.end();
-  });
-}
 
 // ====================== SCENARIOS ======================
 const scenarios = [];
@@ -1036,19 +944,5 @@ scenarios.push({
 });
 
 
-(async () => {
-  const t0 = Date.now();
-  for (const sc of scenarios) {
-    if (RUN_ONLY.length && !RUN_ONLY.includes(sc.name)) continue;
-    console.log('--- scenario: ' + sc.name + ' (' + NODE_BIN.substring(0, 40) + ')');
-    try { await sc.fn(); } catch (e) { record(sc.name + ' (scenario crashed)', false, e.message); }
-  }
-  // OPT-11: delete this run's own artifacts (cur-script-*, mock-log-*, w-* workdirs) before exiting.
-  try { for (const f of ownArtifacts) { try { fs.unlinkSync(f); } catch (e) {} } } catch (e) {}
-  for (const d of ownWorkdirs) rmrf(d);
-  const pass = results.filter(r => r.pass).length;
-  if (RUN_ONLY.length && results.length === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
-  console.log('\n===== SUITE B SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
-  for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
-  process.exit(pass === results.length ? 0 : 1);
-})();
+// ====================== RUNNER ======================
+S.runAll(scenarios);
