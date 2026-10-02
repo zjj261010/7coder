@@ -268,6 +268,20 @@ let agentDepth = 0;
 // (soft per-step light-model checks are skipped; hard rails stay active).
 let workflowStepDepth = 0;
 
+// AST-03: the three permission globals above are module state, so two
+// concurrent HTTP chat requests could observe each other's workflow/sub-agent
+// depth (e.g. request B's write "inheriting" request A's plan approval).
+// HTTP requests are therefore serialized through this gate; nested chains
+// inside one request (workflow steps, sub-agents) never re-acquire it. The
+// REPL path is single-task by design and needs no gate.
+let requestGateChain = Promise.resolve();
+function requestGate() {
+  let release;
+  const prev = requestGateChain;
+  requestGateChain = new Promise(r => { release = r; });
+  return prev.then(() => release);
+}
+
 function effectivePermissionMode() {
   return subAgentModeOverride || PERMISSION_MODE;
 }
@@ -1703,7 +1717,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
       const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation, approvalBridge);
       const firstLine = String(res).split('\n')[0];
       transcript.push('step ' + (i + 1) + ' (' + toolName + '): ' + firstLine.substring(0, 160));
-      if (!st.optional && /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Edit error|Workflow error)/.test(String(res))) {
+      if (!st.optional && toolFailed(res)) {
         transcript.push('(stopped after failed step ' + (i + 1) + ')');
         return finishWf('step ' + (i + 1) + ' failed');
       }
@@ -1771,19 +1785,22 @@ function parseTestOutput(text) {
   }
 
 // ====================== GIT INTEGRATION (D1) ======================
-function git(args, opts) {
-  return child_process.execSync("git " + args, Object.assign({ encoding: "utf8", cwd: launchDir, timeout: 30000 }, opts || {}));
+// AST-01: git must never go through a shell. Args are ALWAYS an array and
+// user input (paths, commit messages) is passed as single argv entries, so
+// quotes/separators/metacharacters can only ever be literal values.
+function git(argsArr, opts) {
+  return child_process.execFileSync('git', argsArr, Object.assign({ encoding: "utf8", cwd: launchDir, timeout: 30000 }, opts || {}));
 }
 function inGitRepo() {
-  try { git("rev-parse --is-inside-work-tree", { stdio: "pipe" }); return true; } catch (e) { return false; }
+  try { git(["rev-parse", "--is-inside-work-tree"], { stdio: "pipe" }); return true; } catch (e) { return false; }
 }
 
   if (name === 'git_status_tool') {
     if (!inGitRepo()) return "Not a git repository (no .git found in the workspace).";
     try {
-      const branch = git("rev-parse --abbrev-ref HEAD").trim();
-      const last = git("log -1 --oneline").trim();
-      const status = git("status --short").trim();
+      const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+      const last = git(["log", "-1", "--oneline"]).trim();
+      const status = git(["status", "--short"]).trim();
       const linesN = status ? status.split("\n") : [];
       const counts = { staged: 0, modified: 0, untracked: 0 };
       for (const l of linesN) {
@@ -1801,11 +1818,13 @@ function inGitRepo() {
   if (name === 'git_diff_tool') {
     if (!inGitRepo()) return "Not a git repository.";
     try {
-      const stagedFlag = args.staged ? " --cached" : "";
-      const scope = (typeof args.path === "string" && args.path.trim()) ? " -- " + JSON.stringify(sanitizePath(args.path)) : "";
-      const diff = git("diff" + stagedFlag + scope).trim();
-      if (!diff) return "[GIT] no changes" + (stagedFlag ? " (staged)" : "") + (scope ? " for " + args.path : "") + ".";
-      return "[GIT] diff" + (stagedFlag ? " (staged)" : "") + ":\n" + diff.substring(0, 8000);
+      const diffArgs = ["diff"];
+      if (args.staged) diffArgs.push("--cached");
+      const hasPath = typeof args.path === "string" && args.path.trim();
+      if (hasPath) { diffArgs.push("--", sanitizePath(args.path)); } // path is ONE argv entry - never shell-parsed
+      const diff = git(diffArgs).trim();
+      if (!diff) return "[GIT] no changes" + (args.staged ? " (staged)" : "") + (hasPath ? " for " + args.path : "") + ".";
+      return "[GIT] diff" + (args.staged ? " (staged)" : "") + ":\n" + diff.substring(0, 8000);
     } catch (e) { return "Git diff error: " + e.message; }
   }
 
@@ -1828,12 +1847,12 @@ function inGitRepo() {
     try {
       // Pre-commit snapshot for recovery: stash create keeps it retrievable without touching the tree
       let snapshot = "";
-      try { const sh = git("stash create").trim(); if (sh) { git("update-ref -m \"7coder pre-commit snapshot\" refs/7coder/snapshots/" + sh + " " + sh, { stdio: "pipe" }); snapshot = sh; } } catch (e) { console.warn('[WARN] pre-commit snapshot failed: ' + e.message); }
-      if (args.stage_all !== false) git("add -A");
-      const staged = git("diff --cached --name-only").trim();
+      try { const sh = git(["stash", "create"]).trim(); if (sh) { git(["update-ref", "-m", "7coder pre-commit snapshot", "refs/7coder/snapshots/" + sh, sh], { stdio: "pipe" }); snapshot = sh; } } catch (e) { console.warn('[WARN] pre-commit snapshot failed: ' + e.message); }
+      if (args.stage_all !== false) git(["add", "-A"]);
+      const staged = git(["diff", "--cached", "--name-only"]).trim();
       if (!staged) return "[GIT] nothing to commit (no staged changes).";
-      git("commit -m " + JSON.stringify(message));
-      const last = git("log -1 --oneline").trim();
+      git(["commit", "-m", message]); // message is ONE argv entry - no shell quoting at all
+      const last = git(["log", "-1", "--oneline"]).trim();
       return "[OK] committed: " + last + (snapshot ? "\n(snapshot " + snapshot.substring(0, 12) + " recorded for recovery)" : "");
     } catch (e) { return "Git commit error: " + e.message; }
   }
@@ -2072,9 +2091,9 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge) {
   try { const a = JSON.parse(func.arguments || '{}'); for (const k of Object.keys(a)) argsPreview[k] = String(JSON.stringify(a[k])).substring(0, 200); } catch (e) { argsPreview = { raw: String(func.arguments || '').substring(0, 200) }; }
   const res = await safeExecuteToolInner(toolCall, conversation, approvalBridge);
   const first = String(res).split('\n')[0];
-  const status = /^BLOCKED/.test(res) ? 'blocked'
+  const status = (/^BLOCKED/.test(res) || /^Permission mode = denial/.test(res)) ? 'blocked'
     : /declined/i.test(res) ? 'declined'
-    : /^(?:\[ERROR\]|Tool error|Parse error|Read error|Write error|Edit error|Workflow error|Download error|List error|Input error|Kill error)/.test(res) ? 'error'
+    : toolFailed(res) ? 'error'
     : 'ok';
   audit({ ts: new Date().toISOString(), type: 'tool', tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: first.substring(0, 160) });
   return res;
@@ -2102,7 +2121,15 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge) {
       console.warn(`[WARN] AI is reading protected file: ${path.basename(String(args.path || args.file))} (contains secrets)`);
     }
 
-    if (!protectedRead && (AUTO_SAFE_TOOLS.includes(name) || (name === 'write_file' && args.path && args.path.toLowerCase().includes('7coder.md')))) {
+    // AST-02: the auto-log exemption matches ONLY the workspace-root 7CODER.md
+    // after path normalization - a raw-substring match let '7coder.md/../.env'
+    // reach the auto-execute branch and write a protected file unapproved.
+    // protectedWrite (computed from the basename) always vetoes the branch.
+    let isAutoLogWrite = false;
+    if (name === 'write_file' && args.path && typeof args.path === 'string') {
+      try { isAutoLogWrite = path.relative(launchDir, path.join(launchDir, sanitizePath(args.path))).toLowerCase() === '7coder.md'; } catch (e) {}
+    }
+    if (!protectedRead && !protectedWrite && (AUTO_SAFE_TOOLS.includes(name) || isAutoLogWrite)) {
       console.log(`[TOOL] Auto-executing safe tool: ${name}`);
       return await executeToolRaw(name, args, conversation, approvalBridge);
     }
@@ -2135,13 +2162,13 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge) {
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 
     if (mode === 'auto') {
-      // workflow_tool wrapper: every inner step is individually permission-
-      // checked, so the meta-approval adds no safety - the light model's YES/NO
-      // on a vague 'N-step workflow' just makes the feature unusable in auto.
+      // AST-03: the workflow OUTER call passes the same auto-approval screen as
+      // every other tool (it once was waved through unconditionally, so even a
+      // always-rejecting light model let workflows execute). Once the plan is
+      // approved - by the light model in auto mode, by the user in default
+      // mode - inner steps legitimately inherit that approval.
       const inheritPlan = workflowStepDepth > 0 && !protectedWrite;
-      if (name === 'workflow_tool') {
-        console.log('[PERM] workflow auto-approved (each inner step is still permission-checked)');
-      } else if (inheritPlan) {
+      if (inheritPlan) {
         console.log('[PERM] workflow inner step inherits plan approval: ' + name);
       } else {
         const safe = await isAutoApprovalSafe(name, args, risk);
@@ -2216,6 +2243,13 @@ async function askApproval(question, approvalBridge) {
 }
 
 // ====================== TOOL CALLING LOOP ======================
+// AST-11: single source of truth for "did this tool call fail". The workflow
+// step-stop check and the audit status mapping both consume this regex, so
+// they can never drift apart again (they once disagreed: 'List error' and
+// declined steps let workflows continue and audit logged denials as 'ok').
+const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|Auto-approval declined|Permission mode = denial|User declined)/;
+function toolFailed(res) { return TOOL_FAIL_RE.test(String(res)); }
+
 // Central choke point for every model call: caps tool result size and
 // compresses the conversation when it grows past CONTEXT_CHARS.
 function capToolResult(result) {
@@ -3107,22 +3141,33 @@ function startHttpServer() {
               if (clientGone || res.destroyed) { clearInterval(ka); return; }
               try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; clearInterval(ka); }
             }, 5000);
-            const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null), onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: args } }, null), approvalBridge: approvalBridge });
-            clearInterval(ka);
-            approvalBridge.dispose();
-            // Give the socket-close event a moment to land when the client
-            // aborted at the very end of the run - then skip the summary.
-            await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
-            if (clientGone) return; // aborted: skip summary, 7CODER.md untouched
-            writeChunk({}, 'stop');
-            res.write('data: [DONE]\n\n');
-            res.end();
-            const newSummary = await summarizeAction(rawPrompt, result);
-            updateCompleteSummary(newSummary);
+            const releaseGate = await requestGate(); // AST-03: serialize requests (permission globals)
+            try {
+              const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null), onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: args } }, null), approvalBridge: approvalBridge });
+              clearInterval(ka);
+              approvalBridge.dispose();
+              // Give the socket-close event a moment to land when the client
+              // aborted at the very end of the run - then skip the summary.
+              await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
+              if (clientGone) { releaseGate(); return; } // aborted: skip summary, 7CODER.md untouched
+              writeChunk({}, 'stop');
+              res.write('data: [DONE]\n\n');
+              res.end();
+              const newSummary = await summarizeAction(rawPrompt, result);
+              updateCompleteSummary(newSummary);
+            } finally {
+              releaseGate();
+            }
             return;
           }
 
-          const result = await processWithTools(tempMessages, { model: reqModel });
+          const releaseGate = await requestGate(); // AST-03
+          let result;
+          try {
+            result = await processWithTools(tempMessages, { model: reqModel });
+          } finally {
+            releaseGate();
+          }
 
           // Summarize and update 7CODER.md
           const newSummary = await summarizeAction(rawPrompt, result);

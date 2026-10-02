@@ -395,7 +395,18 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('b-appriso');
     const tc = (id, file) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: file, content: 'ISO-' + file }) } }] });
-    const m = startMock([tc('iso1', 'a.txt'), tc('iso2', 'b.txt'), 'FINAL-A', 'X', 'FINAL-B', 'X2']);
+    // Serialized consumption order (AST-03 gate): A heavy(tcA) -> A final -> A
+    // summary-light -> B heavy(tcB) -> B final -> B summary-light.
+    // NOTE: every step must be a full assistant OBJECT - mock-server reads
+    // step.content/step.tool_calls, so bare strings yield empty deltas.
+    const m = startMock([
+      tc('iso1', 'a.txt'),
+      { role: 'assistant', content: 'FINAL-A' },
+      { role: 'assistant', content: 'X' },
+      tc('iso2', 'b.txt'),
+      { role: 'assistant', content: 'FINAL-B' },
+      { role: 'assistant', content: 'X2' }
+    ]);
     await new Promise(r => setTimeout(r, 600));
     const srvPort = port + 421;
     const srv = spawn(NODE_BIN, [IDX, '--server'], {
@@ -421,18 +432,22 @@ scenarios.push({
     const idIn = (obj) => { const mm = obj.text.match(/"approval_request":\{"id":"([^"]+)"/); return mm ? mm[1] : null; };
     try {
       await new Promise(r => setTimeout(r, 2500));
+      // AST-03 request gate: chat requests serialize, so the second stream
+      // QUEUES while the first one waits for its approval. Isolation is still
+      // per-request: each stream sees only its own approval id/prefix, and
+      // approving one never touches the other.
       const sA = await openStream();
       const gotA = await waitFor(sA, 'approval_request', 15000);
+      const idA = idIn(sA);
       const sB = await openStream();
-      const gotB = await waitFor(sB, 'approval_request', 15000);
-      const idA = idIn(sA), idB = idIn(sB);
-      record('iso: both concurrent streams got their own approval request', gotA && gotB, 'A=' + gotA + ' B=' + gotB + ' tailA=' + sA.text.substring(sA.text.length - 120));
-      record('iso: approval ids differ and carry per-request prefixes', !!idA && !!idB && idA !== idB && /^apr-[a-z0-9]{6}-/.test(idA) && /^apr-[a-z0-9]{6}-/.test(idB), 'idA=' + idA + ' idB=' + idB);
+      await new Promise(r => setTimeout(r, 1200));
+      record('iso: queued stream B gets no approval while A holds the gate', gotA && !sB.text.includes('approval_request') && !sB.text.includes('[DONE]'), 'gotA=' + gotA + ' tailB=' + sB.text.substring(sB.text.length - 80));
       const okA = await httpReq(srvPort, 'POST', '/api/approve', { id: idA, approved: true });
       const doneA = await waitFor(sA, '[DONE]', 20000);
-      record('iso: approving A completes only A', okA.status === 200 && doneA, 'status=' + okA.status + ' doneA=' + doneA);
-      await new Promise(r => setTimeout(r, 1200));
-      record('iso: B stays pending while only A was approved', !sB.text.includes('[DONE]'), 'B done prematurely: ' + sB.text.includes('[DONE]'));
+      const gotB = await waitFor(sB, 'approval_request', 20000); // B starts only after A finished
+      const idB = idIn(sB);
+      record('iso: approving A completes A, then B runs and gets its own approval', okA.status === 200 && doneA && gotB, 'status=' + okA.status + ' doneA=' + doneA + ' gotB=' + gotB + ' tailB=' + sB.text.substring(Math.max(0, sB.text.length - 300)));
+      record('iso: approval ids differ and carry per-request prefixes', !!idA && !!idB && idA !== idB && /^apr-[a-z0-9]{6}-/.test(idA) && /^apr-[a-z0-9]{6}-/.test(idB), 'idA=' + idA + ' idB=' + idB);
       const okB = await httpReq(srvPort, 'POST', '/api/approve', { id: idB, approved: true });
       const doneB = await waitFor(sB, '[DONE]', 20000);
       record('iso: approving B then completes B', okB.status === 200 && doneB, 'status=' + okB.status + ' doneB=' + doneB);
@@ -444,8 +459,6 @@ scenarios.push({
   }
 });
 
-
-// ====================== RUNNER ======================
 // --- B9: LMStudio-style in-stream context-overflow error surfaces ---
 scenarios.push({
   name: 'lmstudio-ctx',
@@ -940,6 +953,103 @@ scenarios.push({
     record('parallel: content correct per call', results[0] && results[0].c.includes('alpha') && results[1] && results[1].c.includes('beta') && results[2] && results[2].c.includes('gamma'), '');
     record('parallel: reply generated after parallel batch', r.out.includes('PARALLEL-DONE'), '');
     stopMock(m);
+  }
+});
+
+// --- B24: AST security round (AST-01/02/03/11 negative assertions) ---
+scenarios.push({
+  name: 'ast-security',
+  fn: async () => {
+    // AST-01: git path / commit message must never be shell-parsed
+    const cwd1 = freshCwd('b-ast1');
+    for (const g of [['init'], ['config', 'user.email', 't@t'], ['config', 'user.name', 't'], ['add', '.'], ['commit', '-m', 'init']]) {
+      try { spawnSync('git', g, { cwd: cwd1 }); } catch (e) {}
+    }
+    fs.writeFileSync(path.join(cwd1, 'a.txt'), 'v1');
+    try { spawnSync('git', ['add', '.'], { cwd: cwd1 }); spawnSync('git', ['commit', '-m', 'base'], { cwd: cwd1 }); } catch (e) {}
+    const m1 = startMock([
+      { role: 'assistant', content: null, tool_calls: [
+        { id: 'as1', type: 'function', function: { name: 'git_diff_tool', arguments: JSON.stringify({ path: 'x" & echo PWNED-AST1 > pwned1.txt' }) } },
+        { id: 'as2', type: 'function', function: { name: 'git_commit_tool', arguments: JSON.stringify({ message: 'feat & echo PWNED-AST1B > pwned2.txt' }) } }
+      ] },
+      { role: 'assistant', content: 'AST1-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m1.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd1, timeoutMs: 60000 });
+    const l1 = readLog(m1.log);
+    const as1 = tr(l1, 'as1'), as2 = tr(l1, 'as2');
+    record('ast01: injected diff path executes no shell (no marker)', !fs.existsSync(path.join(cwd1, 'pwned1.txt')), as1 ? as1.c.substring(0, 100) : 'no result');
+    const lastMsg = spawnSync('git', ['log', '-1', '--format=%s'], { encoding: 'utf8', cwd: cwd1 });
+    record('ast01: commit message stays a literal argument (no marker, message verbatim)', !fs.existsSync(path.join(cwd1, 'pwned2.txt')) && as2 && as2.c.includes('[OK] committed') && lastMsg.stdout.includes('echo PWNED-AST1B'), 'as2=' + (as2 ? as2.c.substring(0, 80) : 'none') + ' last=' + lastMsg.stdout.trim());
+    stopMock(m1);
+
+    // AST-02: '7coder.md/../.env' must NOT reach the auto-execute branch
+    const cwd2 = freshCwd('b-ast2');
+    const m2 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as3', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: '7coder.md/../.env', content: 'HACKED=1' }) } }] },
+      { role: 'assistant', content: 'AST2-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: {}, cwd: cwd2, timeoutMs: 60000 }); // default mode
+    const as3 = tr(readLog(m2.log), 'as3');
+    record('ast02: traversal-disguised .env write is declined in default mode (no file written)', as3 && /declined|BLOCKED/.test(as3.c) && !fs.existsSync(path.join(cwd2, '.env')), 'as3=' + (as3 ? as3.c.substring(0, 100) : 'none'));
+    stopMock(m2);
+    const cwd2b = freshCwd('b-ast2b');
+    const m2b = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as3b', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: '7coder.md/../.env', content: 'HACKED=1' }) } }] },
+      { role: 'assistant', content: 'AST2B-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2b.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd2b, timeoutMs: 60000 });
+    const as3b = tr(readLog(m2b.log), 'as3b');
+    record('ast02: bypass mode blocks the same write as protected', as3b && as3b.c.includes('BLOCKED: protected file') && !fs.existsSync(path.join(cwd2b, '.env')), 'as3b=' + (as3b ? as3b.c.substring(0, 100) : 'none'));
+    stopMock(m2b);
+
+    // AST-03: an always-rejecting light model must also reject the workflow plan
+    const cwd3 = freshCwd('b-ast3');
+    const m3 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as4', type: 'function', function: { name: 'workflow_tool', arguments: JSON.stringify({ steps: [{ tool: 'write_file', args: { path: 'out-ast3.txt', content: 'X' } }] }) } }] },
+      { role: 'assistant', content: 'NO' }, // light model rejects the plan
+      { role: 'assistant', content: 'AST3-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m3.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'auto' }, cwd: cwd3, timeoutMs: 60000 });
+    const as4 = tr(readLog(m3.log), 'as4');
+    record('ast03: auto mode declines the workflow plan itself when the light model says NO', as4 && as4.c.includes('Auto-approval declined') && !fs.existsSync(path.join(cwd3, 'out-ast3.txt')), 'as4=' + (as4 ? as4.c.substring(0, 100) : 'none'));
+    stopMock(m3);
+
+    // AST-11a: a List error step must stop the workflow (regex unification)
+    const cwd4 = freshCwd('b-ast4');
+    const m4 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as5', type: 'function', function: { name: 'workflow_tool', arguments: JSON.stringify({ steps: [
+        { tool: 'list_dir', args: { path: 'missing-dir-ast11' } },
+        { tool: 'write_file', args: { path: 'after-ast11.txt', content: 'x' } }
+      ] }) } }] },
+      { role: 'assistant', content: 'AST11-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m4.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd4, timeoutMs: 60000 });
+    const as5 = tr(readLog(m4.log), 'as5');
+    record('ast11: List error stops the workflow (no silent continue)', as5 && as5.c.includes('stopped after failed step 1') && !fs.existsSync(path.join(cwd4, 'after-ast11.txt')), 'as5=' + (as5 ? as5.c.substring(0, 120) : 'none'));
+    stopMock(m4);
+
+    // AST-11b: denial-mode rejection must audit as blocked, not ok
+    const cwd5 = freshCwd('b-ast5');
+    const m5 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'as6', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'ok-ast11b.txt', content: 'x' }) } }] },
+      { role: 'assistant', content: 'AST11B-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m5.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'denial' }, cwd: cwd5, timeoutMs: 60000 });
+    const auditPath5 = path.join(cwd5, '.7coder', 'audit.jsonl');
+    let denialStatus = '(no audit)';
+    if (fs.existsSync(auditPath5)) {
+      const entries = fs.readFileSync(auditPath5, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
+      const e5 = entries.find(e => e.tool === 'write_file');
+      if (e5) denialStatus = e5.status;
+    }
+    record('ast11: denial-mode rejection audits as blocked (was ok)', denialStatus === 'blocked', 'status=' + denialStatus);
+    stopMock(m5);
   }
 });
 
