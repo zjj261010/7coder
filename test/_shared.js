@@ -73,10 +73,14 @@ function create(opts) {
         cwd: cwd || ROOT
       });
       let out = '';
-      p.stdout.on('data', d => out += d.toString());
+      // elapsedMs/firstOutMs: suites C (bye-hang) and F (perf) assert on these;
+      // extra resolve fields are ignored by the suites that don't.
+      const t0 = Date.now();
+      let firstOutMs = null;
+      p.stdout.on('data', d => { if (firstOutMs === null) firstOutMs = Date.now() - t0; out += d.toString(); });
       p.stderr.on('data', d => out += d.toString());
       const to = setTimeout(() => { try { p.kill('SIGKILL'); } catch (e) {} }, timeoutMs || 90000);
-      p.on('close', code => { clearTimeout(to); resolve({ code, out }); });
+      p.on('close', code => { clearTimeout(to); resolve({ code, out, elapsedMs: Date.now() - t0, firstOutMs: firstOutMs || Date.now() - t0 }); });
       (async () => {
         if (stdinSteps) {
           for (const s of stdinSteps) {

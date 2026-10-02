@@ -12,19 +12,19 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 96 |
-| runner-c.js | 37 |
-| runner-d.js | 26 |
-| runner-e.js | 23 |
-| runner-f.js | 24 |
-| runner-g.js | 32 |
-| runner-h.js | 28 |
-| runner-i.js | 33 |
-| runner-j.js | 18 |
+| runner-b.js | 95 |
+| runner-c.js | 36 |
+| runner-d.js | 25 |
+| runner-e.js | 22 |
+| runner-f.js | 23 |
+| runner-g.js | 31 |
+| runner-h.js | 27 |
+| runner-i.js | 32 |
+| runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
-| runner.js | 53 |
-| **合计** | **392** |
+| runner.js | 52 |
+| **合计** | **382** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -164,7 +164,7 @@
 | OPT-1 | 安全 | 审计日志参数脱敏（=P2-5） | ✅ sanitizeAuditArgs：敏感键名→***，其余值清洗 Bearer/sk- 令牌；audit-log 场景断言明文不落盘 |
 | OPT-2 | 安全 | 未设 HTTP_API_KEY 时对写操作类 /api/* 默认拒绝或一次性确认 | ⛔ 用户决策（2026-10-01）：维持现状不修——本机个人工具，loopback 默认 + 文档已有 LAN 警告；如未来需 LAN 长期暴露再重开（含 .env 重写劫持上游的升级说明，见 DS 系列核对表） |
 | OPT-3 | 结构 | index.js（现 ~3420 行）按职责拆分模块；DS-13（audit 加 runId）随此一并 | ⬜ 用户决策暂缓（2026-10-02）：等功能需求触发或专项多轮安排；10-01 两起拼接事故说明迁移本身即高风险 |
-| OPT-4 | 测试 | 12 个 runner 公共件抽 test/_shared.js | ⬜ 用户决策暂缓（2026-10-02）；OPT-11 的十处同型改动再次印证其价值，重开时优先 |
+| OPT-4 | 测试 | 12 个 runner 公共件抽 test/_shared.js | ✅ 2026-10-02 用户批准实施：主会话设计 _shared.js 并试点迁移 A/B（11e9a29），GLM-5.3-Flash 照配方迁移 C–J（8 文件 -892 行/+55 行，场景代码零改动）；rmrf/record/freshCwd/runCli/httpReq/汇总块收敛为单份实现；A–J 409 项全绿与迁移前一致。k/r 为真实端点套件结构不同，按设计不迁移。静态断言计数刷新为 382（每套件 -1，崩溃场景记录移入 _shared） |
 | OPT-5 | 测试 | test/ 残渣清理 | ✅ 2026-10-02 存量清零（102 cur-script + 100 mock-log + 170 w-* + 4 杂项，14MB→~0）；增量由 OPT-11 自清理兜底 |
 | OPT-6 | 并发 | 多客户端会话保存语义（审批隔离 P0-3 已就绪） | ⬜ 用户决策挂起（2026-10-02）：常用多标签时再做，需先定分桶语义 |
 | OPT-7 | 测试 | RUN_ONLY 空匹配时非零退出 | ✅ 随 DS-9 关闭（10 个 runner exit 1） |
