@@ -162,7 +162,7 @@
 | # | 方向 | 内容 | 状态 |
 |---|------|------|------|
 | OPT-1 | 安全 | 审计日志参数脱敏（=P2-5） | ✅ sanitizeAuditArgs：敏感键名→***，其余值清洗 Bearer/sk- 令牌；audit-log 场景断言明文不落盘 |
-| OPT-2 | 安全 | 未设 HTTP_API_KEY 时对写操作类 /api/* 默认拒绝或一次性确认 | ⛔ 用户决策（2026-10-01）：维持现状不修——本机个人工具，loopback 默认 + 文档已有 LAN 警告；如未来需 LAN 长期暴露再重开（含 .env 重写劫持上游的升级说明，见 DS 系列核对表） |
+| OPT-2 | 安全 | 未设 HTTP_API_KEY 时对写操作类 /api/* 默认拒绝或一次性确认 | ⛔ 用户决策（2026-10-01）：维持现状不修——本机个人工具，loopback 默认 + 文档已有 LAN 警告；如未来需 LAN 长期暴露再重开（含 .env 重写劫持上游的升级说明，见 DS 系列核对表）。2026-10-02 补充证据（gpt-astra 探针）：无 key 时任意 Origin/Host 的 POST /api/mode 可切 bypass——重开时按 Origin/Host 校验 + CSRF token + 非 loopback 启动强制确认的低摩擦清单执行 |
 | OPT-3 | 结构 | index.js（现 ~3420 行）按职责拆分模块；DS-13（audit 加 runId）随此一并 | ⬜ 用户决策暂缓（2026-10-02）：等功能需求触发或专项多轮安排；10-01 两起拼接事故说明迁移本身即高风险 |
 | OPT-4 | 测试 | 12 个 runner 公共件抽 test/_shared.js | ✅ 2026-10-02 用户批准实施：主会话设计 _shared.js 并试点迁移 A/B（11e9a29），GLM-5.3-Flash 照配方迁移 C–J（8 文件 -892 行/+55 行，场景代码零改动）；rmrf/record/freshCwd/runCli/httpReq/汇总块收敛为单份实现；A–J 409 项全绿与迁移前一致。k/r 为真实端点套件结构不同，按设计不迁移。静态断言计数刷新为 382（每套件 -1，崩溃场景记录移入 _shared） |
 | OPT-5 | 测试 | test/ 残渣清理 | ✅ 2026-10-02 存量清零（102 cur-script + 100 mock-log + 170 w-* + 4 杂项，14MB→~0）；增量由 OPT-11 自清理兜底 |
@@ -290,6 +290,55 @@
 
 - GAP-3 的二进制半 = 老 P1-6（09-30 清单，一直 ⬜）；GAP-5 = D3 的务实降级版；GAP-13 = C9；GAP-1 修正了 README 对 MCP 的表述基础（当前文档宣称的 MCP 支持实为自定义协议，建议文档同步改口或实施本项）。
 - 全部 GAP 为新增待决项，不与已关闭条目冲突；实施顺序建议：GAP-3（纯小改）→ GAP-8/10/6（小）→ GAP-1（生态价值最大）→ GAP-2/4/5/7/9/11/12 → GAP-13/14。
+
+---
+
+## 2026-10-02（晚）—— gpt-astra 审阅核对（AST 系列）
+
+> 输入：`gpt-astra审阅.md`（双运行时探针复现 + 隔离目录安全验证 + 真实模型补测 20/20）。
+> 核对方式：主会话逐条对当前代码验证（本节行号为 HEAD 6963444 后版本）。
+> 总评：**11/11 条 AST 问题全部对码属实，无不实条目**（对照 deepseek 报告 5 条不实，本报告的"已复现"标签与代码事实全部一致）。其核心论断成立：现有测试通过不能证明权限边界、数据保存与错误传播正确。
+> 用户指令为核对合并、未要求本轮修复；建议修复批次 = 报告阶段一（AST-01~06 先行）。
+
+### P1 — 破坏审批边界 / 泄露 / 丢数据（全部核对属实）
+
+| # | 位置 | 问题（核对结论） | 状态 |
+|---|------|------|------|
+| AST-01 | index.js:1774-1777, 1801-1810 | **只读 Git 工具 shell 注入**：git() 用 `execSync("git " + args)` 字符串拼接；git_diff_tool 把模型可控的 path 经 JSON.stringify 后拼入（JSON 转义≠shell 转义），且在 AUTO_SAFE 清单免审批——一次"只读 diff"可执行任意命令，还绕过 isSuperDangerous。commit 的 message 同模式 | ⬜ |
+| AST-02 | index.js:2095-2107 | **受保护文件写入审批被绕过**：auto-safe 分支只排除 protectedRead 未排除 protectedWrite；`write_file("7coder.md/../.env")` 命中 `includes('7coder.md')` 自动放行，实际写入 .env（basename 检查已算出 .env 却被字符串包含判断劫持） | ⬜ |
+| AST-03 | index.js:265-269, 2129-2141 | **auto 模式 workflow 全程零审批 + 全局状态跨请求泄漏**：外层 workflow_tool 无条件放行（注释称"内层逐步检查"，但内层继承分支恰恰跳过检查——注释与实现自相矛盾）；探针证实"审批模型设为永远拒绝，普通写被拒、放进 workflow 却执行"。workflowStepDepth/subAgentModeOverride/agentDepth 均为模块级全局，并发请求互相污染（P0-3 只修了审批桥这一个全局） | ⬜ |
+| AST-04 | index.js:489-493, 2087-2090；.gitignore | **模型配置密钥可被模型自动读取并可入 git**：models.json（含 apiKey）不在 PROTECTED_FILES，read_file 是 AUTO_SAFE → 免审批全文返回给模型；`.gitignore` 未忽略 `.7coder/`，git_commit_tool 默认 `add -A` 可把含密钥的 models.json 提交进库。审计首行泄露仅在紧凑 JSON 时成立（次要）。注意：这与 P0-4 ⛔（界面显示密钥）是不同问题——本条是模型可读 + 可提交 | ⬜ |
+| AST-05 | index.js:1231-1262 | **下载失败删除既有文件**：dest 先建流（truncate 已有文件），catch 无条件 `unlinkSync(dest)`——503/断网即毁掉原文件，无需攻击者 | ⬜ |
+| AST-06 | webui.html:342, 401-408 | **Web 新会话永不首次保存**：autoSaveSession 在 `!sessFile` 时早退，而 sessFile 只在加载旧会话时设置——首次保存鸡生蛋。既有测试只测服务端路由、未测前端触发（盲区实锤）；此前"会话自动保存"实际只覆盖"已加载会话"的增量 | ⬜ |
+
+### P2 — 可靠性 / 可观测性（核对属实）
+
+| # | 位置 | 问题（核对结论） | 状态 |
+|---|------|------|------|
+| AST-07 | webui.html:538 | **SSE 业务错误被吞**：catch 仅当 message 含 `upstream` 才重抛；`API error 401`/`Max retries reached` 等被当普通内容忽略，用户看到空回复不知失败 | ⬜ |
+| AST-08 | /api/settings + writeWorkspaceEnv | **设置值换行注入环境变量**：仅校验字符串类型，值含 `\nPERMISSION_MODE=bypass` 可落盘成独立配置行；且运行时全局先改后写盘，写失败出现"接口报错但已切换"的不一致 | ⬜ |
+| AST-09 | 全部 exec 路径 | **同步子进程阻塞 HTTP 事件循环 + 取消不贯穿**：execSync 单次可跑数分钟，期间健康查询/审批/取消全部排队；cancel 只在工具循环边界生效，未传入 axios/子进程/子代理（与 GAP-2 部分重叠但角度不同：本条是阻塞与取消，GAP-2 是状态与交互） | ⬜ |
+| AST-10 | 各 POST 路由 | **请求体上限只设标志不停止累积**：聊天路由 oversized=true 后继续 `body += chunk` 到 end 才 413；其余 POST 路由（approve/save/settings/mode 等）完全没有上限 | ⬜ |
+| AST-11 | index.js:1706-1709 vs 2057-2060 | **两张失败判定正则漂移**：workflow 步骤失败正则比审计正则少 `List error`/`Download error`/`Input error`/`Kill error` 等前缀——list_dir 失败后工作流继续执行后续写步骤并报 `[OK] Workflow complete`；`Auto-approval declined` 两边都不认；denial 拒绝在审计里记 `status:"ok"`。= deepseek 建议 5.2（结构化 ToolResult）的实证，二者合并处理 | ⬜ |
+
+### 测试与打包配套问题（核对属实）
+
+| # | 位置 | 问题 | 状态 |
+|---|------|------|------|
+| AST-12 | test/runner.js cli-exit 场景 | r3 直连 `https://api.openai.com`（空 key 的真实外网请求）；r1/r2/r3 均未设隔离 cwd → 每次跑套件 A 都在仓库根产生 7CODER.md/.7coder_last_interaction（此前误归因于主会话手动测试，实为套件自身污染仓库根） | ⬜ |
+| AST-13 | scripts/pack-offline.js:34-47 | COPY_FILES 仍引用已归档的 KNOWN-ISSUES.md（OPT-9 移动后未同步，缺失时静默跳过）；`e === 'w-'` 恒假的老 P1-9 半截仍在；依赖树直拷非干净构建（P1-9 升级合并至此） | ⬜ |
+
+### 真实模型补测的观察（并入优化建议）
+
+- **AST-R1 摘要开销**：真实验证中 7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时（summarizeAction 无独立 maxTokens/模型配置）——建议摘要独立预算与模型、低价值消息跳过摘要、非流式不应同步等待摘要。
+- **AST-R2 审批方差**：语义等价的编辑因表述不同被轻模型先拒后批——审批理由应结构化记录，确定性规则为主、模型判断为辅。
+- 报告 5.1 的 Origin/Host 探针结果（无 key 时任意 Origin 的 POST /api/mode 可切 bypass）并入 OPT-2 备注；⛔ 决策不变，重开时按报告的低摩擦措施清单执行（Origin/Host 校验、CSRF token、非 loopback 启动强制确认）。
+
+### 报告中未采纳/仅记录的部分
+
+- 5.3 Node 13 EOL 双轨构建：离线包已捆绑运行时并明确面向 Win7，现状覆盖主要诉求；LTS 双轨是新工程，不并入待办，重开 OPT-3 时参考。
+- 7.4 "机器可维护状态索引"：与 OPT-10 同方向，并入 OPT-10 备注（统一 ID/状态/提交/验收字段）。
+- 第十一节 11.6/11.7/11.8（端点对账、qwen3.8-flash 单次验证）为环境验证记录，非项目问题，不入表。
 
 ---
 
