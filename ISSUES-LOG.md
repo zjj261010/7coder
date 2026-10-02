@@ -6,7 +6,7 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-01 深夜）：单文件 index.js（~3410 行），v2.16.0，P0-3/DS-14/15 轮后 A–J 全绿 403 项（A 77/B 103/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-02）：单文件 index.js（~3450 行），v2.16.0；OPT-4 后 A–J 全绿 409 项（A 80/B 106/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
@@ -248,6 +248,48 @@
 | INC-7 | 教训沉淀：拼接式改动后必须 ① 对比路由清单（`grep -o "req.url === '"` vs HEAD）② 跑含聊天场景的套件而非只测新路由；测试前先清孤儿进程 | ✅ 已记入维护约定 |
 
 **回归证据**：A 74/74、B 93/93、I 34/34（2026-10-01，Node 24）。
+
+---
+
+## 2026-10-02 —— 编程 AI 工具能力差距审阅（GAP 系列）
+
+> 视角：不是找 bug（历轮已扫），而是对标现代编码 agent（Claude Code / Aider / Cline 类）盘点 7coder 作为"编程 AI 工具"缺什么、什么值得优化。
+> 方法：逐机制实码勘察（行号取自当前 HEAD ~3450 行版本），非印象流。
+> 先说已有的优势面（避免片面）：路径沙箱 fail-closed、四权限模式 + 审批经济学（确定性风险表）、审计日志、备份/undo、会话持久化、双运行时 409 项测试纪律——这些在同体积工具里是超配。
+
+### A 级——直接影响编程体验
+
+| # | 现状（实码证据） | 差距 | 建议 | 代价 |
+|---|------|------|------|------|
+| GAP-1 | mcp_tool 走自定义协议 `POST {url}/invoke {tool,arguments}`（index.js:1429 附近）；MCP 生态实际标准是 JSON-RPC 2.0（stdio 传输为主，HTTP+SSE 次之） | **生态服务器一个都连不上**，"支持 MCP"名不副实 | 实现 stdio transport：spawn 子进程 + Content-Length 帧收发（零新依赖可行，纯管道不需要 PTY）；HTTP+SSE 二期；无配置时报错文案已修（P1-12） | 中 |
+| GAP-2 | 三个命令工具全部 `execSync/execFileSync`，`cwd: launchDir` 写死（index.js:1143/1158/1167）；无交互进程支持 | ① `cd`/环境变量不跨命令保持，模型每条命令都从工作区根重来 ② REPL 型交互程序（python/node 交互式、npm login）完全无法运行 | bash_tool 维持常驻子进程（spawn + 命令队列 + 输出缓冲），保持 cwd/env；输出用"等待静默 N ms 或遇提示符"截取。Win7 无 conPTY，真终端不做，文档明示 | 中 |
+| GAP-3 | read_file 全量读取**无行号**（仅 offset/limit 分支有 cat -n，index.js:1078-1090）；**无二进制检测**（=老 P1-6 未修，图片读成 U+FFFD 糊）；无 repo map，大仓库冷启动靠模型自己 ls/glob 摸索 | 编辑锚点不稳（无行号时 old_string 全靠记忆）；二进制白烧上下文；冷启动慢 | ① 全量读也带行号 ② 前 4KB 含 NUL 即拒绝并提示 ③ 任务启动时注入目录树摘要（git ls-files 或 glob 顶层两层，截断至 ~200 行）——三件都是小改动 | 小 |
+| GAP-4 | 聊天通道**丢弃 image part**（套件断言即如此，runner-b httpx）；computer_use 截屏只返回文件路径（index.js:1582），模型"看不见"自己截的图；仅 web_browser 对图片 URL 调 describeWithVision（index.js:1279） | 视觉闭环断裂：不能看截图→不能真正基于屏幕决策；用户也不能贴图问问题 | ① 截屏后自动转 base64 data URL 走 VISION_MODEL describe 回填（管线已存在，只差接线）② 上游多模态时聊天透传 image_url | 中 |
+
+### B 级——agent 能力增强
+
+| # | 现状 | 差距 | 建议 | 代价 |
+|---|------|------|------|------|
+| GAP-5 | 无 LSP（=D3 老项未排期）；编辑后类型/语法错误只能等跑测试才发现 | 修错反馈环长 | 最小版先不做 LSP：加 diagnostics_tool 包装 `tsc --noEmit` / `eslint -f json`（按项目探测），编辑后模型可主动调用；完整 LSP 仍是周级工程 | 小→大 |
+| GAP-6 | todo_write_tool 只是往 TODO.md 追加文本行 | 无结构化任务列表，无状态流转（doing/done），web UI 也无从展示进度 | 结构化 {id,title,status,updated} 存 `.7coder/todos.json`，工具改读写 JSON；web UI 侧栏渲染进度 | 小 |
+| GAP-7 | REPL 仅固定命令（/bye /clear /undo /btw /resume /execute-task-now）；无 hooks | 用户无法沉淀自定义工作流（一键"跑测+修复"类），无法注入 pre/post-tool 规则（如"禁止改 src/legacy/**"） | ① `.7coder/commands/*.md` 斜杠命令展开为 prompt ② 工具调用前后钩子（复用审批管线位置，用户脚本 exit≠0 即拦截） | 中 |
+| GAP-8 | 上游响应的 usage 字段完全未用（grep 无 prompt_tokens/usage 统计） | 无 token/费用可观测，长会话无感知 | callOpenAI 累计 usage 入会话与审计日志；REPL 提示符旁与 web UI 设置面板显示累计值 | 小 |
+| GAP-9 | 记忆=7CODER.md 单文件（auto-log 标记节 + dream 整理）+ BTW.md | 扁平无分层：项目事实/用户偏好/临时笔记混一处，长了靠压缩 | 分层 memory（.7coder/memory/*.md 按主题）+ 任务启动时按关键词召回注入；dream 改为整理归档 | 中 |
+| GAP-10 | web_search_tool 抓 lite.duckduckgo.com 的 HTML 用正则提链接（index.js:1262-1268） | 无 API、正则脆弱、易限流、无降级 | 保底可用的同时留 API 提供方配置（SearXNG/Bing/Brave 任一 key 即切换）；失败时明确告知而非空结果 | 小 |
+
+### C 级——打磨与可选
+
+| # | 现状 | 差距 | 建议 | 代价 |
+|---|------|------|------|------|
+| GAP-11 | PROTECTED_FILES 硬编码 12 项（index.js:489-493）；权限仅四模式 | 用户不可扩展保护清单，也无 allow/deny 规则 | `.7coder/permissions.json`：protected_extra/allow/deny（glob 规则），启动加载并公告 | 小 |
+| GAP-12 | 备份按文件 5 份可 /undo 单文件；git_commit_tool 可整树快照 | 缺"本次任务改了什么"的汇总视图/检查点 | 任务结束时输出改动清单（backup/audit 已有数据可聚合）；或任务前自动 git stash-create 检查点 | 小 |
+| GAP-13 | 上下文压缩按字符数近似（=C9 老项） | 字符≠token，CJK 尤其失真，压缩触发偏晚 | 引入轻量 tokenizer 估算（需验证 Node 13 兼容的纯 JS 实现）；或按 (字符+CJK×2) 折算近似 | 中 |
+| GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 低优先；sessions/ 已有时间戳副本，补"从第 N 轮分叉"命令即可 | 中 |
+
+### 与既有条目的关系
+
+- GAP-3 的二进制半 = 老 P1-6（09-30 清单，一直 ⬜）；GAP-5 = D3 的务实降级版；GAP-13 = C9；GAP-1 修正了 README 对 MCP 的表述基础（当前文档宣称的 MCP 支持实为自定义协议，建议文档同步改口或实施本项）。
+- 全部 GAP 为新增待决项，不与已关闭条目冲突；实施顺序建议：GAP-3（纯小改）→ GAP-8/10/6（小）→ GAP-1（生态价值最大）→ GAP-2/4/5/7/9/11/12 → GAP-13/14。
 
 ---
 
