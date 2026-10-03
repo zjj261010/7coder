@@ -91,7 +91,8 @@ supported, plus `/v1/models`. Client message histories are honored for multi-tur
 - `task_create_tool` / `task_get_tool` / `task_list_tool` / `task_output_tool` / `task_stop_tool` — **real background shell tasks** (async exec, output streaming, `taskkill /T /F` tree-kill on Windows)
 - `skill_tool` — **real skills**: instructions loaded from `.7coder/skills/<name>.md`
 - `synthetic_output_tool` — validated structured output (JSON parsed + type-checked against your schema)
-- `run_command` (default shell) / `bash_tool` (**real bash**; on Windows needs Git for Windows) / `powershell_tool` (**real Windows PowerShell**, works on Win7's PowerShell 2.0 via `-EncodedCommand`)
+- `run_command` (default shell) / `bash_tool` (**real bash**; on Windows needs Git for Windows) / `powershell_tool` (**real Windows PowerShell**, works on Win7's PowerShell 2.0 via `-EncodedCommand`).
+  `bash_tool {persistent:true}` runs in ONE long-lived bash for the whole conversation: `cd`, `export` and aliases survive across calls. A hung command (interactive program) times out (`timeout_ms`, default 120s) and the session restarts fresh; bare `exit` ends the session - the next call respawns it. Default (persistent unset) stays a fresh stateless shell per call.
 - `glob_tool` / `grep_tool` / `list_dir`
 - `web_fetch_tool` / `web_search_tool` / `web_browser_tool` / `download_tool` (streamed, 500 MB cap)
 - `process_list_tool` / `process_kill_tool` — `tasklist` / `taskkill /T /F` on Windows (kills the whole child tree), `ps`/`kill` elsewhere

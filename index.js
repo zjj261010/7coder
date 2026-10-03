@@ -528,7 +528,7 @@ const tools = [
   { type: "function", function: { name: "edit_file", description: "Replace an exact unique substring in a file (surgical edit, much safer than rewriting whole files). old_string must occur exactly once, or set replace_all=true.", parameters: { type: "object", properties: { path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_string", "new_string"] } } },
   { type: "function", function: { name: "agent_tool", description: "Run a sub-agent: a fresh AI conversation with full tool access that works through the task and returns its final answer. Use for self-contained research or multi-step work.", parameters: { type: "object", properties: { name: { type: "string" }, task: { type: "string" } }, required: ["name", "task"] } } },
   { type: "function", function: { name: "run_command", description: "Run a shell command via the system default shell (cmd.exe on Windows, /bin/sh elsewhere).", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-  { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell. On Windows requires Git for Windows (bash.exe) - returns guidance if missing.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+  { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell. persistent=true keeps ONE long-lived bash for the whole conversation so cwd/env survive across calls (cd, export, aliases); default is a fresh stateless shell per call.", parameters: { type: "object", properties: { command: { type: "string" }, persistent: { type: "boolean" }, timeout_ms: { type: "number", description: "persistent mode only: 1000-300000, default 120000" } }, required: ["command"] } } },
   { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (works on Win7 PowerShell 2.0+ via -EncodedCommand). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js).", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "grep_tool", description: "Search file contents.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
@@ -933,6 +933,120 @@ async function awaitCommandCancellable(runner, cancelled) {
     const r = await runner.promise;
     return { r, aborted: cancelled() };
   } finally { clearInterval(poll); }
+}
+
+// ====================== PERSISTENT SHELL (GAP-2) ======================
+// A long-lived bash child per conversation context so cwd/env survive across
+// bash_tool calls (the model can `cd` and `export` like a human). Session key:
+// main conversation = 'main'; sub-agents and workflow chains get their own
+// shells. Output framing: each command is followed by a unique end-marker
+// echo; we collect output until the marker line appears, then wait a short
+// quiet window for trailing writes. Timeout kills the COMMAND via a fresh
+// kill -... in the same shell... but a hung interactive program would eat the
+// marker itself - so commands are wrapped in a subshell with `timeout`-like
+// enforcement done on OUR side: if the marker never arrives within the limit,
+// the whole shell is killed and restarted (state resets; the result says so).
+const persistentShells = new Map(); // key -> shell
+function shellSessionKey() {
+  // agentDepth/workflowStepDepth are the process globals guarded by the
+  // request gate (AST-03); they distinguish sub-agent/workflow contexts.
+  if (agentDepth > 0) return 'agent-' + agentDepth;
+  if (workflowStepDepth > 0) return 'wf-' + workflowStepDepth;
+  return 'main';
+}
+function createPersistentShell(key) {
+  const bash = findBash();
+  if (!bash) return null;
+  // NOTE: NOT '-i' - an interactive bash on a pipe (non-TTY) stdin hangs on
+  // this platform. A plain non-interactive bash reading commands from the
+  // pipe keeps its session state (cwd/env) across writes just the same.
+  const child = child_process.spawn(bash, ['--norc', '--noprofile'], {
+    cwd: launchDir,
+    env: Object.assign({}, process.env, { TERM: 'dumb', PS1: '' }),
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  const shell = { key: key, child: child, dead: false, seq: 0 };
+  let out = '';
+  child.stdout.setEncoding('utf8');
+  child.stderr.setEncoding('utf8');
+  child.stdout.on('data', d => { out += d; });
+  child.stderr.on('data', d => { out += d; });
+  function die() {
+    shell.dead = true;
+    try { child.kill(); } catch (e) {}
+    persistentShells.delete(key);
+  }
+  child.on('error', () => die());
+  child.on('exit', () => die());
+  shell.run = function (cmd, timeoutMs) {
+    const marker = '7CODER-SHELL-END-' + (++shell.seq) + '-' + Date.now();
+    // stdin line discipline: trailing newline required, marker echoes the
+    // command's exit status so failures are visible. No `set -e`: each call
+    // behaves like a fresh command line, only cwd/env persist.
+    const wrapped = cmd.replace(/\r?\n$/, '') + '\necho ' + marker + ' $?\n';
+    return new Promise(resolve => {
+      if (shell.dead) return resolve({ out: '[SHELL] session died - it will restart on the next call.', code: -1, restarted: false });
+      const before = out.length;
+      let done = false;
+      let quietTimer = null;
+      let poll = null;
+      let to = null;
+      const stopTimers = () => { if (poll) clearInterval(poll); if (to) clearTimeout(to); if (quietTimer) clearTimeout(quietTimer); poll = null; to = null; quietTimer = null; };
+      const finish = (code) => {
+        if (done) return;
+        done = true;
+        stopTimers();
+        const text = out.substring(before);
+        // strip the marker line itself from the returned output
+        const cleaned = text.replace(new RegExp('\\n?' + marker + ' ?(-?\\d+)?\\s*$'), '');
+        out = out.substring(Math.max(0, out.length - 4096)); // keep the tail only
+        resolve({ out: cleaned, code: code, restarted: false });
+      };
+      to = setTimeout(() => {
+        // marker never came: the command hung the shell (interactive program).
+        // Kill the WHOLE shell; the next call lazily respawns fresh.
+        if (done) return;
+        done = true;
+        stopTimers();
+        resolve({ out: '[SHELL] timeout after ' + timeoutMs + 'ms - the persistent shell was hung and has been restarted (cwd/env reset).', code: 124, restarted: true });
+        die();
+      }, timeoutMs);
+      // poll for the marker; once seen, hold a 300ms quiet window for
+      // trailing bytes before finishing.
+      poll = setInterval(() => {
+        if (done) { stopTimers(); return; }
+        const text = out.substring(before);
+        const mm = text.match(new RegExp(marker + ' ?(-?\\d+)'));
+        if (mm && !quietTimer) {
+          const code = parseInt(mm[1], 10);
+          quietTimer = setTimeout(() => finish(code), 300);
+        }
+      }, 60);
+      try {
+        child.stdin.write(wrapped);
+      } catch (e) {
+        done = true;
+        stopTimers();
+        resolve({ out: '[SHELL] write failed: ' + e.message, code: -1, restarted: false });
+      }
+    });
+  };
+  return shell;
+}
+function getPersistentShell(key) {
+  let sh = persistentShells.get(key);
+  if (!sh || sh.dead) {
+    sh = createPersistentShell(key);
+    if (!sh) return null;
+    persistentShells.set(key, sh);
+  }
+  return sh;
+}
+function disposePersistentShells() {
+  for (const k of Array.from(persistentShells.keys())) {
+    try { persistentShells.get(k).child.kill(); } catch (e) {}
+    persistentShells.delete(k);
+  }
 }
 
 // Converts a glob pattern to an anchored case-insensitive regex with standard
@@ -1566,6 +1680,23 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'bash_tool') {
     let cmd = args.command || '';
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') console.log(`[WARN] Running (bash): ${cmd.substring(0, 200)}`);
+
+    // GAP-2: persistent=true runs in the conversation's long-lived bash so
+    // cwd/env/aliases survive across calls (cd, export...). Default stays the
+    // stateless one-shot mode - deterministic and safe for scripts.
+    if (args.persistent === true) {
+      const sh = getPersistentShell(shellSessionKey());
+      if (!sh) {
+        return 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.';
+      }
+      const limit = Math.max(1000, Math.min(300000, parseInt(args.timeout_ms, 10) || 120000));
+      const r = await sh.run(String(cmd), limit);
+      if (cancelled && cancelled()) return '[aborted: client disconnected]';
+      if (r.restarted) return `[ERROR] Command failed:\n${r.out}`;
+      if (r.code !== 0) return `[ERROR] Command failed (exit ${r.code}):\n${r.out}`;
+      return `Command OK (persistent shell, exit 0):\n${r.out}`;
+    }
+
     const bash = findBash();
     if (!bash) {
       return 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.';
@@ -2825,7 +2956,7 @@ async function askApproval(question, approvalBridge) {
 // step-stop check and the audit status mapping both consume this regex, so
 // they can never drift apart again (they once disagreed: 'List error' and
 // declined steps let workflows continue and audit logged denials as 'ok').
-const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined|Search error|Diagnostics error)/;
+const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined|Search error|Diagnostics error|[SHELL] timeout)/;
 function toolFailed(res) { return TOOL_FAIL_RE.test(String(res)); }
 
 // Central choke point for every model call: caps tool result size and
@@ -4011,6 +4142,7 @@ async function main() {
           }
         }
         disposeMcpClients(); // GAP-1: stop stdio MCP server children too
+        disposePersistentShells(); // GAP-2: stop persistent bash sessions
         try { const lock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
         saveSession();
         console.log('Goodbye!');

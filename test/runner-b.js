@@ -1752,5 +1752,40 @@ scenarios.push({
   }
 });
 
+// --- B34: GAP-2 persistent bash shell (cwd/env survive across calls) ---
+scenarios.push({
+  name: 'pshell',
+  fn: async () => {
+    const cwd = freshCwd('b-pshell');
+    fs.mkdirSync(path.join(cwd, 'sub'), { recursive: true });
+    const bashArgs = (c, persistent) => JSON.stringify(persistent
+      ? { command: c, persistent: true, timeout_ms: 15000 }
+      : { command: c });
+    const tc = (id, c, persistent) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: 'bash_tool', arguments: bashArgs(c, persistent) } }] });
+    const m = startMock([
+      tc('ps1', 'export PSH_MARK=GAP2-ALIVE', true),
+      tc('ps2', 'cd sub', true),
+      tc('ps3', 'pwd && echo "$PSH_MARK"', true),
+      tc('ps4', 'pwd', false), // one-shot mode: fresh shell, back at workspace root
+      tc('ps5', 'cd nowhere-xyz 2>/dev/null || false', true), // nonzero exit WITHOUT killing the session (bare 'exit N' ends the shell itself)
+      tc('ps6', 'read -t 10 never', true), // hangs 10s > timeout_ms -> shell restart message
+      tc('ps7', 'echo back-to-life', true), // after restart the session respawns fresh
+      { role: 'assistant', content: 'PSHELL-DONE ' + 'pshell scenario final reply padded past the summary floor for the budget skip rule. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 120000 });
+    const log = readLog(m.log);
+    const fwd = (p) => String(p).split(path.sep).join('/');
+    const ps1 = tr(log, 'ps1'), ps2 = tr(log, 'ps2'), ps3 = tr(log, 'ps3'), ps4 = tr(log, 'ps4'), ps5 = tr(log, 'ps5'), ps6 = tr(log, 'ps6'), ps7 = tr(log, 'ps7');
+    record('pshell: env var survives across persistent calls', ps1 && ps1.c.includes('Command OK (persistent shell, exit 0)'), ps1 ? ps1.c.substring(0, 100) : 'no result');
+    record('pshell: cd persists - pwd shows the subdirectory', ps3 && ps3.c.includes('/sub') && ps3.c.includes('GAP2-ALIVE'), ps3 ? ps3.c.substring(0, 160) : 'no result');
+    record('pshell: one-shot mode stays stateless (fresh cwd)', ps4 && ps4.c.includes('Command OK') && !/\/sub(\s|$)/.test(ps4.c), ps4 ? ps4.c.substring(0, 120) : 'no result');
+    record('pshell: nonzero exit reported as failure with code', ps5 && ps5.c.includes('Command failed (exit 1)'), ps5 ? ps5.c.substring(0, 100) : 'no result');
+    record('pshell: hung command times out and restarts the shell', ps6 && ps6.c.includes('[SHELL] timeout') && ps6.c.includes('restarted'), ps6 ? ps6.c.substring(0, 140) : 'no result');
+    record('pshell: session usable again after the restart', ps7 && ps7.c.includes('back-to-life'), ps7 ? ps7.c.substring(0, 100) : 'no result');
+    stopMock(m);
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);
