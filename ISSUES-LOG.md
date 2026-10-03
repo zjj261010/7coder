@@ -112,7 +112,7 @@
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
 | P0-1 | test/runner*.js ×10 | `rmrf` 自递归（调自身而非 fs.rmSync），工作区清理静默无效 | ✅ 22d2845 全部改为 fs.rmSync（保留 Node 13 回退）；"目录确实被删"专项断言未加 → 断言部分并入 OPT-11 |
-| P0-2 | index.js:665 | cron `every 0h` → ms=0 → armNext 同步无限递归崩溃 | 🔶 代码已修（`h <= 0` 返回 null）；"every 0h 被拒绝"断言未补（现仅 bogus 用例） |
+| P0-2 | index.js:665 | cron `every 0h` → ms=0 → armNext 同步无限递归崩溃 | ✅ 状态回翻 2026-10-03（此前漏翻）：代码 h<=0 返回 null 已修，OPT-8 的 a23 断言（every 0h → Unsupported schedule）已补齐剩余半 |
 | P0-3 | index.js:2181-2199, 3060-3098 | HTTP 审批桥为模块级单例：并发流式客户端互相覆盖/摘除，审批丢失或串线 | ✅ 主会话实施（2026-10-01 深夜）：桥改为按请求局部对象，经 processWithTools opts.approvalBridge → safeExecuteTool → safeExecuteToolInner → askApproval 全链透传（workflow 内层经 executeToolRaw 第 4 参）；审批 id 带 6 位随机连接前缀防跨连接抢答；请求结束 dispose 清理未决审批；子代理/REPL/非流式路径行为不变；新增 approval-iso 并发场景 6 项断言（双流各得审批、id 前缀互异、批准 A 仅完成 A、B 保持挂起、批 B 后完成、写入真实落地） |
 | P0-4 | index.js（GET /api/settings） | 明文下发 apiKey（未设 HTTP_API_KEY 时本机任意进程可读） | ⛔ 用户决策（2026-09-30）：不修，与使用场景无关 |
 
@@ -120,16 +120,18 @@
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
-| P1-1 | index.js:1715 | run_tests_tool 输出含字面 `'\n'`（单引号嵌在双引号串里） | ⬜ 未处理 |
-| P1-2 | index.js /api/info | 未返回 version，Web UI 右上角恒显 "v?" | ⬜ 未处理（从 package.json 读并缓存） |
+| P1-1 | index.js:1715 | run_tests_tool 输出含字面 `'\n'`（单引号嵌在双引号串里） | ✅ 状态回翻 2026-10-03（此前漏翻）：真换行早已修复，OPT-8 的 ts3 断言（含 '[TESTS] command finished'、真 
+、无字面 '
+' 文本）已锁定该行为 |
+| P1-2 | index.js /api/info | 未返回 version，Web UI 右上角恒显 "v?" | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-3，APP_VERSION 已注入 /api/info |
 | P1-3 | webui.html | 模型选择只读不写 localStorage；模式下拉不回显 | ✅ setItem + `modeSel.value = info.mode`（webui.html:612,614） |
-| P1-4 | writeWorkspaceEnv | 保存设置时整文件重序列化，注释与格式全丢 | 🔶 代码已修（逐行原地改写受管键，注释/未知行保留）；未补回归断言 |
+| P1-4 | writeWorkspaceEnv | 保存设置时整文件重序列化，注释与格式全丢 | ✅ 状态回翻 2026-10-03（此前漏翻）：逐行原地改写已实现，OPT-8 的 settings-api 注释保留断言（# KEEP-ME-COMMENT）已补齐剩余半 |
 | P1-5 | index.js 默认值 vs 文档 | HTTP_PORT 8000/7103；MAX_TOKENS 2048/42000；TEMPERATURE 0.7/0.6 | 🔶 前两项已对齐文档（7103、42000）；TEMPERATURE 代码仍 0.7，.env.example 写 0.6 |
-| P1-6 | INSTALL.md + runner | 验证命令场景名全不匹配 → 假绿（0/0 退出码 0） | 🔶 INSTALL 已改真实场景名（cli-exit,oneshot）；RUN_ONLY 空匹配已加警告（runner.js:591 等）；**退出码仍为 0**（0===0 → exit 0，需改 results.length===0 时 exit 1） |
+| P1-6 | INSTALL.md + runner | 验证命令场景名全不匹配 → 假绿（0/0 退出码 0） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-9，十个 runner 空匹配 exit 1 已实现 |
 | P1-7 | INSTALL/KNOWN-ISSUES | 套件数/断言数三处口径打架（"10 套件 334 项" vs 实际 12 runner 且 B 已 93 项） | ⬜ 未处理（建议脚本自动汇总，见 OPT-10） |
 | P1-8 | README | 已决策不发 npm 但保留 "Now on NPM!" 教程 | ✅ npm 安装教程已移除 |
 | P1-9 | pack-offline.js + dist/ | copyRec 排除 `e === 'w-'` 恒假；未排除 cur-*；dist 陈旧 v2.6.0 | 🔶 mock-log-/cur-script- 排除已加（pack-offline.js:47）；`w-` 前缀判断仍错、dist 未重打（仍是 7coder-v2.6.0-offline） |
-| P1-10 | README + KNOWN-ISSUES | 内联代码整段丢失；KNOWN-ISSUES D4 条目重复 3 遍 | 🔶 README 已修；KNOWN-ISSUES D4 段仍重复且丢内容（该文件已冻结，若按 OPT-9 归档则随归档关闭） |
+| P1-10 | README + KNOWN-ISSUES | 内联代码整段丢失；KNOWN-ISSUES D4 条目重复 3 遍 | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档 docs/history/，冻结快照不再修正文 |
 | P1-11 | git 54d09d7 | 提交信息 GBK 乱码 | ✅ `git config i18n.commitencoding utf-8` 已设 |
 | P1-12 | index.js mcp_tool | 无配置时返回 "[OK] executed locally" 假装成功 | ✅ 改为明确报错（"MCP error: no endpoint configured…"，index.js:1453） |
 | P1-13 | isSuperDangerous | 误报（'shutdown' 等宽子串）+ 漏报（无 PowerShell 模式） | ✅ 模式收窄（`rm -rf /`、`del /f /q c:\` 等）+ 新增 remove-item -recurse -force / format-volume / stop-computer / clear-disk / initialize-disk |
@@ -142,14 +144,14 @@
 | P2-1 | index.js 多处 | `.7coder_last_interaction`、`7C.dream.lock`、BTW.md 等散落工作区根 | ⬜（收纳进 .7coder/，读旧路径兜底一次） |
 | P2-2 | index.js:1993 | 过时注释 "input actions are simulated no-ops"（A7 已实现真实输入） | ⬜ |
 | P2-3 | grepSearch/recursiveReaddir | 整读文件无上限、不跳过 node_modules/.git、无深度上限 | ⬜ |
-| P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ⬜ |
-| P2-5 | 审计日志 | argsPreview 原样落盘，可能记录密钥 | ⬜（对 key/token/secret/authorization/Bearer 脱敏） |
+| P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ✅ 状态回翻 2026-10-03（此前漏翻）：DS-14 重写 pruneBackups 时已删除写前调用，仅保留写后一次 |
+| P2-5 | 审计日志 | argsPreview 原样落盘，可能记录密钥 | ✅ 状态回翻 2026-10-03（此前漏翻）：=OPT-1，sanitizeAuditArgs 已入库并有 audit-log 断言 |
 | P2-6 | index.js / webui.html | server.listen 无 error 处理（EADDRINUSE 直接崩）；UI 每请求同步读盘 | ⬜ |
 | P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ⬜ |
-| P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ⬜（改为"语法不超过 Node 13.14 支持范围"） |
-| P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ⬜（文件已冻结 → 随 OPT-9 归档决策处理） |
+| P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-10，README 已改为 syntax stays within what Node.js 13.14 supports |
+| P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
 | P2-10 | parseTestOutput | 正则嵌套量词 `(\d+)+` ×4 | ✅ 已改为 `(\d+)`（现 grep 无嵌套量词） |
-| P2-11 | index.js:1742 | git_status 口径："M " 同时计入 staged 与 modified | ⬜（XY 分列） |
+| P2-11 | index.js:1742 | git_status 口径："M " 同时计入 staged 与 modified | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-4，XY 分列已实现且 git-integration 4/4 无需改断言 |
 | P2-12 | web 审批 | 120 秒超时自动拒绝无倒计时提示 | ⬜ |
 | P2-13 | index.js:1537 | 截图 PNG 落工作区根不清理；auto_debug 无进度输出 | ⬜（截图进 .7coder/） |
 | P2-14 | README/INSTALL | 打包机需现代 Node（pack-offline 用 rmSync）未声明 | ⬜ |
@@ -328,20 +330,16 @@
 | AST-12 | test/runner.js cli-exit 场景 | r3 直连 `https://api.openai.com`（空 key 的真实外网请求）；r1/r2/r3 均未设隔离 cwd → 每次跑套件 A 都在仓库根产生 7CODER.md/.7coder_last_interaction（此前误归因于主会话手动测试，实为套件自身污染仓库根） | ✅ cli-exit 三子进程全部隔离 cwd；r3 端点改 .example 保留域（仍触发远端告警、DNS 秒败无真实外网）；跑后仓库根零污染 |
 | AST-13 | scripts/pack-offline.js:34-47 | COPY_FILES 仍引用已归档的 KNOWN-ISSUES.md（OPT-9 移动后未同步，缺失时静默跳过）；`e === 'w-'` 恒假的老 P1-9 半截仍在；依赖树直拷非干净构建（P1-9 升级合并至此） | ✅ COPY_FILES 移除已归档的 KNOWN-ISSUES.md；排除规则 w-/cur- 前缀修正（fail-first 实证 w-packprobe/cur-zzz.json 曾泄漏入 dist，修复后干净） |
 
-### 真实模型补测的观察（并入优化建议）
+### 真实模型补测的观察（R1/R2 已于 2026-10-03 正式立项，见下表；Origin/Host 探针并入 OPT-2 备注，⛔ 决策不变，重开时按低摩擦清单执行）
 
-- **AST-R1 摘要开销**：真实验证中 7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时（summarizeAction 无独立 maxTokens/模型配置）——建议摘要独立预算与模型、低价值消息跳过摘要、非流式不应同步等待摘要。
-- **AST-R2 审批方差**：语义等价的编辑因表述不同被轻模型先拒后批——审批理由应结构化记录，确定性规则为主、模型判断为辅。
-- 报告 5.1 的 Origin/Host 探针结果（无 key 时任意 Origin 的 POST /api/mode 可切 bypass）并入 OPT-2 备注；⛔ 决策不变，重开时按报告的低摩擦措施清单执行（Origin/Host 校验、CSRF token、非 loopback 启动强制确认）。
-
-### 报告中未采纳/仅记录的部分
-
-### 补充发现（修复过程中）
+### 补充发现（修复过程中 + 真实模型补测）
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
 | AST-14 | test/mock-server.js + 各 runner | 裸字符串 mock 步骤（如 'WF-DONE'）没有 .content 属性 → mock 发空 delta → 客户端报 empty streamed response → 错误路径也写 [DONE]。多数场景恰好在工具结果上断言所以仍过，但意味着这些用例的最终回复从未真实到达、7CODER.md 摘要被跳过。approval-iso 已改对象步骤根治；其余场景的字符串尾步骤属已知无害怪癖 | ⬜ 低优先清理（改对象步骤 + 可选让 mock 对字符串步骤报错） |
 | AST-15 | requestGate 语义 | HTTP 聊天请求端到端串行后，长审批等待会阻塞后续请求（单用户工具可接受；approval-iso 已锁定该语义）。根治=ExecutionContext 线程化（AST-09 同族） | 🔶 随 AST-09 一并考虑 |
+| AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | ⬜ 已立项（2026-10-03）：摘要独立 maxTokens（如 512）+ 可配 SUMMARY_MODEL；低价值短回复跳过摘要；非流式不等待（后台化）。省钱立竿见影，小改 |
+| AST-R2 | 审批链路 | 语义等价的编辑因参数表述不同被轻模型先拒后批（declined→ok 实录）——YES/NO 单字判定承担硬边界过载 | ⬜ 已立项（2026-10-03）：审批拒绝原因结构化入审计（declined 的 reason 字段）；确定性规则为主、模型判断为辅；与 GAP-11（可配置 allow/deny 规则）天然同族可合并实施 |
 
 
 - 5.3 Node 13 EOL 双轨构建：离线包已捆绑运行时并明确面向 Win7，现状覆盖主要诉求；LTS 双轨是新工程，不并入待办，重开 OPT-3 时参考。
@@ -353,6 +351,6 @@
 ## 维护约定
 
 1. **唯一事实来源**：本文件。修复某条后：改状态列 + 附提交号；新问题追加到当日期小节；跨日期的大问题可新建日期小节用 INC-/NEW- 编号。
-2. **提交纪律**：状态变更与对应代码修复同一提交；提交信息引用条目号（如 `fix(P1-1): ...`）。
+2. **提交纪律**：状态变更与对应代码修复同一提交；提交信息引用条目号（如 `fix(P1-1): ...`）。**跨号联动（2026-10-03 增补）**：当以新编号（DS-/AST-/OPT- 等）修复的问题在旧表有同源行时，必须在同一提交内回翻旧行状态——2026-10-03 盘点发现 11 行"账实不符"正是只记新区块、漏翻旧行所致。
 3. **归档（OPT-9 已执行 2026-10-02）**：KNOWN-ISSUES.md、REVIEW-CHECKLIST-2026-09-30.md、deepseek4.1flash审阅.md 已移入 `docs/history/`，只读历史快照，不再更新。
-4. **套件计数防漂移（OPT-10）**：建议加 `scripts/count-assertions.js` 从各 runner 统计断言数写入本文档头部，替代手写。
+4. **套件计数防漂移（OPT-10 已执行 2026-10-02）**：`scripts/count-assertions.js --write` 回填头部标记段；实测通过数在规模快照行手写，两口径并列标注。
