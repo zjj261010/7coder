@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-03 晚）：单文件 index.js（~3560 行），v2.16.0；快赢批②后 A–J 全绿 446 项（A 85/B 138/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-03 深夜）：单文件 index.js（~3600 行），v2.16.0；AST-09/10 结构轮后 A–J 全绿 460 项（A 85/B 152/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 127 |
+| runner-b.js | 141 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **419** |
+| **合计** | **433** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -319,8 +319,8 @@
 |---|------|------|------|
 | AST-07 | webui.html:538 | **SSE 业务错误被吞**：catch 仅当 message 含 `upstream` 才重抛；`API error 401`/`Max retries reached` 等被当普通内容忽略，用户看到空回复不知失败 | ✅ JSON.parse 独立 try/catch，j.error 脱离吞错 catch 原样上抛；非 upstream 文案不再被吞；webui-dom-sim 3 断言 + 浏览器实测（死端点 → 气泡显示 错误: Max retries reached.——正是旧过滤器吞掉的类型） |
 | AST-08 | /api/settings + writeWorkspaceEnv | **设置值换行注入环境变量**：仅校验字符串类型，值含 `\nPERMISSION_MODE=bypass` 可落盘成独立配置行；且运行时全局先改后写盘，写失败出现"接口报错但已切换"的不一致 | ✅ /api/settings 拒绝含 CR/LF/NUL 的值（400），endpoint 强制 http(s) 前缀；落盘成功后才更新内存；settings-api 场景 5 条新断言（注入 400、.env 无污染、正常路径不回归） |
-| AST-09 | 全部 exec 路径 | **同步子进程阻塞 HTTP 事件循环 + 取消不贯穿**：execSync 单次可跑数分钟，期间健康查询/审批/取消全部排队；cancel 只在工具循环边界生效，未传入 axios/子进程/子代理（与 GAP-2 部分重叠但角度不同：本条是阻塞与取消，GAP-2 是状态与交互） | ⬜ |
-| AST-10 | 各 POST 路由 | **请求体上限只设标志不停止累积**：聊天路由 oversized=true 后继续 `body += chunk` 到 end 才 413；其余 POST 路由（approve/save/settings/mode 等）完全没有上限 | ⬜ |
+| AST-09 | 全部 exec 路径 | **同步子进程阻塞 HTTP 事件循环 + 取消不贯穿**：execSync 单次可跑数分钟，期间健康查询/审批/取消全部排队；cancel 只在工具循环边界生效，未传入 axios/子进程/子代理（与 GAP-2 部分重叠但角度不同：本条是阻塞与取消，GAP-2 是状态与交互） | ✅ 最小版（2d091fb，主会话实施）：run_command/bash/powershell/process_list/run_tests 五个模型可达命令面转异步（run_tests 最长 600s 是典型冻结源）；取消令牌五层穿线、取消即 kill OS 进程；流式 finally 统一清理 keep-alive/未决审批/请求门。先红后绿实证：HEAD 上长命令期间 /api/info 冻结 2289ms，新代码即时（loopfree 2 断言）。**有意保留 sync**（有界管理型调用）：git() 30s、taskkill、截屏、findBash、worktree、csc。完整 ExecutionContext 线程化未做（与 AST-15 同族，重开条件见 AST-15） |
+| AST-10 | 各 POST 路由 | **请求体上限只设标志不停止累积**：聊天路由 oversized=true 后继续 `body += chunk` 到 end 才 413；其余 POST 路由（approve/save/settings/mode 等）完全没有上限 | ✅（2d091fb + GLM 边界补测轮）readJsonBody 共享有界读取器接入全部 9 个 POST 路由（聊天 10MB/其余 1MB）：字节即到即计、超限即时 413、后续分片只排空不累积、60s 安全销毁。bodycap 5 断言 + bodycap-edge 7 断言（多字节字符撕裂在 LIMIT+1 边界、无 Content-Length 分块、第二路由、900KB 低于上限正常处理）。GLM 红绿对照另发现：旧代码经 /api/sessions/save 会实际写入 2MB 会话文件——未设限写入洞随本项堵上 |
 | AST-11 | index.js:1706-1709 vs 2057-2060 | **两张失败判定正则漂移**：workflow 步骤失败正则比审计正则少 `List error`/`Download error`/`Input error`/`Kill error` 等前缀——list_dir 失败后工作流继续执行后续写步骤并报 `[OK] Workflow complete`；`Auto-approval declined` 两边都不认；denial 拒绝在审计里记 `status:"ok"`。= deepseek 建议 5.2（结构化 ToolResult）的实证，二者合并处理 | ✅ 13a4b70（最小版）：TOOL_FAIL_RE 单一失败判定源统一喂 workflow 步停判定与审计状态映射；denial 记 blocked、List error 步骤停批（ast-security 2 断言）。完整结构化 ToolResult 仍留待后续（随 P2-5/建议 5.2） |
 
 ### 测试与打包配套问题（核对属实）
@@ -337,7 +337,7 @@
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
 | AST-14 | test/mock-server.js + 各 runner | 裸字符串 mock 步骤（如 'WF-DONE'）没有 .content 属性 → mock 发空 delta → 客户端报 empty streamed response → 错误路径也写 [DONE]。多数场景恰好在工具结果上断言所以仍过，但意味着这些用例的最终回复从未真实到达、7CODER.md 摘要被跳过。approval-iso 已改对象步骤根治；其余场景的字符串尾步骤属已知无害怪癖 | ✅ 根治法：mock-server/chaos-mock 三处取步骤点统一字符串→对象归一化（一处改动消灭整类陷阱，优于改几十处场景）；strstep 场景 3 断言先红后绿（旧代码 stdout 现错误路径文案，新代码真实回复到达） |
-| AST-15 | requestGate 语义 | HTTP 聊天请求端到端串行后，长审批等待会阻塞后续请求（单用户工具可接受；approval-iso 已锁定该语义）。根治=ExecutionContext 线程化（AST-09 同族） | 🔶 随 AST-09 一并考虑 |
+| AST-15 | requestGate 语义 | HTTP 聊天请求端到端串行后，长审批等待会阻塞后续请求（单用户工具可接受；approval-iso 已锁定该语义）。根治=ExecutionContext 线程化（AST-09 同族） | 🔶 requestGate 串行门语义维持（AST-09 最小版未做 ExecutionContext 线程化）；多标签场景仍为排队。重开条件：常用多标签 或 OPT-6 重开 或 下次大结构改动时一并线程化 |
 | AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | 🔶 两子项已做（快赢批②）：SUMMARY_MODEL/SUMMARY_MAX_TOKENS=512 独立配置 + 短回复(<200 字符)跳过摘要（空回复仍走兜底摘要，保住套件 G 契约）；summary-budget 断言（body 含 max_tokens:512、短回复零轻调用）。剩余：非流式后台化（时序语义，暂缓）。连带：9 个套件的 mock 尾步补长以保持步骤账（含注释说明） |
 | AST-R2 | 审批链路 | 语义等价的编辑因参数表述不同被轻模型先拒后批（declined→ok 实录）——YES/NO 单字判定承担硬边界过载 | ⬜ 已立项（2026-10-03）：审批拒绝原因结构化入审计（declined 的 reason 字段）；确定性规则为主、模型判断为辅；与 GAP-11（可配置 allow/deny 规则）天然同族可合并实施 |
 

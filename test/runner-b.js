@@ -1406,5 +1406,106 @@ scenarios.push({
   }
 });
 
+// --- AST-10 edge cases beyond the base bodycap scenario:
+// (1) utf8 byte total lands at exactly LIMIT+1 with the LAST multibyte char
+//     torn across a fragment boundary (catches undercounting when the utf8
+//     decoder must carry a partial sequence across reader chunks),
+// (2) chunked transfer (no Content-Length) at 2MB,
+// (3) a second capped route (/api/sessions/save),
+// (4) a request just under the cap must be processed normally, not 413'd.
+scenarios.push({
+  name: 'bodycap-edge',
+  fn: async () => {
+    const cwd = freshCwd('b-bodycap-edge');
+    const m = startMock([{ role: 'assistant', content: 'BODYCAP-EDGE-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 436;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'k', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', HEAVY_MODEL: 'bce-model', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    // POST with manual control over fragmentation: the body goes out as raw
+    // byte fragments at the given cut offsets, each write awaited (flush
+    // callback) with Nagle off so the server's 'data' handler sees separate
+    // chunks and its utf8 decoder has to carry partial multibyte sequences
+    // across chunk boundaries.
+    const postFragmented = (pathName, buf, cuts) => new Promise((resolve, reject) => {
+      const to = setTimeout(() => { try { req.destroy(); } catch (e) {} reject(new Error('client timeout waiting for response')); }, 45000);
+      const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path: pathName,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': buf.length } },
+        res => { let out = ''; res.on('data', d => out += d); res.on('end', () => { clearTimeout(to); resolve({ status: res.statusCode, body: out }); }); });
+      req.on('error', e => { clearTimeout(to); reject(e); });
+      req.setNoDelay(true);
+      (async () => {
+        let prev = 0;
+        for (const c of cuts.concat([buf.length])) {
+          await new Promise(r => req.write(buf.subarray(prev, c), r));
+          prev = c;
+        }
+        req.end();
+      })().catch(e => { clearTimeout(to); reject(e); });
+    });
+    // POST without Content-Length -> Node sends chunked transfer encoding;
+    // still fragmented + flushed so the reader must count across many chunks.
+    const postChunked = (pathName, buf, fragSize) => new Promise((resolve, reject) => {
+      const to = setTimeout(() => { try { req.destroy(); } catch (e) {} reject(new Error('client timeout waiting for response')); }, 45000);
+      const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path: pathName,
+        headers: { 'Content-Type': 'application/json' } },
+        res => { let out = ''; res.on('data', d => out += d); res.on('end', () => { clearTimeout(to); resolve({ status: res.statusCode, body: out }); }); });
+      req.on('error', e => { clearTimeout(to); reject(e); });
+      req.setNoDelay(true);
+      (async () => {
+        for (let off = 0; off < buf.length; off += fragSize) {
+          await new Promise(r => req.write(buf.subarray(off, Math.min(off + fragSize, buf.length)), r));
+        }
+        req.end();
+      })().catch(e => { clearTimeout(to); reject(e); });
+    });
+    try {
+      await new Promise(r => setTimeout(r, 2500));
+      const LIMIT = 1024 * 1024; // BODY_LIMIT_DEFAULT (index.js, non-chat routes)
+
+      // (1) '中' = 3 utf8 bytes; pad sized so the whole body is exactly
+      // LIMIT+1 bytes. 64KB fragments, with the FINAL cut placed 1 byte into
+      // the last '中' (bytes [len-5..len-3]) - everything before it is still
+      // <= LIMIT, so the 413 verdict depends on counting the torn char's
+      // remaining 2 bytes instead of dropping the partial sequence.
+      const head = Buffer.byteLength(JSON.stringify({ id: 'x', approved: true, pad: '' }));
+      const nPad = Math.ceil((LIMIT + 1 - head) / 3);
+      const tearBody = Buffer.from(JSON.stringify({ id: 'x', approved: true, pad: '中'.repeat(nPad) }), 'utf8');
+      const cuts = [];
+      for (let off = 65536; off < tearBody.length - 8; off += 65536) cuts.push(off);
+      cuts.push(tearBody.length - 4); // splits the last '中' across the final boundary
+      const torn = await postFragmented('/api/approve', tearBody, cuts);
+      record('bodycap-edge: LIMIT+1 utf8 bytes with last multibyte char torn across fragments still trips 413',
+        tearBody.length === LIMIT + 1 && torn.status === 413, 'bytes=' + tearBody.length + ' fragments=' + (cuts.length + 1) + ' status=' + torn.status);
+      const alive1 = await httpReq(srvPort, 'GET', '/api/info', null);
+      record('bodycap-edge: server responsive after the torn-multibyte 413', alive1.status === 200, 'status=' + alive1.status);
+
+      // (2) no Content-Length -> chunked; 2MB in flushed 64KB writes
+      const chunkBody = Buffer.from(JSON.stringify({ id: 'x', approved: true, pad: 'a'.repeat(2 * 1024 * 1024) }), 'utf8');
+      const chunked = await postChunked('/api/approve', chunkBody, 65536);
+      record('bodycap-edge: 2MB chunked (no Content-Length) POST to /api/approve rejected 413', chunked.status === 413, 'bytes=' + chunkBody.length + ' status=' + chunked.status);
+      const alive2 = await httpReq(srvPort, 'GET', '/api/info', null);
+      record('bodycap-edge: server responsive after the chunked 413', alive2.status === 200, 'status=' + alive2.status);
+
+      // (3) same cap enforced on a second non-chat route
+      const saveOver = await httpReq(srvPort, 'POST', '/api/sessions/save', { messages: [{ role: 'user', content: 'c'.repeat(2 * 1024 * 1024) }] });
+      record('bodycap-edge: 2MB POST to /api/sessions/save rejected 413 (second route)', saveOver.status === 413, 'status=' + saveOver.status);
+      const alive3 = await httpReq(srvPort, 'GET', '/api/info', null);
+      record('bodycap-edge: server responsive after the sessions/save 413', alive3.status === 200, 'status=' + alive3.status);
+
+      // (4) ~900KB < 1MB cap: valid JSON must reach the handler -> 400
+      // (unknown id), never 413.
+      const under = await httpReq(srvPort, 'POST', '/api/approve', { id: 'nope', approved: true, pad: 'd'.repeat(900 * 1024) });
+      record('bodycap-edge: ~900KB (under cap) POST processed normally -> 400 unknown id, not 413',
+        under.status === 400 && /no pending approval/.test(under.body), 'status=' + under.status + ' body=' + String(under.body).substring(0, 80));
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);
