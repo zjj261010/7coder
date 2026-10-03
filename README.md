@@ -127,6 +127,36 @@ can **never** be edited by the AI in bypass/auto mode, and reading them always
 requires approval (never auto-safe). Path traversal and dangerous commands are
 blocked at every level; the HTTP endpoint is localhost-only by default.
 
+### User Permission Rules
+
+Extend the fence from the workspace with `.7coder/permissions.json` (a
+`permissions.json` next to index.js also loads; both layers concat):
+
+```json
+{
+  "protected_extra": ["*.key", "secretzone/**"],
+  "deny":  ["read_file(blocked.txt)", "run_command(*format*)"],
+  "allow": ["write_file(scratch/**)", "run_command(*npm test*)"]
+}
+```
+
+Rule syntax `tool(pattern)` - `*` as the tool means any tool, `*` inside the
+pattern matches anything; file tools match the workspace-relative path
+(forward slashes on every platform), command tools match the command text.
+Security-first semantics:
+
+- **`deny` blocks in EVERY mode** (even bypass) - your own fence outranks
+  convenience. Checked before auto-safety, so it beats built-in auto-safe
+  tools too.
+- **`allow` skips only the approval step.** It can never override protected
+  files, the super-dangerous command block, denial mode, or a `deny` rule.
+- `protected_extra` adds to the built-in protected-file list (matches the
+  relative path or the bare file name).
+
+In `auto` mode the light model returns a structured verdict; every decline
+carries its reason back to the model and is recorded as an
+`approval_decline` entry in `.7coder/audit.jsonl`.
+
 ## Computer Use
 
 Enable with `ENABLE_COMPUTER_USE=true` in `.env`.

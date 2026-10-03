@@ -734,7 +734,111 @@ function isProtectedTarget(name, args) {
   if (!['read_file', 'prompt_from_file', 'write_file', 'append_file', 'notebook_edit_tool', 'edit_file', 'download_tool'].includes(name)) return false;
   const p = args && (args.path || args.file);
   if (!p || typeof p !== 'string') return false;
-  return PROTECTED_FILES.includes(path.basename(p).toLowerCase());
+  if (PROTECTED_FILES.includes(path.basename(p).toLowerCase())) return true;
+  // GAP-11: user-extended protection - protected_extra patterns match the
+  // sanitized workspace-relative path OR the bare file name.
+  if (permRules.protectedExtra.length) {
+    let rel = '';
+    try { rel = path.relative(launchDir, path.join(launchDir, sanitizePath(p))).split(path.sep).join('/'); } catch (e) { rel = String(p).split(path.sep).join('/'); }
+    const base = path.basename(p);
+    for (const r of permRules.protectedExtra) {
+      if (r.argRe.test(rel) || r.argRe.test(base)) return true;
+    }
+  }
+  return false;
+}
+
+// ====================== USER PERMISSION RULES (GAP-11) ======================
+// .7coder/permissions.json in the workspace (plus permissions.json next to
+// index.js; both layers concat, workspace first). Shape:
+//   { "protected_extra": ["secretzone/**", "*.key"],
+//     "deny":  ["read_file(blocked.txt)", "run_command(*format*)"],
+//     "allow": ["write_file(scratch/**)", "run_command(*npm test*)"] }
+// Rule syntax "tool:pattern" where tool is an exact tool name or '*'; '*'
+// in the pattern matches anything. File tools match the sanitized relative
+// path, command tools match the command text, everything else the JSON args.
+// SEMANTICS (security-first ordering, user rules can only TIGHTEN):
+//   - deny blocks in EVERY mode (even bypass) - it is the user's own fence.
+//   - allow only skips the approval layer; it can never bypass protected
+//     files, the super-dangerous command block, or denial mode.
+//   - the built-in PROTECTED_FILES rails remain first and unbeatable.
+const permRules = { allow: [], deny: [], protectedExtra: [] };
+function compilePermRule(raw, bucket) {
+  const s = String(raw);
+  // rule syntax: "tool(pattern)" - tool is an exact name or '*', pattern is
+  // a wildcard text ('*' spans anything). A bare tool name with no parens
+  // means "this tool, any args".
+  let tool = '';
+  let pat = '*';
+  const m = s.match(/^([A-Za-z_0-9*]+)\((.*)\)$/);
+  if (m) { tool = m[1]; pat = m[2]; }
+  else if (/^[A-Za-z_0-9*]+$/.test(s)) { tool = s; }
+  else return null;
+  if (!pat) return null;
+  let toolRe;
+  if (tool === '*') toolRe = /^[a-z_0-9]+$/i;
+  else if (/^[a-z_0-9]+$/i.test(tool)) toolRe = new RegExp('^' + tool + '$', 'i');
+  else return null;
+  // wildcard text pattern: '*' spans anything (including separators), the
+  // rest is literal, case-insensitive, full-match against the arg text.
+  const argRe = new RegExp('^' + pat.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
+  return { raw: s, bucket: bucket, toolRe: toolRe, argRe: argRe };
+}
+function loadPermRules() {
+  permRules.allow = []; permRules.deny = []; permRules.protectedExtra = [];
+  const seen = {};
+  const files = [path.join(appDir, 'permissions.json'), path.join(launchDir, '.7coder', 'permissions.json')];
+  for (const f of files) {
+    let j = null;
+    try { if (fs.existsSync(f)) j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { console.warn('[WARN] failed to read ' + f + ': ' + e.message); }
+    if (!j || typeof j !== 'object') continue;
+    for (const bucket of ['deny', 'allow', 'protected_extra']) {
+      const list = j[bucket];
+      if (!Array.isArray(list)) continue;
+      const target = bucket === 'protected_extra' ? permRules.protectedExtra : permRules[bucket];
+      for (const raw of list) {
+        if (seen[String(raw)]) continue;
+        seen[String(raw)] = true;
+        let c = null;
+        if (bucket === 'protected_extra') {
+          // pure path pattern - no tool prefix. Matches the relative path
+          // OR the bare file name, and we normalize both sides to forward
+          // slashes so patterns are platform-independent.
+          const pat = String(raw).trim();
+          if (pat) {
+            const argRe = new RegExp('^' + pat.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
+            c = { raw: pat, bucket: 'protected_extra', toolRe: /^[a-z_0-9]+$/i, argRe: argRe };
+          }
+        } else {
+          c = compilePermRule(raw, bucket);
+        }
+        if (c) target.push(c);
+        else console.warn('[WARN] ignoring invalid permission rule: ' + JSON.stringify(raw));
+      }
+    }
+  }
+  if (permRules.allow.length || permRules.deny.length || permRules.protectedExtra.length) {
+    console.log('[PERM] user permission rules loaded: ' + permRules.deny.length + ' deny, ' + permRules.allow.length + ' allow, ' + permRules.protectedExtra.length + ' protected-extra (deny holds in every mode; allow never overrides the hard rails)');
+  }
+}
+loadPermRules();
+function permRuleArgText(name, args) {
+  // Normalized to forward slashes on BOTH sides so patterns written as
+  // "forbidden/**" match on Windows paths too.
+  if (['run_command', 'bash_tool', 'powershell_tool', 'task_create_tool', 'schedule_cron_tool', 'cron_create_tool'].includes(name)) {
+    return String((args && args.command) || '');
+  }
+  if (args && typeof args.path === 'string') {
+    try { return path.relative(launchDir, path.join(launchDir, sanitizePath(args.path))).split(path.sep).join('/'); } catch (e) { return String(args.path).split(path.sep).join('/'); }
+  }
+  if (args && typeof args.url === 'string') return String(args.url);
+  return JSON.stringify(args || {});
+}
+function matchPermRule(bucket, name, args) {
+  for (const r of permRules[bucket]) {
+    if (r.toolRe.test(name) && r.argRe.test(permRuleArgText(name, args))) return r;
+  }
+  return null;
 }
 
 // Quotes a token for interpolation into a double-quoted shell string on both cmd and sh.
@@ -1343,16 +1447,33 @@ Risk level: ${risk}`;
 }
 
 async function isAutoApprovalSafe(toolName, args, risk) {
+  // AST-R2: ask for a STRUCTURED verdict - a bare YES/NO gave the model no
+  // way to say why, so declines were indistinguishable and unfixable. Legacy
+  // YES/NO replies still parse (models that ignore the JSON instruction).
   const prompt = `Is this tool action safe to auto-approve in AUTO mode? Risk: ${risk}
 Tool: ${toolName}
 Args: ${JSON.stringify(args)}
-Reply ONLY with YES or NO.`;
+Reply ONLY with compact JSON: {"safe": true, "reason": "one short sentence"} or {"safe": false, "reason": "why not"}.`;
   try {
     const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
-    const cleaned = (choice.message.content || 'NO').replace(/[*'`"“”’‘]/g, '').trim().toUpperCase();
-    return cleaned.startsWith('YES') || cleaned === 'YES';
+    const raw = choice.message.content || '';
+    let safe = false;
+    let reason = '';
+    const jm = raw.match(/\{[\s\S]*\}/);
+    if (jm) {
+      try {
+        const j = JSON.parse(jm[0]);
+        safe = j.safe === true || String(j.safe).toLowerCase() === 'true' || String(j.safe).toLowerCase() === 'yes';
+        reason = String(j.reason || '').substring(0, 160);
+      } catch (e) {}
+    }
+    if (!jm || (!safe && !reason)) {
+      const cleaned = raw.replace(/[*'`"“”’‘]/g, '').trim().toUpperCase();
+      if (cleaned.startsWith('YES')) safe = true;
+    }
+    return { safe: safe, reason: reason };
   } catch (e) {
-    return false;
+    return { safe: false, reason: 'light model call failed: ' + e.message };
   }
 }
 
@@ -2502,6 +2623,10 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
   return { log, stdout: stdoutData, stderr: stderrData };
 }
 
+// AST-R2: reason of the most recent auto-approval decline, set inside
+// safeExecuteToolInner and read back by the auditing wrapper.
+let lastDeclineReason = '';
+
 // ====================== SAFE TOOL EXECUTION ======================
 // Auditing wrapper: records every tool call (args preview, status, duration)
 // to .7coder/audit.jsonl, then delegates to the real implementation.
@@ -2547,6 +2672,14 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       console.warn(`[WARN] AI is reading protected file: ${path.basename(String(args.path || args.file))} (contains secrets)`);
     }
 
+    // GAP-11: user deny rules block in EVERY mode (even bypass) - checked
+    // before the auto-safe branch so a deny beats built-in auto-safety too.
+    const denyHit = matchPermRule('deny', name, args);
+    if (denyHit) {
+      console.log(`[PERM] blocked by user rule: ${denyHit.raw}`);
+      return `BLOCKED by user permission rule: ${denyHit.raw}`;
+    }
+
     // AST-02: the auto-log exemption matches ONLY the workspace-root 7CODER.md
     // after path normalization - a raw-substring match let '7coder.md/../.env'
     // reach the auto-execute branch and write a protected file unapproved.
@@ -2566,6 +2699,18 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
 
     if (name === 'computer_use' && !ENABLE_COMPUTER_USE) {
       return 'Computer use is disabled in .env (ENABLE_COMPUTER_USE=false).';
+    }
+
+    // GAP-11: user allow rules skip ONLY the approval layer. Placement is
+    // deliberate: protected files, the super-dangerous block and the
+    // computer_use gate above have all already run, so an allow rule can
+    // never weaken them. In bypass this is redundant (harmless).
+    if (!protectedWrite && !protectedRead) {
+      const allowHit = matchPermRule('allow', name, args);
+      if (allowHit) {
+        console.log(`[PERM] auto-executing per user allow rule: ${allowHit.raw}`);
+        return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
+      }
     }
 
     if (mode === 'bypass' || DANGER_MODE) {
@@ -2598,8 +2743,14 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       if (inheritPlan) {
         console.log('[PERM] workflow inner step inherits plan approval: ' + name);
       } else {
-        const safe = await isAutoApprovalSafe(name, args, risk);
-        if (!safe) return `Auto-approval declined by light model. Risk: ${risk}.`;
+        // AST-R2: structured verdict - the decline carries the light model's
+        // reason so the caller (and the audit log) can explain the veto.
+        const verdict = await isAutoApprovalSafe(name, args, risk);
+        if (!verdict.safe) {
+          lastDeclineReason = verdict.reason || 'no reason given';
+          audit({ ts: new Date().toISOString(), type: 'approval_decline', tool: name, mode: 'auto', reason: lastDeclineReason, argsPreview: String(JSON.stringify(args)).substring(0, 300) });
+          return `Auto-approval declined by light model. Risk: ${risk}.${verdict.reason ? ' Reason: ' + verdict.reason : ''}`;
+        }
       }
     } else {
       let preview = null;

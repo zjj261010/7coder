@@ -1682,5 +1682,75 @@ scenarios.push({
   }
 });
 
+// --- B33: GAP-11 user permission rules + AST-R2 decline reasons ---
+scenarios.push({
+  name: 'perm-rules',
+  fn: async () => {
+    // GAP-11 deny: blocks in EVERY mode (checked even before auto-safe)
+    const cwd1 = freshCwd('b-perm1');
+    fs.mkdirSync(path.join(cwd1, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd1, '.7coder', 'permissions.json'), JSON.stringify({
+      deny: ['read_file(blocked.txt)', 'write_file(forbidden/**)'],
+      allow: ['write_file(scratch/**)'],
+      protected_extra: ['*.key', 'secretzone/**']
+    }));
+    fs.writeFileSync(path.join(cwd1, 'blocked.txt'), 'SECRET-DATA');
+    const m1 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pr1', type: 'function', function: { name: 'read_file', arguments: '{"path":"blocked.txt"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pr2', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'forbidden/x.txt', content: 'X' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pr3', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'scratch/free.txt', content: 'S' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pr4', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'master.key', content: 'K' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pr5', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'secretzone/deep/plan.txt', content: 'Z' }) } }] },
+      { role: 'assistant', content: 'PR-DONE ' + 'perm scenario final reply padded past the summary floor for the budget skip rule. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m1.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd1, timeoutMs: 60000 });
+    const l1 = readLog(m1.log);
+    const pr1 = tr(l1, 'pr1'), pr2 = tr(l1, 'pr2'), pr3 = tr(l1, 'pr3'), pr4 = tr(l1, 'pr4'), pr5 = tr(l1, 'pr5');
+    record('perm: deny rule blocks a normally auto-safe read even in bypass', pr1 && pr1.c.includes('BLOCKED by user permission rule: read_file(blocked.txt)'), pr1 ? pr1.c.substring(0, 120) : 'no result');
+    record('perm: deny path glob blocks the write and nothing lands', pr2 && pr2.c.includes('BLOCKED by user permission rule') && !fs.existsSync(path.join(cwd1, 'forbidden', 'x.txt')), pr2 ? pr2.c.substring(0, 120) : 'no result');
+    record('perm: allow rule auto-executes a would-be-approved write (no prompt needed)', pr3 && pr3.c.includes('Written: scratch') && fs.existsSync(path.join(cwd1, 'scratch', 'free.txt')), pr3 ? pr3.c : 'no result');
+    record('perm: protected_extra glob guards a custom extension', pr4 && pr4.c.includes('BLOCKED: protected file') && !fs.existsSync(path.join(cwd1, 'master.key')), pr4 ? pr4.c.substring(0, 120) : 'no result');
+    record('perm: protected_extra dir pattern guards a nested zone', pr5 && pr5.c.includes('BLOCKED: protected file') && !fs.existsSync(path.join(cwd1, 'secretzone', 'deep', 'plan.txt')), pr5 ? pr5.c.substring(0, 120) : 'no result');
+    stopMock(m1);
+
+    // allow can NEVER beat the hard rails: allow the .env write, still blocked
+    const cwd2 = freshCwd('b-perm2');
+    fs.mkdirSync(path.join(cwd2, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd2, '.7coder', 'permissions.json'), JSON.stringify({ allow: ['write_file(*)'] }));
+    fs.writeFileSync(path.join(cwd2, '.env'), 'KEEP=ME\n');
+    const m2 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pr6', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: '.env', content: 'HACKED=1' }) } }] },
+      { role: 'assistant', content: 'PR2-DONE ' + 'perm hard-rail scenario reply padded past the summary floor for the budget skip. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd2, timeoutMs: 60000 });
+    const pr6 = tr(readLog(m2.log), 'pr6');
+    record('perm: allow(*) cannot override the built-in protected-file rail', pr6 && pr6.c.includes('BLOCKED: protected file') && fs.readFileSync(path.join(cwd2, '.env'), 'utf8').includes('KEEP=ME'), pr6 ? pr6.c.substring(0, 120) : 'no result');
+    stopMock(m2);
+
+    // AST-R2: a NO verdict with a reason lands in the audit log
+    const cwd3 = freshCwd('b-perm3');
+    const m3 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'pr7', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'out.txt', content: 'X' }) } }] },
+      { role: 'assistant', content: '{"safe": false, "reason": "writes outside the source tree are not allowed here"}' }, // light model says NO + why
+      { role: 'assistant', content: 'PR3-DONE ' + 'perm ast-r2 scenario reply padded past the summary floor for the budget skip. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m3.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'auto' }, cwd: cwd3, timeoutMs: 60000 });
+    const pr7 = tr(readLog(m3.log), 'pr7');
+    record('perm: structured decline carries the reason to the model', pr7 && pr7.c.includes('Auto-approval declined') && pr7.c.includes('Reason: writes outside the source tree'), pr7 ? pr7.c.substring(0, 160) : 'no result');
+    const auditPath3 = path.join(cwd3, '.7coder', 'audit.jsonl');
+    let reasonLogged = '(no audit)';
+    if (fs.existsSync(auditPath3)) {
+      const entries = fs.readFileSync(auditPath3, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
+      const dec = entries.find(e => e.type === 'approval_decline');
+      if (dec) reasonLogged = dec.reason || '(empty reason)';
+    }
+    record('perm: decline reason lands as approval_decline audit entry', reasonLogged.indexOf('writes outside the source tree') === 0, 'reason=' + reasonLogged);
+    stopMock(m3);
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);

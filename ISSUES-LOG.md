@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-03 傍晚）：单文件 index.js（~3810 行），v2.16.0；快赢批③后 A–J 全绿 475 项（A 85/B 167/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-03 夜）：单文件 index.js（~4130 行），v2.16.0；AST-R2+GAP-11 轮后 A–J 全绿 483 项（A 85/B 175/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 156 |
+| runner-b.js | 164 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **448** |
+| **合计** | **456** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -283,7 +283,7 @@
 
 | # | 现状 | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
-| GAP-11 | PROTECTED_FILES 硬编码 12 项（index.js:489-493）；权限仅四模式 | 用户不可扩展保护清单，也无 allow/deny 规则 | `.7coder/permissions.json`：protected_extra/allow/deny（glob 规则），启动加载并公告 | 小 |
+| GAP-11 | 保护清单硬编码；权限仅四模式 | 用户不可扩展 | 【✅ 2026-10-03 主会话实施】`.7coder/permissions.json`（+安装目录 permissions.json 双层合并）：protected_extra 纯路径模式（扩展受保护清单，正斜杠跨平台）/deny/allow 规则 `tool(pattern)`。安全序：deny 全模式生效（先于 auto-safe，bypass 也拦）；allow 仅跳过审批层（硬轨之后判定，永远压不过 protected/超级危险命令/denial/deny）。无效规则启动告警并忽略。perm-rules 场景 8 断言先红后绿 | 小 |
 | GAP-12 | 缺任务级改动汇总 | 任务收尾无"改了什么"总览 | 【✅ 2026-10-03 快赢批③】taskChanges 在审计包装处收集写类工具 {tool,path,status}（HTTP 常驻模式 1000 条上限——GLM 自纠的盲区），任务成败两路都打印 [CHANGES] 清单（≤20 行）（task-changes 断言先红后绿）。任务前 git stash 检查点半项未做 | 小 |
 | GAP-13 | 上下文压缩按字符数近似（=C9 老项） | 字符≠token，CJK 尤其失真，压缩触发偏晚 | 引入轻量 tokenizer 估算（需验证 Node 13 兼容的纯 JS 实现）；或按 (字符+CJK×2) 折算近似 | 中 |
 | GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 低优先；sessions/ 已有时间戳副本，补"从第 N 轮分叉"命令即可 | 中 |
@@ -339,7 +339,7 @@
 | AST-14 | test/mock-server.js + 各 runner | 裸字符串 mock 步骤（如 'WF-DONE'）没有 .content 属性 → mock 发空 delta → 客户端报 empty streamed response → 错误路径也写 [DONE]。多数场景恰好在工具结果上断言所以仍过，但意味着这些用例的最终回复从未真实到达、7CODER.md 摘要被跳过。approval-iso 已改对象步骤根治；其余场景的字符串尾步骤属已知无害怪癖 | ✅ 根治法：mock-server/chaos-mock 三处取步骤点统一字符串→对象归一化（一处改动消灭整类陷阱，优于改几十处场景）；strstep 场景 3 断言先红后绿（旧代码 stdout 现错误路径文案，新代码真实回复到达） |
 | AST-15 | requestGate 语义 | HTTP 聊天请求端到端串行后，长审批等待会阻塞后续请求（单用户工具可接受；approval-iso 已锁定该语义）。根治=ExecutionContext 线程化（AST-09 同族） | 🔶 requestGate 串行门语义维持（AST-09 最小版未做 ExecutionContext 线程化）；多标签场景仍为排队。重开条件：常用多标签 或 OPT-6 重开 或 下次大结构改动时一并线程化 |
 | AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | 🔶 两子项已做（快赢批②）：SUMMARY_MODEL/SUMMARY_MAX_TOKENS=512 独立配置 + 短回复(<200 字符)跳过摘要（空回复仍走兜底摘要，保住套件 G 契约）；summary-budget 断言（body 含 max_tokens:512、短回复零轻调用）。剩余：非流式后台化（时序语义，暂缓）。连带：9 个套件的 mock 尾步补长以保持步骤账（含注释说明） |
-| AST-R2 | 审批链路 | 语义等价的编辑因参数表述不同被轻模型先拒后批（declined→ok 实录）——YES/NO 单字判定承担硬边界过载 | ⬜ 已立项（2026-10-03）：审批拒绝原因结构化入审计（declined 的 reason 字段）；确定性规则为主、模型判断为辅；与 GAP-11（可配置 allow/deny 规则）天然同族可合并实施 |
+| AST-R2 | 审批链路 | 语义等价编辑因表述不同被先拒后批——YES/NO 单字判定承担硬边界过载 | ✅ 2026-10-03 与 GAP-11 合并实施（主会话）：isAutoApprovalSafe 改结构化 JSON 判定 {safe,reason}（兼容旧 YES/NO 文本）；拒绝时 reason 回传给模型（可针对性重试）并落审计 approval_decline 条目（type/tool/mode/reason/argsPreview）；确定性规则（GAP-11 deny/allow/protected_extra + DETERMINISTIC_RISK 表）为主、模型判断兜底的分层已成型 |
 
 
 - 5.3 Node 13 EOL 双轨构建：离线包已捆绑运行时并明确面向 Win7，现状覆盖主要诉求；LTS 双轨是新工程，不并入待办，重开 OPT-3 时参考。
