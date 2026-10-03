@@ -200,6 +200,165 @@ function authHeadersFor(key) {
   return h;
 }
 
+// ====================== MCP STDIO TRANSPORT (GAP-1) ======================
+// Real Model Context Protocol support: JSON-RPC 2.0 over the server process's
+// stdin/stdout, one message per line (the MCP stdio framing - NOT LSP-style
+// Content-Length headers). Servers are configured like models.json, two
+// layers merged (workspace wins per server):
+//   mcp.json next to index.js           { "servers": { "<name>": {...} } }
+//   .7coder/mcp.json in the workspace   (same shape, or a bare map)
+// Server entry: { "command": "npx", "args": ["-y", "@modelcontextprotocol/
+// server-filesystem", "D:\\somewhere"], "env": {}, "cwd": "" }
+let mcpServers = {};
+function loadMcpServers() {
+  mcpServers = {};
+  for (const f of [path.join(appDir, 'mcp.json'), path.join(launchDir, '.7coder', 'mcp.json')]) {
+    try {
+      if (!fs.existsSync(f)) continue;
+      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
+      const servers = (j && j.servers && typeof j.servers === 'object') ? j.servers : j;
+      for (const k of Object.keys(servers || {})) {
+        const sv = servers[k];
+        if (sv && typeof sv.command === 'string') mcpServers[k] = sv;
+      }
+    } catch (e) {
+      console.warn('[WARN] failed to read ' + f + ': ' + e.message);
+    }
+  }
+}
+loadMcpServers();
+const MCP_CALL_TIMEOUT = parseInt(process.env.MCP_CALL_TIMEOUT, 10) || 120000;
+
+// One lazily-created client per configured server, kept alive for the
+// process lifetime and disposed at shutdown.
+const mcpClients = {};
+function mcpContentToText(result) {
+  const parts = [];
+  for (const c of ((result && result.content) || [])) {
+    if (c && c.type === 'text' && typeof c.text === 'string') parts.push(c.text);
+    else parts.push(JSON.stringify(c));
+  }
+  return parts.join('\n');
+}
+function createMcpStdioClient(name, cfg) {
+  const child = child_process.spawn(cfg.command, Array.isArray(cfg.args) ? cfg.args : [], {
+    cwd: cfg.cwd || launchDir,
+    env: Object.assign({}, process.env, cfg.env || {}),
+    stdio: ['pipe', 'pipe', 'pipe']
+  });
+  const client = {
+    child: child,
+    name: name,
+    nextId: 1,
+    pending: new Map(), // id -> { resolve, reject, timer }
+    toolsCache: null,
+    initialized: false,
+    initPromise: null,
+    dead: false,
+    deadErr: ''
+  };
+  let buf = '';
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', d => {
+    buf += d;
+    let nl;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.substring(0, nl).replace(/\r$/, '');
+      buf = buf.substring(nl + 1);
+      if (!line.trim()) continue;
+      let msg;
+      try { msg = JSON.parse(line); } catch (e) { continue; }
+      if (msg.id !== undefined && client.pending.has(msg.id)) {
+        const p = client.pending.get(msg.id);
+        client.pending.delete(msg.id);
+        clearTimeout(p.timer);
+        if (msg.error) p.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+        else p.resolve(msg.result);
+      } else if (msg.method !== undefined && msg.id !== undefined) {
+        // server -> client request (roots/list etc). Answer what we can,
+        // method-not-found for the rest; never leave the server hanging.
+        const known = { 'roots/list': { roots: [] }, 'ping': {} };
+        const out = known[msg.method] !== undefined
+          ? { jsonrpc: '2.0', id: msg.id, result: known[msg.method] }
+          : { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found: ' + msg.method } };
+        try { child.stdin.write(JSON.stringify(out) + '\n'); } catch (e2) {}
+      }
+      // server notifications (logging etc): ignored
+    }
+  });
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', d => console.warn('[MCP:' + name + '] ' + String(d).trim()));
+  function die(err) {
+    client.dead = true;
+    client.deadErr = err;
+    for (const p of client.pending.values()) { clearTimeout(p.timer); p.reject(new Error('MCP server "' + name + '" exited: ' + err)); }
+    client.pending.clear();
+    delete mcpClients[name]; // a later call lazily respawns
+  }
+  child.on('error', e => die(e.message));
+  child.on('exit', code => die('exit code ' + code));
+  client.request = function (method, params, timeoutMs) {
+    return new Promise((resolve, reject) => {
+      if (client.dead) return reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
+      const id = client.nextId++;
+      const timer = setTimeout(() => {
+        client.pending.delete(id);
+        reject(new Error('MCP ' + method + ' timed out after ' + timeoutMs + 'ms'));
+      }, timeoutMs);
+      client.pending.set(id, { resolve, reject, timer });
+      try {
+        child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: params || {} }) + '\n');
+      } catch (e) {
+        clearTimeout(timer);
+        client.pending.delete(id);
+        reject(e);
+      }
+    });
+  };
+  client.ensureInit = function () {
+    if (client.initialized) return Promise.resolve();
+    if (client.initPromise) return client.initPromise;
+    client.initPromise = client.request('initialize', {
+      protocolVersion: '2024-11-05',
+      capabilities: {},
+      clientInfo: { name: '7coder', version: APP_VERSION }
+    }, 15000).then(() => {
+      try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n'); } catch (e) {}
+      client.initialized = true;
+    }).catch(e => { client.initPromise = null; throw e; });
+    return client.initPromise;
+  };
+  client.listTools = async function (force) {
+    if (client.toolsCache && !force) return client.toolsCache;
+    await client.ensureInit();
+    const res = await client.request('tools/list', {}, 15000);
+    client.toolsCache = (res && Array.isArray(res.tools)) ? res.tools : [];
+    return client.toolsCache;
+  };
+  client.callTool = async function (toolName, toolArgs) {
+    await client.ensureInit();
+    const res = await client.request('tools/call', { name: toolName, arguments: toolArgs || {} }, MCP_CALL_TIMEOUT);
+    const text = mcpContentToText(res);
+    if (res && res.isError) throw new Error(text || 'tool reported isError with no content');
+    return text;
+  };
+  return client;
+}
+function getMcpClient(serverName) {
+  if (!mcpServers[serverName]) return null;
+  if (!mcpClients[serverName]) {
+    console.log('[MCP] starting stdio server "' + serverName + '": ' + mcpServers[serverName].command);
+    mcpClients[serverName] = createMcpStdioClient(serverName, mcpServers[serverName]);
+  }
+  return mcpClients[serverName];
+}
+function disposeMcpClients() {
+  for (const k of Object.keys(mcpClients)) {
+    try { mcpClients[k].child.kill(); } catch (e) {}
+    delete mcpClients[k];
+  }
+}
+
 // Redact secrets from the audit log's args preview: a run_command like
 // `curl -H "Authorization: Bearer sk-..."` would otherwise land verbatim in
 // .7coder/audit.jsonl. Keys that look secret-bearing are fully masked; all
@@ -347,7 +506,7 @@ if (DANGER_MODE) {
 // Auto-safe tools (no permission prompt ever). Deliberately excludes anything
 // that executes code (run_command, auto_debug_tool) or writes files.
 const AUTO_SAFE_TOOLS = [
-  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'tool_search_tool',
+  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'mcp_list_tools_tool', 'tool_search_tool',
   'prompt_from_file', 'snip_tool', 'cron_list_tool', 'process_list_tool', 'bickering_tool',
   'task_get_tool', 'task_list_tool', 'task_output_tool', 'skill_tool', 'synthetic_output_tool',
   'git_status_tool', 'git_diff_tool'
@@ -391,7 +550,8 @@ const tools = [
   { type: "function", function: { name: "task_list_tool", description: "List background tasks." } },
   { type: "function", function: { name: "task_output_tool", description: "Get a background task's captured output (truncated to the last 8000 chars). Omit task_id to use the most recent task.", parameters: { type: "object", properties: { task_id: { type: "string" } } } } },
   { type: "function", function: { name: "task_stop_tool", description: "Stop a running background task (kills the whole process tree on Windows). Omit task_id to use the most recent task.", parameters: { type: "object", properties: { task_id: { type: "string" } } } } },
-  { type: "function", function: { name: "mcp_tool", description: "Generic MCP tool execution (supports external URLs via mcp_url param or npx via npx_pkg param; falls back to env vars).", parameters: { type: "object", properties: { tool_name: { type: "string" }, args: { type: "object" }, mcp_url: { type: "string" }, npx_pkg: { type: "string" } }, required: ["tool_name"] } } },
+  { type: "function", function: { name: "mcp_tool", description: "Call a Model Context Protocol tool. Prefer server: names from mcp_list_tools_tool (real MCP stdio servers configured in .7coder/mcp.json). Legacy custom-HTTP/npx bridges via mcp_url/npx_pkg still work.", parameters: { type: "object", properties: { tool_name: { type: "string" }, args: { type: "object" }, server: { type: "string" }, mcp_url: { type: "string" }, npx_pkg: { type: "string" } }, required: ["tool_name"] } } },
+  { type: "function", function: { name: "mcp_list_tools_tool", description: "List configured MCP stdio servers and their tools (with arg schemas). Read-only discovery; use before mcp_tool.", parameters: { type: "object", properties: { } } } },
   { type: "function", function: { name: "prompt_from_file", description: "Use prompt from TODO.md or similar.", parameters: { type: "object", properties: { file: { type: "string" } }, required: ["file"] } } },
   { type: "function", function: { name: "skill_tool", description: "Invoke a user-defined skill: reads .7coder/skills/<skill_name>.md and returns its instructions to follow. Pass params for the skill to use.", parameters: { type: "object", properties: { skill_name: { type: "string" }, params: { type: "object" } }, required: ["skill_name"] } } },
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
@@ -1566,7 +1726,23 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'mcp_tool') {
-    const { tool_name: toolName, args: toolArgs = {}, mcp_url, npx_pkg } = args;
+    const { tool_name: toolName, args: toolArgs = {}, server, mcp_url, npx_pkg } = args;
+
+    // GAP-1: real MCP stdio transport - server names come from mcp.json /
+    // .7coder/mcp.json (see loadMcpServers), JSON-RPC over the child's pipes.
+    if (typeof server === 'string' && server.trim()) {
+      const sv = server.trim();
+      if (!mcpServers[sv]) {
+        const names = Object.keys(mcpServers);
+        return `MCP error: unknown server "${sv}". Configured: ${names.length ? names.join(', ') : '(none - add one to .7coder/mcp.json)'}.`;
+      }
+      try {
+        return await getMcpClient(sv).callTool(String(toolName || ''), toolArgs);
+      } catch (e) {
+        return `MCP tool error (${sv}/${toolName}): ${e.message}`;
+      }
+    }
+
     const effectiveUrl = mcp_url || MCP_SERVER_URLS[0] || null;
     const effectiveNpx = npx_pkg || (MCP_NPX_PKGS.length ? MCP_NPX_PKGS[0] : null);
 
@@ -1597,8 +1773,29 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       }
       return await executeToolRaw('run_command', { command: `npx ${effectiveNpx} ${toolName} ${argsToken}`.trim() }, conversation);
     } else {
-      return `MCP error: no endpoint configured. Set MCP_SERVER_URLS or MCP_NPX_PKGS in .env, or pass mcp_url/npx_pkg parameters. Args: ${JSON.stringify(toolArgs)}`;
+      return `MCP error: no endpoint configured. Add servers to .7coder/mcp.json (stdio, recommended - see README), or set MCP_SERVER_URLS / MCP_NPX_PKGS in .env, or pass server/mcp_url/npx_pkg parameters. Args: ${JSON.stringify(toolArgs)}`;
     }
+  }
+
+  if (name === 'mcp_list_tools_tool') {
+    // GAP-1: discovery over the configured stdio servers. Spawning is limited
+    // to commands the USER put in mcp.json, which is why this stays auto-safe.
+    const names = Object.keys(mcpServers);
+    if (!names.length) return 'No MCP servers configured. Add one to .7coder/mcp.json:\n{"servers":{"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}}';
+    const out = [];
+    for (const sv of names) {
+      try {
+        const tools = await getMcpClient(sv).listTools();
+        out.push(sv + ':');
+        for (const t of tools) {
+          out.push('  ' + (t.name || '?') + ' - ' + String(t.description || '').substring(0, 120));
+          if (t.inputSchema) out.push('    args: ' + JSON.stringify(t.inputSchema).substring(0, 300));
+        }
+      } catch (e) {
+        out.push(sv + ': [ERROR] ' + e.message);
+      }
+    }
+    return '[MCP] configured servers and tools:\n' + out.join('\n');
   }
 
   if (name === 'sleep_tool') {
@@ -2363,7 +2560,7 @@ async function askApproval(question, approvalBridge) {
 // step-stop check and the audit status mapping both consume this regex, so
 // they can never drift apart again (they once disagreed: 'List error' and
 // declined steps let workflows continue and audit logged denials as 'ok').
-const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|Auto-approval declined|Permission mode = denial|User declined)/;
+const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined)/;
 function toolFailed(res) { return TOOL_FAIL_RE.test(String(res)); }
 
 // Central choke point for every model call: caps tool result size and
@@ -3524,6 +3721,7 @@ async function main() {
             } catch (e) {}
           }
         }
+        disposeMcpClients(); // GAP-1: stop stdio MCP server children too
         try { const lock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
         saveSession();
         console.log('Goodbye!');
