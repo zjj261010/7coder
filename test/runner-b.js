@@ -1507,5 +1507,45 @@ scenarios.push({
   }
 });
 
+// --- B28: GAP-1 real MCP stdio transport (echo server speaks the protocol) ---
+scenarios.push({
+  name: 'mcp-stdio',
+  fn: async () => {
+    const cwd = freshCwd('b-mcp');
+    fs.mkdirSync(path.join(cwd, '.7coder'), { recursive: true });
+    const fwd = (p) => p.split(path.sep).join('/');
+    fs.writeFileSync(path.join(cwd, '.7coder', 'mcp.json'), JSON.stringify({
+      servers: { echo: { command: process.execPath, args: [fwd(path.join(ROOT, 'mcp-echo-server.js'))], env: { MCP_ECHO_LOG: fwd(path.join(cwd, 'rx.log')) } } }
+    }, null, 2));
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ms1', type: 'function', function: { name: 'mcp_list_tools_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ms2', type: 'function', function: { name: 'mcp_tool', arguments: JSON.stringify({ server: 'echo', tool_name: 'echo', args: { text: 'HELLO-MCP' } }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ms3', type: 'function', function: { name: 'mcp_tool', arguments: JSON.stringify({ server: 'echo', tool_name: 'add', args: { a: 2, b: 3 } }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ms4', type: 'function', function: { name: 'mcp_tool', arguments: JSON.stringify({ server: 'echo', tool_name: 'boom', args: {} }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ms5', type: 'function', function: { name: 'mcp_tool', arguments: JSON.stringify({ server: 'ghost', tool_name: 'x' }) } }] },
+      { role: 'assistant', content: 'MCP-B-DONE ' + 'mcp scenario final reply padded past the summary floor for the budget skip. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 120000 });
+    const log = readLog(m.log);
+    const ms1 = tr(log, 'ms1'), ms2 = tr(log, 'ms2'), ms3 = tr(log, 'ms3'), ms4 = tr(log, 'ms4'), ms5 = tr(log, 'ms5');
+    record('mcp: discovery lists server, tools and arg schemas', ms1 && ms1.c.includes('[MCP] configured servers') && ms1.c.includes('echo - Echo the given text back.') && ms1.c.includes('"text"'), ms1 ? ms1.c.substring(0, 150) : 'no result');
+    record('mcp: echo tool result round-trips', ms2 && ms2.c === 'ECHO:HELLO-MCP', ms2 ? ms2.c : 'no result');
+    record('mcp: add tool computes server-side', ms3 && ms3.c === '5', ms3 ? ms3.c : 'no result');
+    record('mcp: isError result surfaces as MCP tool error', ms4 && ms4.c.includes('MCP tool error (echo/boom)') && ms4.c.includes('boom as requested'), ms4 ? ms4.c : 'no result');
+    record('mcp: unknown server names the configured ones', ms5 && ms5.c.includes('unknown server "ghost"') && ms5.c.includes('Configured: echo'), ms5 ? ms5.c : 'no result');
+    // handshake protocol assertions from the echo server's received-lines log
+    const rxPath = path.join(cwd, 'rx.log');
+    const rx = fs.existsSync(rxPath) ? fs.readFileSync(rxPath, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean) : [];
+    const l1 = rx[0], l2 = rx[1];
+    record('mcp: handshake sends initialize first with 7coder clientInfo', l1 && l1.method === 'initialize' && l1.params && l1.params.clientInfo && l1.params.clientInfo.name === '7coder' && !!l1.params.protocolVersion, rx.length ? JSON.stringify(l1).substring(0, 120) : 'no rx.log');
+    record('mcp: initialized notification follows (no id)', l2 && l2.method === 'notifications/initialized' && l2.id === undefined, rx.length > 1 ? JSON.stringify(l2) : 'missing');
+    const lists = rx.filter(x => x.method === 'tools/list').length;
+    const calls = rx.filter(x => x.method === 'tools/call').map(x => x.params && x.params.name).join(',');
+    record('mcp: tools/list cached (exactly one) and exactly 3 tools/calls reach the server (ghost never spawns)', lists === 1 && rx.filter(x => x.method === 'tools/call').length === 3 && calls === 'echo,add,boom', 'lists=' + lists + ' calls=' + calls);
+    stopMock(m);
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);

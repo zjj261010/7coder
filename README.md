@@ -100,6 +100,7 @@ supported, plus `/v1/models`. Client message histories are honored for multi-tur
 - `auto_debug_tool` (launch + observe + auto-fix loop; on Windows closes test apps with `taskkill /T /F`), `bickering_tool`, `plan_mode`
 - `run_tests_tool` - runs a test suite and parses output into **structured pass/fail counts** (jest/mocha/karma and node:test formats) + failure lines; auto-detects `npm test` / `node --test`
 - `git_status_tool` / `git_diff_tool` / `git_commit_tool` - **native Git awareness**: see branch + dirty state, real diffs (auto-safe, read-only); commit with an audit-log-generated or explicit message, with a pre-commit `git stash create` snapshot for recovery (never pushes)
+- **MCP stdio servers** (see the MCP section below): `mcp_list_tools_tool` discovery + `mcp_tool { server, tool_name, args }` calls against real Model Context Protocol servers
 - MCP resources (`.mcp` directory), git worktrees, notebook editing, TODO.md, 7CODER.md auto-generation
 
 Everything listed above does what it says. Tools that were previously advertised
@@ -179,6 +180,33 @@ index.js (or in `<workspace>/.7coder/models.json` for per-project overrides):
 
 Then switch models per request via the web UI model dropdown or the OpenAI
 `model` field. Models without a profile use the global OPENAI_ENDPOINT/KEY.
+
+## MCP (Model Context Protocol)
+
+7coder speaks the real MCP **stdio transport**: JSON-RPC 2.0 over the server
+process's stdin/stdout (newline-delimited). Configure servers like models -
+two layers merged, the workspace file wins per server:
+
+- `mcp.json` next to index.js
+- `<workspace>/.7coder/mcp.json`
+
+```json
+{
+  "servers": {
+    "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] }
+  }
+}
+```
+
+Each entry: `command` (required), `args`, `env`, `cwd`. Servers start lazily on
+first use, stay alive across calls (one handshake), and respawn automatically
+if they crash. `mcp_list_tools_tool` discovers servers, tools and arg schemas
+(auto-safe - it only spawns commands YOU configured); call tools with
+`mcp_tool { server, tool_name, args }` (HIGH risk - goes through the normal
+approval system). Per-call timeout: `MCP_CALL_TIMEOUT` (default 120000 ms).
+
+The old `mcp_url`/`npx_pkg` bridges (custom HTTP POST /invoke protocol) still
+work but are legacy - real MCP ecosystem servers need the stdio config above.
 
 ## Other Features
 

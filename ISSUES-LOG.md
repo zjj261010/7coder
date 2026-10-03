@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-03 深夜）：单文件 index.js（~3600 行），v2.16.0；AST-09/10 结构轮后 A–J 全绿 460 项（A 85/B 152/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-03 午后）：单文件 index.js（~3690 行），v2.16.0；GAP-1 MCP 轮后 A–J 全绿 468 项（A 85/B 160/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 141 |
+| runner-b.js | 149 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **433** |
+| **合计** | **441** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -263,7 +263,7 @@
 
 | # | 现状（实码证据） | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
-| GAP-1 | mcp_tool 走自定义协议 `POST {url}/invoke {tool,arguments}`（index.js:1429 附近）；MCP 生态实际标准是 JSON-RPC 2.0（stdio 传输为主，HTTP+SSE 次之） | **生态服务器一个都连不上**，"支持 MCP"名不副实 | 实现 stdio transport：spawn 子进程 + Content-Length 帧收发（零新依赖可行，纯管道不需要 PTY）；HTTP+SSE 二期；无配置时报错文案已修（P1-12） | 中 |
+| GAP-1 | mcp_tool 走自定义协议 `POST {url}/invoke`；MCP 生态标准是 JSON-RPC 2.0 stdio | 生态服务器连不上，"支持 MCP"名不副实 | 【✅ 2026-10-03 已实施（8949096 + 测试文档轮）】真实 stdio transport：换行分隔 JSON-RPC（规范即 NDJSON，非 LSP 帧——原注有误）；mcp.json/.7coder/mcp.json 两层配置；惰性拉起/握手复用/崩溃重拉/关停 dispose；mcp_tool{server} + auto-safe 的 mcp_list_tools_tool 发现；MCP 错误并入 TOOL_FAIL_RE。离线验证：test/mcp-echo-server.js（真实协议）+ mcp-stdio 场景 8 断言红 8/8 绿 8/8（含握手顺序/clientInfo/tools-list 缓存/恰好 3 次 call）。HTTP+SSE transport 二期不做（legacy mcp_url 桥保留） | 中 |
 | GAP-2 | 三个命令工具全部 `execSync/execFileSync`，`cwd: launchDir` 写死（index.js:1143/1158/1167）；无交互进程支持 | ① `cd`/环境变量不跨命令保持，模型每条命令都从工作区根重来 ② REPL 型交互程序（python/node 交互式、npm login）完全无法运行 | bash_tool 维持常驻子进程（spawn + 命令队列 + 输出缓冲），保持 cwd/env；输出用"等待静默 N ms 或遇提示符"截取。Win7 无 conPTY，真终端不做，文档明示 | 中 |
 | GAP-3 | read_file 全量读取**无行号**（仅 offset/limit 分支有 cat -n，index.js:1078-1090）；**无二进制检测**（=老 P1-6 未修，图片读成 U+FFFD 糊）；无 repo map，大仓库冷启动靠模型自己 ls/glob 摸索 | 编辑锚点不稳（无行号时 old_string 全靠记忆）；二进制白烧上下文；冷启动慢 | ① 全量读也带行号 ② 前 4KB 含 NUL 即拒绝并提示 ③ 任务启动时注入目录树摘要——三件都是小改动【✅ 2026-10-03 快赢批② 全部落地：统一 cat -n 格式化 / [BINARY]+(empty file)+越界提示 / buildRepoMap 2 层 150 行注入系统提示词；readfmt+repo-map 5 断言】 | 小 |
 | GAP-4 | 聊天通道**丢弃 image part**（套件断言即如此，runner-b httpx）；computer_use 截屏只返回文件路径（index.js:1582），模型"看不见"自己截的图；仅 web_browser 对图片 URL 调 describeWithVision（index.js:1279） | 视觉闭环断裂：不能看截图→不能真正基于屏幕决策；用户也不能贴图问问题 | ① 截屏后自动转 base64 data URL 走 VISION_MODEL describe 回填（管线已存在，只差接线）② 上游多模态时聊天透传 image_url | 中 |
