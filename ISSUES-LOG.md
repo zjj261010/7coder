@@ -6,7 +6,7 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-04）：单文件 index.js（~4400 行），v2.16.0；快赢批④后 A–J 全绿 498 项（A 85/B 190/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-04 发布轮，**v2.17.0** 已打 tag）：单文件 index.js（~4400 行）；双运行时全绿——Node 24 十套件 498 项、Node 13.14.0（包内 runtime）A 85 + B 190 + dom-sim；真实端点 qwen3.7-plus：K 9/9 + R 10/10（首次验证 3.7-plus，此前仅 3.8-max 验证过）；离线包 dist/7coder-v2.17.0-offline-win64.zip（21.6MB）
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
@@ -130,7 +130,7 @@
 | P1-6 | INSTALL.md + runner | 验证命令场景名全不匹配 → 假绿（0/0 退出码 0） | ✅ 全部三个半完成：二进制拒绝（[BINARY] 文案）与空文件 (empty file) 由快赢批② GAP-3b 落地；offset 越界提示（beyond EOF - file has N lines）由主会话终检补齐（readfmt 4 断言） |
 | P1-7 | INSTALL/KNOWN-ISSUES | 套件数/断言数三处口径打架（"10 套件 334 项" vs 实际 12 runner 且 B 已 93 项） | ⬜ 未处理（建议脚本自动汇总，见 OPT-10） |
 | P1-8 | README | 已决策不发 npm 但保留 "Now on NPM!" 教程 | ✅ npm 安装教程已移除 |
-| P1-9 | pack-offline.js + dist/ | copyRec 排除 `e === 'w-'` 恒假；未排除 cur-*；dist 陈旧 v2.6.0 | 🔶 mock-log-/cur-script- 排除已加（pack-offline.js:47）；`w-` 前缀判断仍错、dist 未重打（仍是 7coder-v2.6.0-offline） |
+| P1-9 | pack-offline.js + dist/ | copyRec 排除 `e === 'w-'` 恒假；未排除 cur-*；dist 陈旧 v2.6.0 | ✅ 全部完成（2026-10-04 发布轮）：排除规则 w-/cur- 前缀已修（AST-13 轮）；陈旧 v2.6.0 产物已由 v2.17.0 替代（dist/7coder-v2.17.0-offline-win64.zip，21.6MB，449 条目零残渣零 .env，内置 Node 13.14.0 冒烟通过）；旧 v2.6.0 文件夹/zip 留在 dist/ 待用户自行清理 |
 | P1-10 | README + KNOWN-ISSUES | 内联代码整段丢失；KNOWN-ISSUES D4 条目重复 3 遍 | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档 docs/history/，冻结快照不再修正文 |
 | P1-11 | git 54d09d7 | 提交信息 GBK 乱码 | ✅ `git config i18n.commitencoding utf-8` 已设 |
 | P1-12 | index.js mcp_tool | 无配置时返回 "[OK] executed locally" 假装成功 | ✅ 改为明确报错（"MCP error: no endpoint configured…"，index.js:1453） |
