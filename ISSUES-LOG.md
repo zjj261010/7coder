@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-03 深夜）：单文件 index.js（~4280 行），v2.16.0；GAP-2 轮后 A–J 全绿 489 项（A 85/B 181/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-04）：单文件 index.js（~4400 行），v2.16.0；快赢批④后 A–J 全绿 498 项（A 85/B 190/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 170 |
+| runner-b.js | 179 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **462** |
+| **合计** | **471** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -266,15 +266,15 @@
 | GAP-1 | mcp_tool 走自定义协议 `POST {url}/invoke`；MCP 生态标准是 JSON-RPC 2.0 stdio | 生态服务器连不上，"支持 MCP"名不副实 | 【✅ 2026-10-03 已实施（8949096 + 测试文档轮）】真实 stdio transport：换行分隔 JSON-RPC（规范即 NDJSON，非 LSP 帧——原注有误）；mcp.json/.7coder/mcp.json 两层配置；惰性拉起/握手复用/崩溃重拉/关停 dispose；mcp_tool{server} + auto-safe 的 mcp_list_tools_tool 发现；MCP 错误并入 TOOL_FAIL_RE。离线验证：test/mcp-echo-server.js（真实协议）+ mcp-stdio 场景 8 断言红 8/8 绿 8/8（含握手顺序/clientInfo/tools-list 缓存/恰好 3 次 call）。HTTP+SSE transport 二期不做（legacy mcp_url 桥保留） | 中 |
 | GAP-2 | 命令工具一次性执行（AST-09 后已异步但 cwd/env 不保持）；无交互进程 | cd/env 不跨命令；REPL 型程序无法运行 | 【✅ 2026-10-03 主会话实施（半范围）】bash_tool {persistent:true}：每个会话上下文一个常驻非交互 bash（管道 stdin 保持 cwd/env；注意非 TTY 下 -i 会挂死——实测定案去掉）；marker 回显退出码 + 300ms 静默窗截取输出；挂起命令超时（timeout_ms 1000-300000 默认 120s）杀整会话重启；会话键 = main/agent-N/wf-N（子代理与工作流天然隔离）；/bye 关停清理；[SHELL] timeout 入 TOOL_FAIL_RE。默认不传 persistent = 旧行为逐字不变（pshell 6 断言含一次性模式不回归）。**未做**：真正 REPL 型交互程序对话式驱动（需要 conPTY，Win7 无——原建议已注明不做）；输出静默判定改提示符嗅探（现 marker+静默窗已够用） | 中 |
 | GAP-3 | read_file 全量读取**无行号**（仅 offset/limit 分支有 cat -n，index.js:1078-1090）；**无二进制检测**（=老 P1-6 未修，图片读成 U+FFFD 糊）；无 repo map，大仓库冷启动靠模型自己 ls/glob 摸索 | 编辑锚点不稳（无行号时 old_string 全靠记忆）；二进制白烧上下文；冷启动慢 | ① 全量读也带行号 ② 前 4KB 含 NUL 即拒绝并提示 ③ 任务启动时注入目录树摘要——三件都是小改动【✅ 2026-10-03 快赢批② 全部落地：统一 cat -n 格式化 / [BINARY]+(empty file)+越界提示 / buildRepoMap 2 层 150 行注入系统提示词；readfmt+repo-map 5 断言】 | 小 |
-| GAP-4 | 聊天通道**丢弃 image part**（套件断言即如此，runner-b httpx）；computer_use 截屏只返回文件路径（index.js:1582），模型"看不见"自己截的图；仅 web_browser 对图片 URL 调 describeWithVision（index.js:1279） | 视觉闭环断裂：不能看截图→不能真正基于屏幕决策；用户也不能贴图问问题 | ① 截屏后自动转 base64 data URL 走 VISION_MODEL describe 回填（管线已存在，只差接线）② 上游多模态时聊天透传 image_url | 中 |
+| GAP-4 | 聊天丢弃 image part；截屏只返回路径；仅 web_browser 有视觉 | 视觉闭环断裂 | 【✅ 2026-10-04 快赢批④（GLM+终检）】半1：screenshotToDataUrl（文件→data URL，失败 null 保旧行为）+ 截屏成功且 VISION_MODEL 配置时经 describeWithVision 回填 "Vision: <描述>"；单元断言 3 条（1x1 PNG 往返解码、不存在路径 null）。半2：conversationFromClient 保留多模态结构（image_url 透传上游，纯文本路径逐字不变）；httpx 契约断言按新行为更新（image_url 到达 mock 且文本保留）。**未覆盖**：真实 VISION_MODEL 端点与真实截屏（无头环境）——留真机验证 | 中 |
 
 ### B 级——agent 能力增强
 
 | # | 现状 | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
 | GAP-5 | 无 LSP；编辑后错误只能等跑测试 | 修错反馈环长 | 最小版 diagnostics_tool【✅ 2026-10-03 快赢批③】：只探测并运行项目本地 node_modules 的 tsc/eslint（零网络、异步、auto-safe LOW），tsc 行解析 / eslint JSON 解析，[DIAG] 结构化输出；tsc 忽略 path 参数（单文件+项目混用会失真，schema 已注明）。shim 版 tsc 红绿验证解析（diag 2 断言）。完整 LSP 仍留 D3 | 小→大 |
-| GAP-6 | todo_write_tool 只是往 TODO.md 追加文本行 | 无结构化任务列表，无状态流转（doing/done），web UI 也无从展示进度 | 结构化 {id,title,status,updated} 存 `.7coder/todos.json`，工具改读写 JSON；web UI 侧栏渲染进度 | 小 |
-| GAP-7 | REPL 仅固定命令（/bye /clear /undo /btw /resume /execute-task-now）；无 hooks | 用户无法沉淀自定义工作流（一键"跑测+修复"类），无法注入 pre/post-tool 规则（如"禁止改 src/legacy/**"） | ① `.7coder/commands/*.md` 斜杠命令展开为 prompt ② 工具调用前后钩子（复用审批管线位置，用户脚本 exit≠0 即拦截） | 中 |
+| GAP-6 | todo 只是往 TODO.md 追加文本 | 无状态流转，UI 无从展示进度 | 【✅ 2026-10-04 快赢批④（GLM+终检）】`.7coder/todos.json` {items:[{id,title,status,updated}]}（500 条上限、损坏自动重建）；todo_write_tool 改 action 式 add/update/list（旧 content 参数向后兼容）；GET /api/todos；webui 侧栏任务面板三色徽标（autoSave 成功回调刷新）。todos-api 场景 3 断言先红后绿。GLM 纠正了规格错误：todo_write_tool 本就不在 AUTO_SAFE，权限路径零改动 | 小 |
+| GAP-7 | REPL 仅固定命令；无 hooks | 无法沉淀自定义工作流，无法注入 pre/post-tool 规则 | 🔶 半完成（2026-10-04 快赢批④）：7a 斜杠命令 ✅——.7coder/commands/<name>.md 在 REPL 展开为任务（64KB 截断、名字限 [a-z0-9_-] 无遍历、未知 /x 走原逻辑），slashcmd 场景 2 断言先红后绿。7b hooks ⬜ 留主会话（与权限门排序耦合：pre-hook 应在用户 deny 之后、allow 之前还是之后需定语义） | 中 |
 | GAP-8 | usage 字段完全未用 | 无 token 可观测 | 【✅ 2026-10-03 快赢批③】sessionUsage 累计（流式末块/非流式信封两路），CLI 任务尾打印 [USAGE]、/api/info 暴露 usage 对象；mock-server 补 usage 字段（纯增量）供断言（usage-track 2 断言，红 0/7 先证）。审计入账与 web UI 面板显示为后续增量（原建议后半，未做） | 小 |
 | GAP-9 | 记忆=7CODER.md 单文件（auto-log 标记节 + dream 整理）+ BTW.md | 扁平无分层：项目事实/用户偏好/临时笔记混一处，长了靠压缩 | 分层 memory（.7coder/memory/*.md 按主题）+ 任务启动时按关键词召回注入；dream 改为整理归档 | 中 |
 | GAP-10 | web_search 正则抓 DDG-lite HTML | 脆弱易限流无降级 | 【✅ 2026-10-03 快赢批③】SEARCH_PROVIDER/SEARCH_API_KEY/SEARCH_ENDPOINT 三键：searxng/brave/bing 分支 + ddg 原样兜底；显式未知值报错不回退网络；Search error 前缀入 TOOL_FAIL_RE。离线假 searxng 实例验证（search-api 2 断言先红后绿）；真实 brave/bing key 未测（付费） | 小 |

@@ -182,7 +182,7 @@ scenarios.push({
     const documented = new Set();
     const docRe = /^\s*([A-Z_][A-Z0-9_]*)=/gm;
     while ((mm = docRe.exec(envExample))) documented.add(mm[1]);
-    const sysAllow = new Set(['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA']);
+    const sysAllow = new Set(['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'PATH']); // PATH: Windows-provided like the others (findBash probes it), not 7coder config
     const legacyAllow = new Set(['MAX_ATTEMPT_RETRIES', 'ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE']);
     const undocumented = [];
     for (const e of envReads) {

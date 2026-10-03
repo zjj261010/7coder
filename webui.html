@@ -253,6 +253,9 @@ details.think .think-body {
     <div class="side-sep"></div>
     <div class="side-label">历史会话</div>
     <div id="histList" style="display:flex;flex-direction:column;gap:2px;"></div>
+    <div class="side-sep"></div>
+    <div class="side-label">任务</div>
+    <div id="todoList" style="display:flex;flex-direction:column;gap:2px;"></div>
   </div>
   <div class="side-foot">
     <label>模型</label>
@@ -412,7 +415,7 @@ details.think .think-body {
     if (sessFile) body.file = sessFile;
     fetch('/api/sessions/save', { method: 'POST', headers: headers(), body: JSON.stringify(body) })
       .then(function (r) { return r.json(); })
-      .then(function (j) { if (j.file) rememberSessFile(j.file); autoSaving = false; })
+      .then(function (j) { if (j.file) rememberSessFile(j.file); autoSaving = false; refreshTodos(); })
       .catch(function () { autoSaving = false; });
   }
   function rememberSessFile(f) { sessFile = f; try { localStorage.setItem('7coder-sess-file', f); } catch (e) {} }
@@ -446,6 +449,30 @@ details.think .think-body {
         list.appendChild(item);
       });
     }).catch(function (e) { toast('会话列表加载失败', 'err'); });
+  }
+
+  /* ===== Sidebar: tasks (GAP-6) ===== */
+  var TODO_COLORS = { pending: '#b58900', doing: '#268bd2', done: '#2aa198' };
+  function refreshTodos() {
+    fetch('/api/todos', { headers: headers() }).then(function (r) { return r.json(); }).then(function (j) {
+      var list = $('todoList');
+      list.textContent = '';
+      var ts = j.todos || [];
+      if (!ts.length) { list.innerHTML = '<span style="color:var(--dim);font-size:12px;padding:4px 10px;">暂无</span>'; return; }
+      ts.forEach(function (t) {
+        var item = document.createElement('div');
+        item.className = 'side-item';
+        var badge = document.createElement('span');
+        badge.textContent = t.status;
+        badge.style.cssText = 'font-size:10px;padding:1px 6px;border-radius:8px;color:#fff;background:' + (TODO_COLORS[t.status] || '#93a1a1') + ';margin-right:6px;flex:none;';
+        var title = document.createElement('span');
+        title.textContent = t.title;
+        title.style.cssText = 'flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;' + (t.status === 'done' ? 'text-decoration:line-through;color:var(--dim);' : '');
+        item.appendChild(badge);
+        item.appendChild(title);
+        list.appendChild(item);
+      });
+    }).catch(function (e) { /* 任务面板失败不打扰聊天 */ });
   }
 
   function loadSessionFile(file) {
@@ -623,6 +650,7 @@ details.think .think-body {
     }).catch(function () { $('wsChip').textContent = '⚠ 服务器未连接'; });
   }
   refreshInfo();
+  refreshTodos(); // GAP-6: 任务面板随页面打开加载一次，之后每次自动保存成功顺带刷新
 
   // 页面加载时自动载入最近的会话存档，刷新不丢上下文
   (function () {

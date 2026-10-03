@@ -315,11 +315,15 @@ scenarios.push({
       // empty messages
       const empty = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [] }, auth);
       record('httpx: empty messages still returns 200', empty.status === 200 && empty.body.includes('choices'), empty.body.substring(0, 80));
-      // multimodal content array -> text extracted
-      const mm = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: [{ type: 'text', text: 'TEXT-PART-OK' }, { type: 'image_url', image_url: { url: 'http://x/y.png' } }] }] }, auth);
+      // GAP-4 contract change: multimodal content arrays pass through structurally
+      // (text merged into one leading text item, image_url forwarded verbatim).
+      // The old assertion pinned the DROP behavior - replaced by the passthrough check.
+      const mm = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: [{ type: 'text', text: 'see' }, { type: 'image_url', image_url: { url: 'data:image/png;base64,AAAA' } }] }] }, auth);
       const mmReq = readLog(m.log).slice(-1)[0];
-      record('httpx: multimodal text part extracted, image part dropped',
-        mm.status === 200 && mmReq.messages.some(x => x.role === 'user' && String(x.content).includes('TEXT-PART-OK')) && !mmReq.messages.some(x => JSON.stringify(x).includes('image_url')), '');
+      const mmUser = mmReq.messages.filter(x => x.role === 'user')[0];
+      const mmJson = JSON.stringify(mmUser && mmUser.content);
+      record('httpx: multimodal text + image_url pass through to upstream (GAP-4)',
+        mm.status === 200 && mmUser && typeof mmUser.content === 'object' && mmJson.includes('image_url') && mmJson.includes('data:image/png;base64,AAAA') && mmJson.includes('see'), mmJson ? mmJson.substring(0, 160) : 'no user msg');
       // stream:true with upstream tool call
       const st = await httpReq(srvPort, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'read it' }] }, auth);
       let assembled = '';
@@ -1783,6 +1787,118 @@ scenarios.push({
     record('pshell: nonzero exit reported as failure with code', ps5 && ps5.c.includes('Command failed (exit 1)'), ps5 ? ps5.c.substring(0, 100) : 'no result');
     record('pshell: hung command times out and restarts the shell', ps6 && ps6.c.includes('[SHELL] timeout') && ps6.c.includes('restarted'), ps6 ? ps6.c.substring(0, 140) : 'no result');
     record('pshell: session usable again after the restart', ps7 && ps7.c.includes('back-to-life'), ps7 ? ps7.c.substring(0, 100) : 'no result');
+    stopMock(m);
+  }
+});
+
+// --- B27: GAP-6 structured todo list ---
+// The CLI drives todo_write_tool through add/add/update(list is checked from
+// the tool log); a --server process on the SAME workspace re-reads
+// .7coder/todos.json per request, so GET /api/todos must reflect the CLI's
+// writes without any restart.
+scenarios.push({
+  name: 'todos-api',
+  fn: async () => {
+    const cwd = freshCwd('b-todos');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'td1', type: 'function', function: { name: 'todo_write_tool', arguments: JSON.stringify({ action: 'add', title: 'fix-login' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'td2', type: 'function', function: { name: 'todo_write_tool', arguments: JSON.stringify({ action: 'add', title: 'write-tests' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'td3', type: 'function', function: { name: 'todo_write_tool', arguments: JSON.stringify({ action: 'update', id: 't1', status: 'done' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'td4', type: 'function', function: { name: 'todo_write_tool', arguments: JSON.stringify({ action: 'list' }) } }] },
+      { role: 'assistant', content: 'TODOS-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 410;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+      const todoFile = path.join(cwd, '.7coder', 'todos.json');
+      let items = [];
+      try { items = (JSON.parse(fs.readFileSync(todoFile, 'utf8')).items) || []; } catch (e) {}
+      const t1 = items.filter(x => x.id === 't1')[0];
+      record('todos: .7coder/todos.json exists with two items, t1 status done',
+        fs.existsSync(todoFile) && items.length === 2 && t1 && t1.status === 'done' && items[1] && items[1].title === 'write-tests',
+        JSON.stringify(items).substring(0, 200));
+      const r1 = await httpReq(srvPort, 'GET', '/api/todos', null);
+      let apiTodos = [];
+      try { apiTodos = (JSON.parse(r1.body).todos) || []; } catch (e) {}
+      record('todos: GET /api/todos returns both items (fix-login done)',
+        r1.status === 200 && apiTodos.length === 2 && apiTodos.some(x => x.title === 'fix-login' && x.status === 'done') && apiTodos.some(x => x.title === 'write-tests' && x.status === 'pending'),
+        r1.body.substring(0, 200));
+      const listRes = tr(readLog(m.log), 'td4');
+      record('todos: list action output includes title and status',
+        !!listRes && listRes.c.includes('fix-login') && listRes.c.includes('done'),
+        listRes ? listRes.c : 'no result');
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
+// --- B28: GAP-4 visual loop, unit layer (agreed final plan (a)) ---
+// The real screenshot path needs a live display session, so the behavioral
+// half is not asserted here: on a headless CI computer_use screenshot returns
+// 'Screenshot failed...' / the path-only text without 'Vision:', and on a
+// real desktop it would call the vision endpoint - both are environment-
+// dependent, hence NOTE ONLY (no assertion). What IS asserted: the newly
+// extracted screenshotToDataUrl() returns a proper data URL for a real PNG
+// (runner-i style source extraction + direct eval) and null for a missing
+// file - that is the exact value describeWithVision would receive.
+scenarios.push({
+  name: 'vision-loop',
+  fn: async () => {
+    const src = fs.readFileSync(IDX, 'utf8');
+    const mfn = src.match(/function screenshotToDataUrl\(p\) \{[\s\S]*?\n\}/);
+    record('vision: screenshotToDataUrl present in index.js', !!mfn, '');
+    if (!mfn) return;
+    const screenshotToDataUrl = eval('(' + mfn[0] + ')');
+    const cwd = freshCwd('b-vision');
+    // 1x1 transparent PNG
+    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+    const p1 = path.join(cwd, 'onepixel.png');
+    fs.writeFileSync(p1, png);
+    const d1 = await screenshotToDataUrl(p1);
+    record('vision: 1x1 PNG file -> data URL with png;base64 prefix',
+      typeof d1 === 'string' && d1.indexOf('data:image/png;base64,') === 0, String(d1).substring(0, 50));
+    record('vision: data URL round-trips to the original bytes',
+      !!d1 && Buffer.from(d1.substring('data:image/png;base64,'.length), 'base64').equals(png), '');
+    const d2 = await screenshotToDataUrl(path.join(cwd, 'no-such-shot.png'));
+    record('vision: unreadable path -> null (caller keeps path-only reply)', d2 === null, String(d2));
+  }
+});
+
+// --- B29: GAP-7a workspace slash commands ---
+// .7coder/commands/deploy.md expands into the queued task when the REPL line
+// is exactly "/deploy"; the following /execute-task-now runs it, so the mock
+// sees the marker in the user message.
+scenarios.push({
+  name: 'slashcmd',
+  fn: async () => {
+    const cwd = freshCwd('b-slashcmd');
+    fs.mkdirSync(path.join(cwd, '.7coder', 'commands'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.7coder', 'commands', 'deploy.md'), 'SLASH-CMD-BODY-MARKER run the deployment checks', 'utf8');
+    const m = startMock([{ role: 'assistant', content: 'SLASHCMD-TASK-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({
+      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000,
+      stdinSteps: [
+        { t: '/deploy\n', d: 400 },
+        { t: '/execute-task-now\n', d: 3000 },
+        { t: '/bye\n', d: 400 }
+      ]
+    });
+    record('slashcmd: /deploy expands - [CMD] banner + body echoed to stdout',
+      r.out.includes('[CMD] deploy 展开为') && r.out.includes('SLASH-CMD-BODY-MARKER'), r.out.substring(0, 200));
+    const log = readLog(m.log);
+    const mains = log.filter(x => x.stream === true);
+    record('slashcmd: expanded body reaches upstream as the user message',
+      mains.length > 0 && mains[0].messages.some(x => x.role === 'user' && String(x.content).includes('SLASH-CMD-BODY-MARKER')),
+      mains.length ? mains[0].messages.map(x => x.role).join(',') : 'no req');
     stopMock(m);
   }
 });

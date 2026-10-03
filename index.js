@@ -542,7 +542,7 @@ const tools = [
   { type: "function", function: { name: "notebook_edit_tool", description: "Edit Jupyter notebook (JSON structure).", parameters: { type: "object", properties: { path: { type: "string" }, edits: { type: "object" } }, required: ["path", "edits"] } } },
   { type: "function", function: { name: "ask_user_question_tool", description: "Prompt user for input.", parameters: { type: "object", properties: { question: { type: "string" } }, required: ["question"] } } },
   { type: "function", function: { name: "brief_tool", description: "Upload/summarize files to folder.summary.", parameters: { type: "object", properties: { folder: { type: "string" } }, required: ["folder"] } } },
-  { type: "function", function: { name: "todo_write_tool", description: "Write to TODO.md.", parameters: { type: "object", properties: { content: { type: "string" } }, required: ["content"] } } },
+  { type: "function", function: { name: "todo_write_tool", description: "Structured task list persisted in .7coder/todos.json. action=add (title required) appends a pending item; action=update (id required) changes title and/or status (pending|doing|done); action=list returns all items with status. Legacy calls carrying only a content string are treated as add.", parameters: { type: "object", properties: { action: { type: "string", enum: ["add", "update", "list"] }, title: { type: "string" }, id: { type: "string" }, status: { type: "string", enum: ["pending", "doing", "done"] }, content: { type: "string" } } } } },
   { type: "function", function: { name: "read_mcp_resource_tool", description: "Read MCP resource (restricted to the .mcp directory).", parameters: { type: "object", properties: { resource_id: { type: "string" } }, required: ["resource_id"] } } },
   { type: "function", function: { name: "sleep_tool", description: "Async delay.", parameters: { type: "object", properties: { ms: { type: "number" } }, required: ["ms"] } } },
   { type: "function", function: { name: "snip_tool", description: "Extract history snippet.", parameters: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } } } } },
@@ -871,6 +871,19 @@ function findBash() {
     candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'));
   }
   candidates.push('C:\\Program Files\\Git\\bin\\bash.exe');
+  // Git for Windows is frequently installed on a non-C drive (e.g.
+  // D:\Program Files\Git) and a minimal/stripped PATH would also defeat the
+  // 'where bash' fallback below - so probe the standard Git layout on every
+  // present drive letter, and every PATH entry, before giving up.
+  for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
+    if (!fs.existsSync(letter + ':\\')) continue;
+    candidates.push(letter + ':\\Program Files\\Git\\bin\\bash.exe');
+    candidates.push(letter + ':\\Program Files\\Git\\usr\\bin\\bash.exe');
+    candidates.push(letter + ':\\Git\\bin\\bash.exe');
+  }
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (dir) candidates.push(path.join(dir, 'bash.exe'));
+  }
   for (const c of candidates) {
     try { if (fs.existsSync(c)) { bashPathCache = c; return c; } } catch (e) {}
   }
@@ -1326,6 +1339,19 @@ async function describeWithVision(imageUrl) {
   }
 }
 
+// GAP-4: read a screenshot back as a data URL so it can be fed straight to an
+// OpenAI-compatible vision model (describeWithVision accepts any URL, and data
+// URLs are valid image_url values). Returns null when the file cannot be read;
+// the caller then keeps the path-only reply instead of failing the tool.
+function screenshotToDataUrl(p) {
+  try {
+    const buf = fs.readFileSync(p);
+    return 'data:image/png;base64,' + buf.toString('base64');
+  } catch (e) {
+    return null;
+  }
+}
+
 // ====================== LIGHT/HEAVY CALLER ======================
 // GAP-8: token usage observability. The upstream reports per-response token
 // usage; sessionUsage aggregates every callOpenAI call made by THIS process
@@ -1510,7 +1536,7 @@ const DETERMINISTIC_EXPLAIN = {
   edit_file: (a) => `Edit file ${a.path}`,
   notebook_edit_tool: (a) => `Edit notebook ${a.path}`,
   download_tool: (a) => `Download ${a.url} to ${a.path}`,
-  todo_write_tool: () => 'Append an entry to TODO.md',
+  todo_write_tool: (a) => `Update structured task list (.7coder/todos.json): ${a.action === 'list' ? 'list' : (a.action || 'add')}${a.id ? ' ' + a.id : ''}${a.title ? ' "' + String(a.title).substring(0, 40) + '"' : ''}`,
   brief_tool: (a) => `Summarize folder ${a.folder} into ${a.folder}.summary`,
   enter_worktree_tool: (a) => `Create git worktree at ${a.path}`,
   schedule_cron_tool: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`,
@@ -1589,6 +1615,42 @@ Reply ONLY with compact JSON: {"safe": true, "reason": "one short sentence"} or 
   } catch (e) {
     return { safe: false, reason: 'light model call failed: ' + e.message };
   }
+}
+
+// ====================== STRUCTURED TASK STORE (GAP-6) ======================
+// The task list lives at .7coder/todos.json as { items: [{id,title,status,updated}] }.
+// status is one of pending/doing/done; ids are t1/t2/... (max+1, stable across
+// deletions of later ids). A missing OR corrupt file is treated as an empty
+// list and rebuilt by the next write - the store never blocks a task.
+const TODO_STATUSES = ['pending', 'doing', 'done'];
+const TODO_STORE_MAX = 500; // safety cap so a looping model cannot grow the file forever
+function todosFilePath() { return path.join(launchDir, '.7coder', 'todos.json'); }
+function loadTodos() {
+  try {
+    const j = JSON.parse(fs.readFileSync(todosFilePath(), 'utf8'));
+    if (j && Array.isArray(j.items)) return j.items.filter(it => it && typeof it === 'object');
+  } catch (e) {}
+  return [];
+}
+function saveTodos(items) {
+  fs.mkdirSync(path.dirname(todosFilePath()), { recursive: true });
+  fs.writeFileSync(todosFilePath(), JSON.stringify({ items: items }, null, 2), 'utf8');
+}
+// Legacy human-readable log kept in sync with the structured store: every
+// mutating todo_write_tool call still appends to TODO.md (the pre-GAP-6
+// contract - suite A asserts TODO.md is created), one line per change.
+function appendTodoLog(entry) {
+  try {
+    fs.appendFileSync(path.join(launchDir, 'TODO.md'), `\n## ${new Date().toISOString()}\n${entry}\n`, 'utf8');
+  } catch (e) {}
+}
+function nextTodoId(items) {
+  let max = 0;
+  for (const it of items) {
+    const m = /^t(\d+)$/.exec(String(it && it.id || ''));
+    if (m) { const n = parseInt(m[1], 10); if (n > max) max = n; }
+  }
+  return 't' + (max + 1);
 }
 
 // ====================== TOOL EXECUTION ======================
@@ -2004,9 +2066,49 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'todo_write_tool') {
-    const todoPath = path.join(launchDir, 'TODO.md');
-    fs.appendFileSync(todoPath, `\n## ${new Date().toISOString()}\n${args.content}\n`, 'utf8');
-    return '[OK] TODO.md updated';
+    // GAP-6: structured task list in .7coder/todos.json (add/update/list).
+    // Backward compat: a legacy call with only a content string is an add.
+    const action = args.action;
+    if (!action && typeof args.content === 'string' && args.content.trim()) {
+      const items = loadTodos();
+      const item = { id: nextTodoId(items), title: args.content.trim(), status: 'pending', updated: new Date().toISOString() };
+      if (items.length >= TODO_STORE_MAX) return 'Tool error: task list is full (' + TODO_STORE_MAX + ' items)';
+      items.push(item);
+      saveTodos(items);
+      appendTodoLog(item.title);
+      return `[OK] Task ${item.id} added (pending): ${item.title}`;
+    }
+    if (action === 'add') {
+      const title = typeof args.title === 'string' ? args.title.trim() : '';
+      if (!title) return 'Tool error: todo_write_tool add requires a non-empty "title"';
+      const items = loadTodos();
+      if (items.length >= TODO_STORE_MAX) return 'Tool error: task list is full (' + TODO_STORE_MAX + ' items)';
+      const item = { id: nextTodoId(items), title: title, status: TODO_STATUSES.indexOf(args.status) !== -1 ? args.status : 'pending', updated: new Date().toISOString() };
+      items.push(item);
+      saveTodos(items);
+      appendTodoLog(item.title);
+      return `[OK] Task ${item.id} added (${item.status}): ${item.title}`;
+    }
+    if (action === 'update') {
+      const items = loadTodos();
+      const it = items.find(x => x.id === args.id);
+      if (!it) return `Tool error: task id "${args.id}" not found`;
+      if (typeof args.title === 'string' && args.title.trim()) it.title = args.title.trim();
+      if (args.status !== undefined && args.status !== null) {
+        if (TODO_STATUSES.indexOf(args.status) === -1) return `Tool error: invalid status "${args.status}" (pending/doing/done)`;
+        it.status = args.status;
+      }
+      it.updated = new Date().toISOString(); // any update (incl. status change) refreshes updated
+      saveTodos(items);
+      appendTodoLog(`${it.id} -> [${it.status}] ${it.title}`);
+      return `[OK] Task ${it.id} updated (${it.status}): ${it.title}`;
+    }
+    if (action === 'list') {
+      const items = loadTodos();
+      if (!items.length) return 'No tasks yet. Use action=add to create one.';
+      return items.map(it => `${it.id}\t[${it.status}]\t${it.title}`).join('\n');
+    }
+    return 'Tool error: todo_write_tool requires action=add|update|list (or a legacy content string)';
   }
 
   if (name === 'list_mcp_resources_tool') {
@@ -2199,7 +2301,21 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       } catch (e) {
         return `Screenshot failed: ${e.message}`;
       }
-      if (fs.existsSync(shotPath)) return `Screenshot saved to ${shotPath}`;
+      if (fs.existsSync(shotPath)) {
+        // GAP-4 visual loop: with VISION_MODEL configured, feed the fresh
+        // screenshot back to the vision model (same OpenAI-compatible endpoint
+        // via describeWithVision - a data URL is a valid image_url) and append
+        // the description to the tool result. Without VISION_MODEL the reply
+        // stays path-only (the previous behavior).
+        if (VISION_MODEL) {
+          const dataUrl = screenshotToDataUrl(shotPath);
+          if (dataUrl) {
+            const desc = await describeWithVision(dataUrl);
+            return `Screenshot saved to ${shotPath}.\nVision: ${desc}`;
+          }
+        }
+        return `Screenshot saved to ${shotPath}`;
+      }
       return 'Screenshot failed (file was not created - is a display/session available?)';
     }
     // Real input injection (Windows): a temp .ps1 avoids triple-quoted command
@@ -3424,14 +3540,44 @@ async function executeTask() {
 // Build a 7coder conversation from a client's OpenAI-style message list.
 // The client's own history gives multi-turn continuity over HTTP; our system
 // prompt always replaces theirs. Tool messages are not replayed.
+// GAP-4: multimodal content arrays keep their structure - text parts merge
+// into one leading text item and image_url parts pass through verbatim, so a
+// vision-capable upstream still sees the image. Pure-string content and
+// text-only arrays are unchanged (they degrade to a plain string exactly as
+// before).
 function conversationFromClient(clientMessages) {
   const convo = [{ role: 'system', content: systemPrompt }];
   let firstUser = true;
   for (const m of (clientMessages || [])) {
     if (m.role !== 'user' && m.role !== 'assistant') continue;
-    let content = Array.isArray(m.content)
-      ? m.content.filter(p => p && p.type === 'text').map(p => p.text).join('\n')
-      : (typeof m.content === 'string' ? m.content : (m.content === undefined || m.content === null ? '' : JSON.stringify(m.content)));
+    if (Array.isArray(m.content)) {
+      const textPart = m.content.filter(p => p && p.type === 'text').map(p => p.text).join('\n');
+      const imageParts = [];
+      for (const p of m.content) {
+        if (p && p.type === 'image_url' && p.image_url && typeof p.image_url.url === 'string' && p.image_url.url) {
+          imageParts.push({ type: 'image_url', image_url: { url: p.image_url.url } });
+        }
+      }
+      if (imageParts.length) {
+        let textOut = textPart;
+        if (m.role === 'user' && firstUser) {
+          textOut = buildTaskUserContent(textOut);
+          firstUser = false;
+        }
+        convo.push({ role: m.role, content: [{ type: 'text', text: textOut }].concat(imageParts) });
+        continue;
+      }
+      // no images: fall through to the plain-text path below
+      let textOnly = textPart;
+      if (!textOnly) continue;
+      if (m.role === 'user' && firstUser) {
+        textOnly = buildTaskUserContent(textOnly);
+        firstUser = false;
+      }
+      convo.push({ role: m.role, content: textOnly });
+      continue;
+    }
+    let content = typeof m.content === 'string' ? m.content : (m.content === undefined || m.content === null ? '' : JSON.stringify(m.content));
     if (!content) continue;
     if (m.role === 'user' && firstUser) {
       content = buildTaskUserContent(content);
@@ -3505,6 +3651,14 @@ function startHttpServer() {
   if (req.method === 'GET' && req.url === '/api/info') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(), usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/api/todos') {
+    // GAP-6: the structured task list for the webui sidebar. Auth style matches
+    // /api/info; the store is re-read per request so changes made by a CLI
+    // session in the same workspace show up immediately.
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ todos: loadTodos() }));
     return;
   }
     if (req.method === 'GET' && req.url === '/v1/models') {
@@ -4264,7 +4418,32 @@ Make it read like a direct continuation of the user's task instructions for the 
           console.log('No task entered.');
         }
       } else if (trimmed) {
-        currentPrompt += input + '\n';
+        // GAP-7a: workspace slash commands. A line shaped "/name" with a
+        // matching .7coder/commands/<name>.md (single workspace-level dir, name
+        // pre-restricted to [a-z0-9_-] by the regex, so no traversal) expands
+        // to the task text: the file body is queued exactly like typed user
+        // input and /execute-task-now runs it. Unknown /x keeps the legacy
+        // behavior of being queued as plain text. Files are capped at 64KB.
+        const slashCmd = /^\/([a-z0-9_-]+)$/.exec(trimmed);
+        let expanded = null;
+        if (slashCmd) {
+          let raw = '';
+          try { raw = fs.readFileSync(path.join(launchDir, '.7coder', 'commands', slashCmd[1] + '.md'), 'utf8'); } catch (e) {}
+          if (raw) {
+            if (raw.length > 64 * 1024) {
+              raw = raw.substring(0, 64 * 1024);
+              console.log(`[CMD] ${slashCmd[1]} exceeds 64KB - truncated.`);
+            }
+            expanded = raw.trim();
+          }
+        }
+        if (expanded) {
+          console.log(`[CMD] ${slashCmd[1]} 展开为 ${expanded.length} 字符任务`);
+          console.log(expanded); // echo the queued body (the typed-input equivalent)
+          currentPrompt += expanded + '\n';
+        } else {
+          currentPrompt += input + '\n';
+        }
       }
 
       safePrompt();
