@@ -124,8 +124,13 @@ const LIGHT_MODEL = process.env.LIGHT_MODEL || 'gpt-3.5-turbo';
 const VISION_MODEL = process.env.VISION_MODEL || null;
 // parseFloat('0')||fallback would silently rewrite a legitimate TEMPERATURE=0;
 // only fall back when the value is missing or not a finite number.
-const TEMPERATURE = Number.isFinite(parseFloat(process.env.TEMPERATURE)) ? parseFloat(process.env.TEMPERATURE) : 0.7;
+const TEMPERATURE = Number.isFinite(parseFloat(process.env.TEMPERATURE)) ? parseFloat(process.env.TEMPERATURE) : 0.6;
 const MAX_TOKENS = parseInt(process.env.MAX_TOKENS, 10) || 42000;
+// AST-R1: the task-summary call is a background convenience, not the main
+// event - it gets its own cheap model and a small token budget (fallbacks:
+// the light model / 512 tokens).
+const SUMMARY_MODEL = process.env.SUMMARY_MODEL || LIGHT_MODEL;
+const SUMMARY_MAX_TOKENS = parseInt(process.env.SUMMARY_MAX_TOKENS, 10) || 512;
 const VALID_PERMISSION_MODES = ['default', 'auto', 'bypass', 'denial'];
 const rawPermissionMode = (permissionModeFlag || process.env.PERMISSION_MODE || (dangerMode ? 'bypass' : 'default')).toLowerCase().trim();
 if (!VALID_PERMISSION_MODES.includes(rawPermissionMode)) {
@@ -350,7 +355,7 @@ const AUTO_SAFE_TOOLS = [
 
 // ====================== TOOL DEFINITIONS ======================
 const tools = [
-  { type: "function", function: { name: "read_file", description: "Read a file. Optional offset (1-based start line) and limit (number of lines) for large files - output is line-numbered when used.", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } } },
+  { type: "function", function: { name: "read_file", description: "Read a file. Output is always line-numbered (cat -n style). Optional offset (1-based start line) and limit (number of lines) window large reads. Binary files are refused ([BINARY] marker); empty files return (empty file).", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } } },
   { type: "function", function: { name: "write_file", description: "Create or overwrite a file.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "append_file", description: "Append content to a file.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Replace an exact unique substring in a file (surgical edit, much safer than rewriting whole files). old_string must occur exactly once, or set replace_all=true.", parameters: { type: "object", properties: { path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_string", "new_string"] } } },
@@ -403,7 +408,52 @@ const tools = [
 ];
 
 // ====================== SYSTEM PROMPT ======================
-const systemPrompt = `You are 7coder, a helpful, honest, and harmless AI coding assistant - a clean-room full replacement for Claude Code.
+// GAP-3c: one-shot workspace sketch injected below the base prompt so the
+// model sees the directory shape without spending a list_dir call. Computed
+// once at process start (cached in the systemPrompt const); directories get a
+// `dir/ (N files)` line, top-level files are listed by name, max 2 levels
+// deep, capped at ~150 lines with a truncation note.
+function buildRepoMap() {
+  const SKIP = new Set(['.7coder', '.git', 'node_modules', 'dist', '.cache']);
+  const MAX_DEPTH = 2;   // path depth: root files + one nested level (sub/file.txt)
+  const MAX_LINES = 150;
+  const lines = [];
+  let truncated = false;
+  function countFiles(dir) {
+    try {
+      return fs.readdirSync(dir, { withFileTypes: true }).filter(e => !e.isDirectory() && !SKIP.has(e.name)).length;
+    } catch (e) { return 0; }
+  }
+  function walk(dir, rel, depth) {
+    if (depth >= MAX_DEPTH || truncated) return;
+    let entries = [];
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    const dirs = [];
+    const files = [];
+    for (const ent of entries) {
+      if (SKIP.has(ent.name)) continue;
+      if (ent.isDirectory()) dirs.push(ent.name);
+      else if (ent.isFile()) files.push(ent.name);
+    }
+    dirs.sort(); files.sort();
+    for (const d of dirs) {
+      if (lines.length >= MAX_LINES) { truncated = true; return; }
+      const childRel = rel ? rel + '/' + d : d;
+      lines.push(childRel + '/ (' + countFiles(path.join(dir, d)) + ' files)');
+      walk(path.join(dir, d), childRel, depth + 1);
+    }
+    for (const f of files) {
+      if (lines.length >= MAX_LINES) { truncated = true; return; }
+      lines.push(rel ? rel + '/' + f : f);
+    }
+  }
+  walk(launchDir, '', 0);
+  let out = lines.join('\n');
+  if (!out) out = '(empty workspace)';
+  else if (truncated) out += '\n(workspace file map truncated at ' + MAX_LINES + ' lines)';
+  return out;
+}
+const SYSTEM_PROMPT_BASE = `You are 7coder, a helpful, honest, and harmless AI coding assistant - a clean-room full replacement for Claude Code.
 You have full tool access including sub-agents, background shell tasks, skills, web tools, computer use (real screenshots only), MCP resources, cron scheduling, and more.
 7CODER.md in the project root is automatically updated with a complete summary of what has been done. You do not need to manually write to it.
 
@@ -436,6 +486,10 @@ Anti-frustration: If user seems angry or curses, acknowledge empathetically.
 
 Use tools aggressively when needed. After tools, give clear final answer.
 Review the complete summary in 7CODER.md if provided to understand what has been done.`;
+
+// GAP-3c: append the workspace file map once at startup - every conversation
+// (CLI, HTTP, sub-agents) builds on this same composed prompt.
+const systemPrompt = SYSTEM_PROMPT_BASE + '\n\n## Workspace file map\n' + buildRepoMap();
 
 // ====================== HELPER FUNCTIONS (Node 13 + Windows 7 safe) ======================
 // Case-insensitive on Windows so drive-letter/path case differences can't defeat the check.
@@ -1093,16 +1147,27 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
   if (name === 'read_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path || ''));
-      let content = fs.readFileSync(fullPath, 'utf8');
-      if (typeof args.offset === 'number' || typeof args.limit === 'number') {
-        const lines = content.split('\n');
-        const start = Math.max(0, (parseInt(args.offset, 10) || 1) - 1);
-        const count = (typeof args.limit === 'number' && args.limit > 0) ? Math.floor(args.limit) : Math.max(0, lines.length - start);
-        content = lines.slice(start, start + count)
-          .map((l, i) => String(start + i + 1).padStart(6) + '\t' + l)
-          .join('\n');
+      // GAP-3b: read as a Buffer first - a NUL byte in the first 4KB marks
+      // binary content, which must not be decoded into the conversation as text.
+      const buf = fs.readFileSync(fullPath);
+      if (buf.length === 0) return '(empty file)';
+      if (buf.slice(0, 4096).includes(0)) {
+        return `[BINARY] ${args.path} looks binary - refused to read as text. Use download_tool or a shell command instead.`;
       }
-      return content;
+      // GAP-3a: every read is line-numbered (`cat -n` style), full and windowed
+      // alike - one shared formatter so the two branches cannot drift.
+      const lines = buf.toString('utf8').split('\n');
+      const windowed = typeof args.offset === 'number' || typeof args.limit === 'number';
+      const start = windowed ? Math.max(0, (parseInt(args.offset, 10) || 1) - 1) : 0;
+      // old P1-6 third half: a window fully past EOF must say so, not
+      // silently return '' (indistinguishable from an empty file).
+      if (windowed && start >= lines.length) return `(offset ${args.offset} is beyond EOF - the file has ${lines.length} line(s))`;
+      const count = !windowed
+        ? lines.length
+        : ((typeof args.limit === 'number' && args.limit > 0) ? Math.floor(args.limit) : Math.max(0, lines.length - start));
+      return lines.slice(start, start + count)
+        .map((l, i) => String(start + i + 1).padStart(6) + '\t' + l)
+        .join('\n');
     } catch (e) { return `Read error: ${e.message}`; }
   }
   if (name === 'write_file') {
@@ -1347,9 +1412,12 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
   }
 
   if (name === 'ask_user_question_tool') {
+    // P2-15: "skipped" reads like a silent answer - the model must decide for
+    // itself and surface the assumption instead of inventing a user reply.
+    const userUnreachable = 'User is unreachable in this mode. Do NOT assume an answer - decide yourself, then state the assumption explicitly in your final answer.';
     if (subAgentModeOverride) return 'Question skipped (a sub-agent cannot ask the user questions).';
-    if (rlClosed) return 'Question skipped (input stream is closed).';
-    if (DANGER_MODE || effectivePermissionMode() === 'bypass') return 'Question skipped in non-interactive mode';
+    if (rlClosed) return userUnreachable;
+    if (DANGER_MODE || effectivePermissionMode() === 'bypass') return userUnreachable;
     const answer = await new Promise(resolve => rl.question(`${args.question}\nAnswer: `, resolve));
     return `User answered: ${answer}`;
   }
@@ -2078,7 +2146,8 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
   for (let i = 0; i < durationMinutes * 6; i++) { // ~10s intervals
     if (appType === 'gui' && ENABLE_COMPUTER_USE) {
       // Simulate normal user: random clicks, typing, etc.
-      // (computer_use input actions are simulated no-ops today.)
+      // (computer_use input actions are REAL injection on Windows - user32
+      // mouse_event + SendKeys; on non-Windows they return a warning.)
       await executeToolRaw('computer_use', { action: 'mouse_move', x: Math.random() * 800, y: Math.random() * 600 });
       await executeToolRaw('computer_use', { action: 'click' });
       if (Math.random() > 0.7) await executeToolRaw('computer_use', { action: 'type_text', text: 'test input ' + Date.now() });
@@ -2605,11 +2674,18 @@ function loadSession() {
 }
 
 async function summarizeAction(rawPrompt, assistantResponse) {
+  // AST-R1: replies shorter than 200 chars carry nothing worth a light-model
+  // round-trip - skip the call entirely (callers treat null as "no summary").
+  // A whitespace-only/empty reply is not a "short reply", it is a degenerate
+  // response; the fallback summary below exists exactly for that case and
+  // must stay reachable (empty-reply contract in suite G).
+  const trimmedReply = String(assistantResponse == null ? '' : assistantResponse).trim();
+  if (trimmedReply.length > 0 && trimmedReply.length < 200) return null;
   const prompt = `Create a short, concise summary (1-2 sentences) of what has been done in response to the user's task. Do not list tools, just describe the output/effect.
 User task: "${rawPrompt}"
 Action/Response: "${assistantResponse}"`;
   try {
-    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
+    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: SUMMARY_MODEL, maxTokens: SUMMARY_MAX_TOKENS, useTools: false });
     return (choice.message.content || `Completed task: ${rawPrompt}`).trim();
   } catch (e) {
     return `Completed task: ${rawPrompt}`;
@@ -2624,6 +2700,9 @@ const LOG_START = '<!-- 7coder:auto-log:start -->';
 const LOG_END = '<!-- 7coder:auto-log:end -->';
 
 function updateCompleteSummary(newSummary) {
+  // AST-R1: null means summarizeAction skipped the call (short reply) - leave
+  // 7CODER.md untouched instead of appending "null".
+  if (!newSummary) return;
   const mdPath = path.join(launchDir, '7CODER.md');
   let existing = '';
   try {
@@ -2727,14 +2806,17 @@ function startHttpServer() {
     console.warn('[WARN] anyone on the network could use this endpoint to run tools on this machine!');
     console.warn('[WARN] Set HTTP_API_KEY in .env (clients send "Authorization: Bearer <key>") or keep HTTP_BIND=127.0.0.1.');
   }
+  // P2-6: read the built-in UI once; a missing file keeps serving 404s.
+  let webuiHtml = null;
+  try { webuiHtml = fs.readFileSync(path.join(appDir, 'webui.html')); } catch (e) { webuiHtml = null; }
   const server = http.createServer((req, res) => {
-  // Built-in chat UI (Chinese-friendly web frontend for the terminal-shy)
+  // Built-in chat UI (Chinese-friendly web frontend for the terminal-shy).
+  // P2-6: served from a Buffer read once at startup, not re-read per request.
   if (req.method === 'GET' && (req.url === '/' || req.url === '/ui')) {
-    try {
-      const html = fs.readFileSync(path.join(appDir, 'webui.html'));
+    if (webuiHtml) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-      res.end(html);
-    } catch (e) {
+      res.end(webuiHtml);
+    } else {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('webui.html not found next to index.js');
     }
@@ -3274,6 +3356,16 @@ function startHttpServer() {
 
   });
 
+  // P2-6: fail loudly and exit nonzero when the port is taken (or the server
+  // otherwise errors) instead of dying with Node's raw stack trace.
+  server.on('error', e => {
+    if (e && e.code === 'EADDRINUSE') {
+      console.error(`[ERROR] HTTP port ${HTTP_PORT} is already in use - change HTTP_PORT in .env or stop the process holding that port, then retry.`);
+    } else {
+      console.error(`[ERROR] HTTP server error: ${e && e.message ? e.message : e}`);
+    }
+    flushExit(1);
+  });
   server.listen(HTTP_PORT, HTTP_BIND, () => {
     console.log(`7coder HTTP OpenAI-compatible endpoint ready at http://${HTTP_BIND}:${HTTP_PORT}`);
     if (HTTP_API_KEY) console.log('[AUTH] API key required (Authorization: Bearer <HTTP_API_KEY>).');

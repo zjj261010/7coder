@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-03）：单文件 index.js（~3500 行），v2.16.0；AST 修复轮后 A–J 全绿 434 项（A 80/B 131/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-03 晚）：单文件 index.js（~3560 行），v2.16.0；快赢批②后 A–J 全绿 446 项（A 85/B 138/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 120 |
+| runner-b.js | 127 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -23,8 +23,8 @@
 | runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
-| runner.js | 52 |
-| **合计** | **407** |
+| runner.js | 57 |
+| **合计** | **419** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -126,8 +126,8 @@
 | P1-2 | index.js /api/info | 未返回 version，Web UI 右上角恒显 "v?" | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-3，APP_VERSION 已注入 /api/info |
 | P1-3 | webui.html | 模型选择只读不写 localStorage；模式下拉不回显 | ✅ setItem + `modeSel.value = info.mode`（webui.html:612,614） |
 | P1-4 | writeWorkspaceEnv | 保存设置时整文件重序列化，注释与格式全丢 | ✅ 状态回翻 2026-10-03（此前漏翻）：逐行原地改写已实现，OPT-8 的 settings-api 注释保留断言（# KEEP-ME-COMMENT）已补齐剩余半 |
-| P1-5 | index.js 默认值 vs 文档 | HTTP_PORT 8000/7103；MAX_TOKENS 2048/42000；TEMPERATURE 0.7/0.6 | 🔶 前两项已对齐文档（7103、42000）；TEMPERATURE 代码仍 0.7，.env.example 写 0.6 |
-| P1-6 | INSTALL.md + runner | 验证命令场景名全不匹配 → 假绿（0/0 退出码 0） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-9，十个 runner 空匹配 exit 1 已实现 |
+| P1-5 | index.js 默认值 vs 文档 | HTTP_PORT 8000/7103；MAX_TOKENS 2048/42000；TEMPERATURE 0.7/0.6 | ✅ TEMPERATURE 默认 0.7→0.6（与 .env.example 对齐），快赢批②（GLM-5.3-Flash + 主会话终检） |
+| P1-6 | INSTALL.md + runner | 验证命令场景名全不匹配 → 假绿（0/0 退出码 0） | ✅ 全部三个半完成：二进制拒绝（[BINARY] 文案）与空文件 (empty file) 由快赢批② GAP-3b 落地；offset 越界提示（beyond EOF - file has N lines）由主会话终检补齐（readfmt 4 断言） |
 | P1-7 | INSTALL/KNOWN-ISSUES | 套件数/断言数三处口径打架（"10 套件 334 项" vs 实际 12 runner 且 B 已 93 项） | ⬜ 未处理（建议脚本自动汇总，见 OPT-10） |
 | P1-8 | README | 已决策不发 npm 但保留 "Now on NPM!" 教程 | ✅ npm 安装教程已移除 |
 | P1-9 | pack-offline.js + dist/ | copyRec 排除 `e === 'w-'` 恒假；未排除 cur-*；dist 陈旧 v2.6.0 | 🔶 mock-log-/cur-script- 排除已加（pack-offline.js:47）；`w-` 前缀判断仍错、dist 未重打（仍是 7coder-v2.6.0-offline） |
@@ -142,11 +142,11 @@
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
 | P2-1 | index.js 多处 | `.7coder_last_interaction`、`7C.dream.lock`、BTW.md 等散落工作区根 | ⬜（收纳进 .7coder/，读旧路径兜底一次） |
-| P2-2 | index.js:1993 | 过时注释 "input actions are simulated no-ops"（A7 已实现真实输入） | ⬜ |
+| P2-2 | index.js:1993 | 过时注释 "input actions are simulated no-ops"（A7 已实现真实输入） | ✅ 注释更新为真实注入现状（Windows user32/SendKeys，非 Windows 警告） |
 | P2-3 | grepSearch/recursiveReaddir | 整读文件无上限、不跳过 node_modules/.git、无深度上限 | ⬜ |
 | P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ✅ 状态回翻 2026-10-03（此前漏翻）：DS-14 重写 pruneBackups 时已删除写前调用，仅保留写后一次 |
 | P2-5 | 审计日志 | argsPreview 原样落盘，可能记录密钥 | ✅ 状态回翻 2026-10-03（此前漏翻）：=OPT-1，sanitizeAuditArgs 已入库并有 audit-log 断言 |
-| P2-6 | index.js / webui.html | server.listen 无 error 处理（EADDRINUSE 直接崩）；UI 每请求同步读盘 | ⬜ |
+| P2-6 | index.js / webui.html | server.listen 无 error 处理（EADDRINUSE 直接崩）；UI 每请求同步读盘 | ✅ 两半齐：server.on(error) EADDRINUSE 友好提示 + flushExit(1)（eaddr 断言：退出码 1、含 HTTP_PORT 提示、无原生堆栈）；webui.html 启动读一次缓存 Buffer 复用；前端侧核查无每请求重读盘逻辑 |
 | P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ⬜ |
 | P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-10，README 已改为 syntax stays within what Node.js 13.14 supports |
 | P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
@@ -154,9 +154,9 @@
 | P2-11 | index.js:1742 | git_status 口径："M " 同时计入 staged 与 modified | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-4，XY 分列已实现且 git-integration 4/4 无需改断言 |
 | P2-12 | web 审批 | 120 秒超时自动拒绝无倒计时提示 | ⬜ |
 | P2-13 | index.js:1537 | 截图 PNG 落工作区根不清理；auto_debug 无进度输出 | ⬜（截图进 .7coder/） |
-| P2-14 | README/INSTALL | 打包机需现代 Node（pack-offline 用 rmSync）未声明 | ⬜ |
-| P2-15 | ask_user_tool | 非交互模式返回 "skipped"，模型可能误读为已作答 | ⬜（改强指令文案） |
-| P2-16 | webui.html:345,400 | 死代码 var keyOk / var sessionPath；.cursor 样式未定义 | ⬜ |
+| P2-14 | README/INSTALL | 打包机需现代 Node（pack-offline 用 rmSync）未声明 | ✅ README/INSTALL 各加打包机 Node >= 14.14 声明（fs.rmSync 两处已核实） |
+| P2-15 | ask_user_tool | 非交互模式返回 "skipped"，模型可能误读为已作答 | ✅ 非交互两分支改强指令文案（User is unreachable... Do NOT assume an answer...）；runner-h 旧文案断言同步收紧；sub-agent 分支保留 |
+| P2-16 | webui.html:345,400 | 死代码 var keyOk / var sessionPath；.cursor 样式未定义 | ✅ var keyOk / var sessionPath 已删；.cursor 为活代码（流式指示器），补闪烁动画样式而非删引用（webui-dom-sim 8/8 复验） |
 | P2-17 | .npmignore | 已决策不发 npm，文件去留未决 | ✅ 用户决策执行（2026-10-03）：已删除。文件仅一行 .env、只在 npm 发布时生效，B5 已决策不发布；.env 已由 .gitignore 覆盖，无损失 |
 
 ### 方向性优化建议（OPT）
@@ -265,7 +265,7 @@
 |---|------|------|------|------|
 | GAP-1 | mcp_tool 走自定义协议 `POST {url}/invoke {tool,arguments}`（index.js:1429 附近）；MCP 生态实际标准是 JSON-RPC 2.0（stdio 传输为主，HTTP+SSE 次之） | **生态服务器一个都连不上**，"支持 MCP"名不副实 | 实现 stdio transport：spawn 子进程 + Content-Length 帧收发（零新依赖可行，纯管道不需要 PTY）；HTTP+SSE 二期；无配置时报错文案已修（P1-12） | 中 |
 | GAP-2 | 三个命令工具全部 `execSync/execFileSync`，`cwd: launchDir` 写死（index.js:1143/1158/1167）；无交互进程支持 | ① `cd`/环境变量不跨命令保持，模型每条命令都从工作区根重来 ② REPL 型交互程序（python/node 交互式、npm login）完全无法运行 | bash_tool 维持常驻子进程（spawn + 命令队列 + 输出缓冲），保持 cwd/env；输出用"等待静默 N ms 或遇提示符"截取。Win7 无 conPTY，真终端不做，文档明示 | 中 |
-| GAP-3 | read_file 全量读取**无行号**（仅 offset/limit 分支有 cat -n，index.js:1078-1090）；**无二进制检测**（=老 P1-6 未修，图片读成 U+FFFD 糊）；无 repo map，大仓库冷启动靠模型自己 ls/glob 摸索 | 编辑锚点不稳（无行号时 old_string 全靠记忆）；二进制白烧上下文；冷启动慢 | ① 全量读也带行号 ② 前 4KB 含 NUL 即拒绝并提示 ③ 任务启动时注入目录树摘要（git ls-files 或 glob 顶层两层，截断至 ~200 行）——三件都是小改动 | 小 |
+| GAP-3 | read_file 全量读取**无行号**（仅 offset/limit 分支有 cat -n，index.js:1078-1090）；**无二进制检测**（=老 P1-6 未修，图片读成 U+FFFD 糊）；无 repo map，大仓库冷启动靠模型自己 ls/glob 摸索 | 编辑锚点不稳（无行号时 old_string 全靠记忆）；二进制白烧上下文；冷启动慢 | ① 全量读也带行号 ② 前 4KB 含 NUL 即拒绝并提示 ③ 任务启动时注入目录树摘要——三件都是小改动【✅ 2026-10-03 快赢批② 全部落地：统一 cat -n 格式化 / [BINARY]+(empty file)+越界提示 / buildRepoMap 2 层 150 行注入系统提示词；readfmt+repo-map 5 断言】 | 小 |
 | GAP-4 | 聊天通道**丢弃 image part**（套件断言即如此，runner-b httpx）；computer_use 截屏只返回文件路径（index.js:1582），模型"看不见"自己截的图；仅 web_browser 对图片 URL 调 describeWithVision（index.js:1279） | 视觉闭环断裂：不能看截图→不能真正基于屏幕决策；用户也不能贴图问问题 | ① 截屏后自动转 base64 data URL 走 VISION_MODEL describe 回填（管线已存在，只差接线）② 上游多模态时聊天透传 image_url | 中 |
 
 ### B 级——agent 能力增强
@@ -336,9 +336,9 @@
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
-| AST-14 | test/mock-server.js + 各 runner | 裸字符串 mock 步骤（如 'WF-DONE'）没有 .content 属性 → mock 发空 delta → 客户端报 empty streamed response → 错误路径也写 [DONE]。多数场景恰好在工具结果上断言所以仍过，但意味着这些用例的最终回复从未真实到达、7CODER.md 摘要被跳过。approval-iso 已改对象步骤根治；其余场景的字符串尾步骤属已知无害怪癖 | ⬜ 低优先清理（改对象步骤 + 可选让 mock 对字符串步骤报错） |
+| AST-14 | test/mock-server.js + 各 runner | 裸字符串 mock 步骤（如 'WF-DONE'）没有 .content 属性 → mock 发空 delta → 客户端报 empty streamed response → 错误路径也写 [DONE]。多数场景恰好在工具结果上断言所以仍过，但意味着这些用例的最终回复从未真实到达、7CODER.md 摘要被跳过。approval-iso 已改对象步骤根治；其余场景的字符串尾步骤属已知无害怪癖 | ✅ 根治法：mock-server/chaos-mock 三处取步骤点统一字符串→对象归一化（一处改动消灭整类陷阱，优于改几十处场景）；strstep 场景 3 断言先红后绿（旧代码 stdout 现错误路径文案，新代码真实回复到达） |
 | AST-15 | requestGate 语义 | HTTP 聊天请求端到端串行后，长审批等待会阻塞后续请求（单用户工具可接受；approval-iso 已锁定该语义）。根治=ExecutionContext 线程化（AST-09 同族） | 🔶 随 AST-09 一并考虑 |
-| AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | ⬜ 已立项（2026-10-03）：摘要独立 maxTokens（如 512）+ 可配 SUMMARY_MODEL；低价值短回复跳过摘要；非流式不等待（后台化）。省钱立竿见影，小改 |
+| AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | 🔶 两子项已做（快赢批②）：SUMMARY_MODEL/SUMMARY_MAX_TOKENS=512 独立配置 + 短回复(<200 字符)跳过摘要（空回复仍走兜底摘要，保住套件 G 契约）；summary-budget 断言（body 含 max_tokens:512、短回复零轻调用）。剩余：非流式后台化（时序语义，暂缓）。连带：9 个套件的 mock 尾步补长以保持步骤账（含注释说明） |
 | AST-R2 | 审批链路 | 语义等价的编辑因参数表述不同被轻模型先拒后批（declined→ok 实录）——YES/NO 单字判定承担硬边界过载 | ⬜ 已立项（2026-10-03）：审批拒绝原因结构化入审计（declined 的 reason 字段）；确定性规则为主、模型判断为辅；与 GAP-11（可配置 allow/deny 规则）天然同族可合并实施 |
 
 

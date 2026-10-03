@@ -471,10 +471,11 @@ scenarios.push({
 scenarios.push({
   name: 'startup',
   fn: async () => {
-    // background mode
+    // background mode (AST-R1: the reply is padded past the 200-char summary
+    // floor so the summary light call still fires and lands in 7CODER.md)
     const cwd = freshCwd('startup-bg');
     const m = startMock([
-      { role: 'assistant', content: 'BG-TASK-REPLY' },
+      { role: 'assistant', content: 'BG-TASK-REPLY ' + 'background work detail '.repeat(12) },
       { role: 'assistant', content: 'bg summary line' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -535,6 +536,51 @@ scenarios.push({
     const bBaks = baks.filter(f => /^b\.txt\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/.test(f));
     record('backup-cap: a.txt keeps exactly 5 backups after 7 writes (per-file cap)', aBaks.length === 5, 'a=' + aBaks.length + ' all=' + baks.length);
     record('backup-cap: b.txt backup not evicted by a.txt churn', bBaks.length >= 1, 'b=' + bBaks.length);
+    stopMock(m);
+  }
+});
+
+scenarios.push({
+  name: 'readfmt',
+  fn: async () => {
+    // GAP-3a/3b: full reads are line-numbered, binary refused, empty pinned.
+    const cwd = freshCwd('readfmt');
+    fs.writeFileSync(path.join(cwd, 'alpha.txt'), 'alpha\nbeta\n');
+    fs.writeFileSync(path.join(cwd, 'bin.dat'), Buffer.from([0x00, 0x01, 0x02, 0x00, 0xff]));
+    fs.writeFileSync(path.join(cwd, 'empty.txt'), '');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r1', type: 'function', function: { name: 'read_file', arguments: '{"path":"alpha.txt"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r2', type: 'function', function: { name: 'read_file', arguments: '{"path":"bin.dat"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r3', type: 'function', function: { name: 'read_file', arguments: '{"path":"empty.txt"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'r4', type: 'function', function: { name: 'read_file', arguments: '{"path":"alpha.txt","offset":99}' } }] },
+      { role: 'assistant', content: 'READFMT-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
+    const log = readLog(m.log);
+    const r1 = tr(log, 'r1'), r2 = tr(log, 'r2'), r3 = tr(log, 'r3'), r4 = tr(log, 'r4');
+    record('readfmt: full read has line-number prefix and keeps content', r1 && r1.c.indexOf('     1\talpha') === 0 && r1.c.indexOf('     2\tbeta') === r1.c.indexOf('\n') + 1, r1 ? JSON.stringify(r1.c) : 'no result');
+    record('readfmt: NUL-byte file refused as [BINARY]', r2 && r2.c.indexOf('[BINARY] bin.dat looks binary') === 0 && r2.c.indexOf('download_tool') > 0, r2 ? r2.c : 'no result');
+    record('readfmt: empty file reads as (empty file)', r3 && r3.c === '(empty file)', r3 ? JSON.stringify(r3.c) : 'no result');
+    record('readfmt: window past EOF says so instead of empty string', r4 && r4.c.indexOf('(offset 99 is beyond EOF') === 0 && r4.c.indexOf('3 line(s)') > 0, r4 ? r4.c : 'no result');
+    stopMock(m);
+  }
+});
+
+scenarios.push({
+  name: 'repo-map',
+  fn: async () => {
+    // GAP-3c: the workspace file map is injected into the system prompt at
+    // startup - the first upstream request's system message must carry it.
+    const cwd = freshCwd('repo-map');
+    fs.mkdirSync(path.join(cwd, 'sub'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'sub', 'known-file-x.txt'), 'x\n');
+    const m = startMock([{ role: 'assistant', content: 'REPO-MAP-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
+    const log = readLog(m.log);
+    const sys0 = (log.length && log[0].messages && log[0].messages[0]) ? String(log[0].messages[0].content) : '';
+    record('repo-map: first request system prompt carries sub/ + known-file-x.txt', sys0.indexOf('## Workspace file map') >= 0 && sys0.indexOf('sub/') >= 0 && sys0.indexOf('known-file-x.txt') >= 0, sys0 ? sys0.substring(Math.max(0, sys0.length - 300)) : 'no req');
     stopMock(m);
   }
 });

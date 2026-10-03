@@ -128,10 +128,12 @@ scenarios.push({
   name: 'cancel-boundary',
   fn: async () => {
     const cwd = freshCwd('i4');
+    // AST-R1: main replies padded past the 200-char summary floor so the
+    // scripted summary steps are consumed and "quick summary" lands in 7CODER.md.
     const m = startMock([
-      { role: 'assistant', content: 'QUICK-REPLY' },
+      { role: 'assistant', content: 'QUICK-REPLY ' + 'first streamed reply padded past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'quick summary' },
-      { role: 'assistant', content: 'QUICK-REPLY-2' },
+      { role: 'assistant', content: 'QUICK-REPLY-2 ' + 'second plain reply padded past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'summary 2' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -165,9 +167,11 @@ scenarios.push({
     // user pre-seeds their own 7CODER.md with a dream-style section AND their own bullets
     fs.writeFileSync(path.join(cwd, '7CODER.md'), '# My project notes\n\n- my own bullet stays\n\n## Plan\n- plan step\n');
     const m = startMock([
-      { role: 'assistant', content: 'T1-REPLY' },
+      // AST-R1: replies padded past the 200-char summary floor so both scripted
+      // summaries are consumed and land as bullets inside the marker section.
+      { role: 'assistant', content: 'T1-REPLY ' + 'first task reply padded past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'first task summary' },
-      { role: 'assistant', content: 'T2-REPLY' },
+      { role: 'assistant', content: 'T2-REPLY ' + 'second task reply padded past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'second task summary' }
     ]);
     await new Promise(r => setTimeout(r, 600));

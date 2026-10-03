@@ -86,8 +86,11 @@ scenarios.push({
   name: 'cross-process',
   fn: async () => {
     const cwd = freshCwd('d3');
+    // AST-R1: the reply is padded past the 200-char summary floor so the
+    // scripted summary step below is consumed and PERSIST-MARKER-ONE lands
+    // in 7CODER.md.
     const m1 = startMock([
-      { role: 'assistant', content: 'PROC1-DONE' },
+      { role: 'assistant', content: 'PROC1-DONE ' + 'first process narrated its work past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'summary with PERSIST-MARKER-ONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -228,7 +231,9 @@ scenarios.push({
     fs.writeFileSync(path.join(cwd, '7CODER.md'), '\u0000\u0001garbage\u0002\nnot a bullet list\n');
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: '.env.local', content: 'X=1' }) } }] },
-      { role: 'assistant', content: 'MDCORRUPT-DONE' }
+      // AST-R1: padded past the 200-char summary floor so the summary light
+      // call fires (mock repeats this step) and the marker section is written.
+      { role: 'assistant', content: 'MDCORRUPT-DONE ' + 'corruption-resilience detail narrated past the summary floor. '.repeat(5) }
     ]);
     await new Promise(r => setTimeout(r, 600));
     const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });

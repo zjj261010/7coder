@@ -137,7 +137,10 @@ scenarios.push({
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'pp1', type: 'function', function: { name: 'write_file', arguments: '{"path":"pp.txt","content":"ok","__proto__":{"polluted":"PWNED"}}' } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'pp2', type: 'function', function: { name: 'read_file', arguments: '{"path":"pp.txt"}' } }] },
-      { role: 'assistant', content: 'PROTO-DONE' }
+      // AST-R1: padded so the summary light call still fires and stays the LAST
+      // logged payload - the assertion inspects that final request, which (unlike
+      // the history-bearing main requests) must carry no PWNED anywhere.
+      { role: 'assistant', content: 'PROTO-DONE ' + 'pollution-check padding so the summary call stays the final payload. '.repeat(4) }
     ]);
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
@@ -159,7 +162,9 @@ scenarios.push({
       { role: 'assistant', content: null, tool_calls: [{ id: 'q2', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'out.txt', content: 'x' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'q3', type: 'function', function: { name: 'list_dir', arguments: '{}' } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'q4', type: 'function', function: { name: 'append_file', arguments: JSON.stringify({ path: 'out.txt', content: 'y' }) } }] },
-      { role: 'assistant', content: 'ECON-DONE' }
+      // AST-R1: padded past the 200-char summary floor so the single light
+      // summary call this scenario pins (light===1, heavy===5) still happens.
+      { role: 'assistant', content: 'ECON-DONE ' + 'economics scenario reply padded past the summary floor. '.repeat(6) }
     ]);
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
@@ -175,7 +180,8 @@ scenarios.push({
     const cwd2 = freshCwd('g4b');
     const m2 = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'q5', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'w.txt', content: 'x' }) } }] },
-      { role: 'assistant', content: 'ECON2-DONE' }
+      // AST-R1: padded so the single summary light call (light2===1) still fires.
+      { role: 'assistant', content: 'ECON2-DONE ' + 'default-mode scenario reply padded past the summary floor. '.repeat(6) }
     ]);
     await new Promise(r => setTimeout(r, 600));
     const r2 = await runCli({
@@ -293,10 +299,13 @@ scenarios.push({
     const cwd = freshCwd('g9');
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'cp0', type: 'function', function: { name: 'schedule_cron_tool', arguments: JSON.stringify({ schedule: '1s', command: 'echo tick >> cronp.txt' }) } }] },
-      { role: 'assistant', content: 'setup ok' },
+      // AST-R1: finals padded past the 200-char summary floor so the scripted
+      // summary steps are consumed in order and the sleep request still reaches
+      // the cp1 tool-call step.
+      { role: 'assistant', content: 'setup ok ' + 'cron setup detail narrated past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'setup summary' },
       { role: 'assistant', content: null, tool_calls: [{ id: 'cp1', type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":2500}' } }] },
-      { role: 'assistant', content: 'CP-DONE' },
+      { role: 'assistant', content: 'CP-DONE ' + 'sleep task detail narrated past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'cp summary' }
     ]);
     await new Promise(r => setTimeout(r, 600));

@@ -18,7 +18,10 @@ A fully offline distribution (bundled Node.js 13.14.0 runtime + pre-installed
 dependencies + install/usage guide) can be built with
 `node scripts/pack-offline.js --with-node` - see **INSTALL.md** for the
 three-step install. No internet, no npm install, no system Node required
-on the target machine.
+on the target machine. Note: the packaging machine (the one executing
+`scripts/pack-offline.js`) needs Node >= 14.14, because the packer uses
+`fs.rmSync`; the target machine itself still only needs the bundled
+Node 13.14.0.
 
 ## Distribution
 

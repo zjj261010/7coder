@@ -19,7 +19,11 @@ http.createServer((req, res) => {
   req.on('data', c => body += c);
   req.on('end', () => {
     fs.appendFileSync(logPath, body + '\n');
-    const step = script[Math.min(i, script.length - 1)];
+    // AST-14: bare-string steps ('WF-DONE') are normalized to assistant objects,
+    // otherwise step.content/tool_calls are undefined -> empty deltas -> client
+    // sees "empty streamed response" even though a reply was scripted.
+    const raw = script[Math.min(i, script.length - 1)];
+    const step = (typeof raw === 'string') ? { role: 'assistant', content: raw } : raw;
     i++;
     const id = 'x' + i;
     if (body.indexOf('"stream":true') >= 0) {

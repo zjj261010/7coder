@@ -111,6 +111,13 @@ body {
 .msg-row.bot .msg { background: var(--panel); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
 .msg.err-msg { background: #2a1518; border: 1px solid var(--err); color: var(--err); font-size: 13px; }
 .msg.sys-msg { color: var(--dim); font-size: 12px; text-align: center; background: transparent; }
+/* Streaming cursor (injected into .msg while deltas arrive, P2-16) */
+.cursor {
+  display: inline-block; width: 8px; height: 1em; margin-left: 2px;
+  vertical-align: text-bottom; background: var(--acc); border-radius: 1px;
+  animation: cursor-blink 1s steps(1) infinite;
+}
+@keyframes cursor-blink { 50% { opacity: 0; } }
 
 /* Reasoning */
 details.think {
@@ -342,7 +349,6 @@ details.think .think-body {
   var sessFile = null;
   var autoSaving = false;
   var mode = 'auto';
-  var keyOk = function () { return true; };
 
   /* ===== Markdown-lite ===== */
   function render(text) {
@@ -397,7 +403,6 @@ details.think .think-body {
       modeSel = $('modeSel'), modeChip = $('modeChip'), sidebar = $('sidebar');
 
   /* ===== Session persistence ===== */
-  var sessionPath = null;
   function autoSaveSession() {
     if (autoSaving || !history.length) return;
     autoSaving = true;

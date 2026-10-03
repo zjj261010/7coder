@@ -151,15 +151,17 @@ scenarios.push({
     const cwd = freshCwd('c4');
     const m = startMock([
       // a main call that returns tool_calls consumes TWO steps (call + post-tool call),
-      // and every task's summary consumes one more
+      // and every task's summary consumes one more. AST-R1: the post-tool finals
+      // are padded past the 200-char summary floor so the scripted summary steps
+      // (f1b/f2b/f3b) are still consumed in order and the cr2/cr3 listings line up.
       { role: 'assistant', content: null, tool_calls: [{ id: 'cr1', type: 'function', function: { name: 'schedule_cron_tool', arguments: JSON.stringify({ schedule: '2s', command: 'echo fired >> cronfire.txt' }) } }] },
-      { role: 'assistant', content: 'f1a' },
+      { role: 'assistant', content: 'f1a ' + 'cron scheduling detail narrated past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'f1b' },
       { role: 'assistant', content: null, tool_calls: [{ id: 'cr2', type: 'function', function: { name: 'cron_list_tool', arguments: '{}' } }] },
-      { role: 'assistant', content: 'f2a' },
+      { role: 'assistant', content: 'f2a ' + 'cron listing detail narrated past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'f2b' },
       { role: 'assistant', content: null, tool_calls: [{ id: 'cr3', type: 'function', function: { name: 'cron_list_tool', arguments: '{}' } }] },
-      { role: 'assistant', content: 'f3a' },
+      { role: 'assistant', content: 'f3a ' + 'second listing detail narrated past the summary floor. '.repeat(6) },
       { role: 'assistant', content: 'f3b' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -297,7 +299,10 @@ scenarios.push({
     }
     const log = readLog(m.log);
     record('fs-edges: deep nested write works', fs.readFileSync(path.join(cwd, 'a/b/c/d/e/f/g.txt'), 'utf8') === 'deep', '');
-    record('fs-edges: CRLF content byte-exact roundtrip', tr(log, 'f3') && tr(log, 'f3').c === 'a\r\nb\r\n', tr(log, 'f3') ? JSON.stringify(tr(log, 'f3').c) : 'no result');
+    // GAP-3a: read_file output is always line-numbered (`cat -n` style), so the
+    // byte-exact expectation carries the prefixes: 3 lines from the trailing
+    // newline split, with the \r bytes preserved inside lines 1 and 2.
+    record('fs-edges: CRLF content byte-exact roundtrip', tr(log, 'f3') && tr(log, 'f3').c === '     1\ta\r\n     2\tb\r\n     3\t', tr(log, 'f3') ? JSON.stringify(tr(log, 'f3').c) : 'no result');
     record('fs-edges: oversize filename error surfaced cleanly', tr(log, 'f4') && /error|Error/i.test(tr(log, 'f4').c) && r.out.includes('FSEDGE-DONE'), tr(log, 'f4') ? tr(log, 'f4').c.substring(0, 80) : 'no result');
     record('fs-edges: BOM file reads without crash', tr(log, 'f5') && tr(log, 'f5').c.includes('bom-content'), '');
     record('fs-edges: readonly file write error surfaced, no crash', tr(log, 'f6') && /error/i.test(tr(log, 'f6').c) && r.out.includes('FSEDGE-DONE'), tr(log, 'f6') ? tr(log, 'f6').c.substring(0, 80) : 'no result');
@@ -338,7 +343,10 @@ scenarios.push({
     const script = [];
     for (let i = 1; i <= 4; i++) {
       script.push({ role: 'assistant', content: big + 'SOAK-TURN-' + i });
-      script.push({ role: 'assistant', content: 'soak summary ' + i });
+      // AST-R1: summary steps are padded too - compression (CONTEXT_CHARS=3000)
+      // burns a light-model step mid-run, and a main request that lands on a
+      // short step would skip its own summary and drop the completion count.
+      script.push({ role: 'assistant', content: 'soak summary ' + i + '. ' + 'extra soak narration so every step clears the summary floor. '.repeat(5) });
     }
     const m = startMock(script);
     await new Promise(r => setTimeout(r, 600));

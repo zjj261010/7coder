@@ -30,7 +30,9 @@ scenarios.push({
   name: 'perf',
   fn: async () => {
     const cwd = freshCwd('f1');
-    const m = startMock([{ role: 'assistant', content: 'PERF-OK' }]);
+    // AST-R1: padded past the 200-char summary floor so each of the 20 REPL
+    // tasks below still fires its summary call and prints the update line.
+    const m = startMock([{ role: 'assistant', content: 'PERF-OK ' + 'perf scenario reply padded past the summary floor. '.repeat(6) }]);
     await new Promise(r => setTimeout(r, 600));
     const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
     record('perf: cold startup + one-shot task under 4s', r.elapsedMs < 4000 && r.out.includes('PERF-OK'), 'elapsed=' + r.elapsedMs + 'ms firstOut=' + r.firstOutMs + 'ms');

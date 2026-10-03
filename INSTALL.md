@@ -2,6 +2,9 @@
 
 > 适用于离线分发包 `7coder-v2.6.0-offline-win64.zip`（Windows x64，含内置 Node.js 13.14.0 运行时）。
 > 目标环境：Windows 7 SP1 及以上（也兼容 Win10/11、macOS、Linux）。全程无需联网、无需 npm install。
+>
+> 注意：**打包机**（执行 `scripts/pack-offline.js` 的机器）需要 Node >= 14.14（打包脚本使用了 fs.rmSync）；
+> 目标机器（运行本包的机器）仍只需包内 Node 13.14.0。
 
 ## 一、包内清单
 

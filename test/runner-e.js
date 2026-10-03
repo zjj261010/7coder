@@ -279,7 +279,10 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('e9');
     const script = [];
-    for (let i = 0; i < 4; i++) script.push({ role: 'assistant', content: 'RACE-REPLY-' + i });
+    // AST-R1: replies padded past the 200-char summary floor - two concurrent
+    // requests each consume a main + summary step (4 steps total), so both
+    // summaries land in 7CODER.md.
+    for (let i = 0; i < 4; i++) script.push({ role: 'assistant', content: 'RACE-REPLY-' + i + ' ' + 'race scenario padding so each reply clears the summary floor. '.repeat(5) });
     const m = startMock(script);
     await new Promise(r => setTimeout(r, 600));
     const srvPort = port + 250;

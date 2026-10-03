@@ -59,7 +59,9 @@ http.createServer((req, res) => {
     }
     if (FAULT === 'chaos-sse') {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      const step = script[Math.min(i, script.length - 1)];
+      // AST-14: normalize bare-string steps (see mock-server.js)
+      const rawSse = script[Math.min(i, script.length - 1)];
+      const step = (typeof rawSse === 'string') ? { role: 'assistant', content: rawSse } : rawSse;
       i++;
       const c = step.content || '';
       const half = Math.max(1, Math.floor(c.length / 2));
@@ -78,7 +80,9 @@ http.createServer((req, res) => {
 }).listen(PORT, '127.0.0.1', () => console.log('chaos mock [' + FAULT + '] on ' + PORT));
 
 function serveScript(res, body) {
-  const step = script[Math.min(i, script.length - 1)];
+  // AST-14: normalize bare-string steps (see mock-server.js)
+  const raw = script[Math.min(i, script.length - 1)];
+  const step = (typeof raw === 'string') ? { role: 'assistant', content: raw } : raw;
   i++;
   if (body.indexOf('"stream":true') >= 0) {
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });

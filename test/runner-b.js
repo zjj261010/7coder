@@ -101,11 +101,11 @@ scenarios.push({
       ['adv2: download to traversal path rejected', tr(log, 'g4') && tr(log, 'g4').c.includes('Download error'), ''],
       ['adv2: absolute path outside workspace blocked', tr(log, 'g5') && tr(log, 'g5').c.includes('Path traversal blocked'), tr(log, 'g5') ? tr(log, 'g5').c : 'no result'],
       ['adv2: UNC path blocked', tr(log, 'g6') && /Security: (Path traversal blocked|path cannot be resolved safely)/.test(tr(log, 'g6').c), ''],
-      ['adv2: binary file read does not crash', tr(log, 'g7') && !tr(log, 'g7').c.includes('Tool error'), ''],
-      ['adv2: empty file reads as empty string', tr(log, 'g8') && tr(log, 'g8').c === '', tr(log, 'g8') ? JSON.stringify(tr(log, 'g8').c) : 'no result'],
+      ['adv2: binary file read refused with [BINARY] marker (GAP-3b)', tr(log, 'g7') && tr(log, 'g7').c.indexOf('[BINARY]') === 0 && tr(log, 'g7').c.indexOf('Tool error') < 0, tr(log, 'g7') ? tr(log, 'g7').c.substring(0, 90) : 'no result'],
+      ['adv2: empty file reads as (empty file) (GAP-3b)', tr(log, 'g8') && tr(log, 'g8').c === '(empty file)', tr(log, 'g8') ? JSON.stringify(tr(log, 'g8').c) : 'no result'],
       ['adv2: wrong arg type surfaces as tool error', tr(log, 'g9') && /Tool error|Read error/.test(tr(log, 'g9').c), ''],
       ['adv2: edit $& substitution stays literal', fs.readFileSync(path.join(cwd, 'plain.txt'), 'utf8') === '$&$&`x`', fs.readFileSync(path.join(cwd, 'plain.txt'), 'utf8')],
-      ['adv2: CJK + spaces path roundtrip', tr(log, 'g12') && tr(log, 'g12').c === '你好世界-テスト', tr(log, 'g12') ? tr(log, 'g12').c : 'no result']
+      ['adv2: CJK + spaces path roundtrip (line-numbered full read, GAP-3a)', tr(log, 'g12') && tr(log, 'g12').c.indexOf('\t你好世界-テスト') > 0 && /^ {5}1\t/.test(tr(log, 'g12').c), tr(log, 'g12') ? JSON.stringify(tr(log, 'g12').c) : 'no result']
     ];
     for (const [n, ok, d] of checks) record(n, ok, d);
     stopMock(m);
@@ -263,7 +263,9 @@ scenarios.push({
   name: 'contract',
   fn: async () => {
     const cwd = freshCwd('b-contract');
-    const m = startMock([{ role: 'assistant', content: 'CONTRACT-OK' }]);
+    // AST-R1: the reply must clear the 200-char summary floor, otherwise the
+    // light summary call this scenario pins never happens.
+    const m = startMock([{ role: 'assistant', content: 'CONTRACT-OK ' + 'contract-detail '.repeat(16) }]);
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m.port, args: ['--prompt', 't'], env: {
       PERMISSION_MODE: 'bypass', HEAVY_MODEL: 'heavy-x', LIGHT_MODEL: 'light-x',
@@ -288,13 +290,11 @@ scenarios.push({
     const cwd = freshCwd('b-httpx');
     fs.writeFileSync(path.join(cwd, 'nums.txt'), '42\n');
     const m = startMock([
-      // each HTTP request consumes a main step AND a light-model summary step
+      // AST-R1: one main step per HTTP request - short replies no longer burn
+      // a light-model summary step between requests.
       { role: 'assistant', content: 'HX-REPLY-1' },
-      { role: 'assistant', content: 'sum1' },
       { role: 'assistant', content: 'HX-REPLY-2' },
-      { role: 'assistant', content: 'sum2' },
       { role: 'assistant', content: 'HX-REPLY-3' },
-      { role: 'assistant', content: 'sum3' },
       { role: 'assistant', content: null, tool_calls: [{ id: 'hx1', type: 'function', function: { name: 'read_file', arguments: '{"path":"nums.txt"}' } }] },
       { role: 'assistant', content: 'HX-TOOLSTREAM-DONE' }
     ]);
@@ -395,17 +395,16 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('b-appriso');
     const tc = (id, file) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: file, content: 'ISO-' + file }) } }] });
-    // Serialized consumption order (AST-03 gate): A heavy(tcA) -> A final -> A
-    // summary-light -> B heavy(tcB) -> B final -> B summary-light.
+    // Serialized consumption order (AST-03 gate): A heavy(tcA) -> A final -> B
+    // heavy(tcB) -> B final. (AST-R1: no summary-light steps any more - the
+    // FINAL replies are short, so summarizeAction skips them.)
     // NOTE: every step must be a full assistant OBJECT - mock-server reads
     // step.content/step.tool_calls, so bare strings yield empty deltas.
     const m = startMock([
       tc('iso1', 'a.txt'),
       { role: 'assistant', content: 'FINAL-A' },
-      { role: 'assistant', content: 'X' },
       tc('iso2', 'b.txt'),
-      { role: 'assistant', content: 'FINAL-B' },
-      { role: 'assistant', content: 'X2' }
+      { role: 'assistant', content: 'FINAL-B' }
     ]);
     await new Promise(r => setTimeout(r, 600));
     const srvPort = port + 421;
@@ -757,8 +756,10 @@ scenarios.push({
   name: 'resume',
   fn: async () => {
     const cwd = freshCwd('b-resume');
+    // AST-R1: session 1's reply is padded past the 200-char summary floor so
+    // the summary step below is still consumed and the step order stays put.
     const m = startMock([
-      { role: 'assistant', content: 'noted: RESUME-77' },
+      { role: 'assistant', content: 'noted: RESUME-77. ' + 'I will keep this codeword in mind for the rest of the session. '.repeat(5) },
       { role: 'assistant', content: 'resume summary' },
       { role: 'assistant', content: 'RESUME-77 is the codeword' }
     ]);
@@ -1236,6 +1237,98 @@ scenarios.push({
   }
 });
 
+
+// --- AST-R1: summary-call budget (SUMMARY_MODEL / SUMMARY_MAX_TOKENS) and the
+// short-reply skip; plus P2-6 EADDRINUSE handling for the HTTP server ---
+scenarios.push({
+  name: 'summary-budget',
+  fn: async () => {
+    // ① long reply -> exactly one light summary call, carrying SUMMARY_MODEL
+    //    and max_tokens 512 (the mock log records the full request body JSON)
+    let cwd = freshCwd('b-sumbudget-long');
+    const longReply = 'LONG-REPLY-HEADER ' + 'detail paragraph '.repeat(20); // > 200 chars
+    let m = startMock([{ role: 'assistant', content: longReply }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', SUMMARY_MODEL: 'sum-model-x', SUMMARY_MAX_TOKENS: '512' }, cwd, timeoutMs: 60000 });
+    let log = readLog(m.log);
+    const summaryCalls = log.filter(x => !('tools' in x));
+    record('summary-budget: long reply triggers exactly one light summary call', summaryCalls.length === 1, 'count=' + summaryCalls.length + ' total=' + log.length);
+    record('summary-budget: summary call body carries SUMMARY_MODEL + "max_tokens":512', summaryCalls.length === 1 && summaryCalls[0].model === 'sum-model-x' && summaryCalls[0].max_tokens === 512, summaryCalls.length ? JSON.stringify({ model: summaryCalls[0].model, mt: summaryCalls[0].max_tokens }) : 'no summary req');
+    stopMock(m);
+    // ② short reply (<200 chars) -> no summary light call at all; every logged
+    //    request is a main (tools-bearing) call.
+    cwd = freshCwd('b-sumbudget-short');
+    m = startMock([{ role: 'assistant', content: 'SHORT-REPLY-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    log = readLog(m.log);
+    const lightCalls = log.filter(x => !('tools' in x));
+    record('summary-budget: short reply skips the summary light call', log.length >= 1 && lightCalls.length === 0, 'total=' + log.length + ' light=' + lightCalls.length);
+    stopMock(m);
+  }
+});
+
+scenarios.push({
+  name: 'eaddr',
+  fn: async () => {
+    const cwd = freshCwd('b-eaddr');
+    // Occupy a port with a plain HTTP server, then point --server at it.
+    const blocker = http.createServer((req, res) => { res.writeHead(200); res.end('blocker'); });
+    await new Promise((resolve, reject) => { blocker.on('error', reject); blocker.listen(0, '127.0.0.1', resolve); });
+    const busyPort = blocker.address().port;
+    let code = null, out = '';
+    try {
+      const r = spawnSync(NODE_BIN, [IDX, '--server'], {
+        env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:1/v1', MAX_RETRIES: '1', HTTP_PORT: String(busyPort) }),
+        cwd, encoding: 'utf8', timeout: 60000
+      });
+      code = r.status;
+      out = String(r.stdout || '') + String(r.stderr || '');
+    } finally {
+      try { blocker.close(); } catch (e) {}
+    }
+    record('eaddr: occupied port -> nonzero exit with a HTTP_PORT hint (no raw stack)', code !== 0 && out.indexOf('HTTP_PORT') >= 0 && out.indexOf('EADDRINUSE') < 0, 'code=' + code + ' out=' + out.substring(0, 250));
+  }
+});
+
+
+// --- AST-14: bare-string mock steps must stream their content, not empty deltas.
+// Before the normalization in mock-server.js/chaos-mock.js, a script step like
+// 'STR-STEP-DONE' had no .content/.tool_calls, so the mock emitted empty deltas
+// and the client died with "empty streamed response" (error path still wrote
+// [DONE]). These scenarios pin the fix at all three step-fetch sites.
+scenarios.push({
+  name: 'strstep',
+  fn: async () => {
+    // ① mock-server.js: every step is a bare string (worst case)
+    let cwd = freshCwd('b-strstep');
+    let m = startMock(['STR-STEP-DONE']);
+    await new Promise(r => setTimeout(r, 600));
+    let r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', MAX_RETRIES: '1' }, cwd, timeoutMs: 60000 });
+    record('strstep: bare-string step streams real reply (mock-server)', r.out.includes('STR-STEP-DONE') && r.out.indexOf('empty streamed response') < 0, r.out.substring(0, 200));
+    stopMock(m);
+
+    // ② chaos-mock.js chaos-sse branch: string step + junk SSE lines
+    cwd = freshCwd('b-strstep-sse');
+    m = startChaos('chaos-sse', ['CHAOS-STR-DONE']);
+    await new Promise(r => setTimeout(r, 600));
+    r = await runCli({
+      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000,
+      stdinSteps: [{ t: 'hello\n', d: 100 }, { t: '/execute-task-now\n', d: 3000 }, { t: '/bye\n', d: 400 }]
+    });
+    record('strstep: bare-string step survives chaos-sse junk lines (chaos-mock)', r.out.includes('CHAOS-STR-DONE') && r.out.indexOf('empty streamed response') < 0, r.out.substring(0, 200));
+    stopMock(m);
+
+    // ③ chaos-mock.js serveScript branch (429-then-ok: first POST eats the 429,
+    //    the retry reaches the scripted string step)
+    cwd = freshCwd('b-strstep-429');
+    m = startChaos('429-then-ok', ['CHAOS-SERVE-DONE']);
+    await new Promise(r => setTimeout(r, 600));
+    r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', MAX_RETRIES: '2' }, cwd, timeoutMs: 60000 });
+    record('strstep: bare-string step served after 429 retry (serveScript)', r.out.includes('CHAOS-SERVE-DONE') && r.out.indexOf('empty streamed response') < 0, r.out.substring(0, 200));
+    stopMock(m);
+  }
+});
 
 // ====================== RUNNER ======================
 S.runAll(scenarios);

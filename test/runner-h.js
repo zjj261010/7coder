@@ -93,7 +93,9 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('h3');
     const script = [];
-    for (let i = 0; i < 26; i++) script.push({ role: 'assistant', content: 'SOAKPULSE-' + i });
+    // AST-R1: replies padded past the 200-char summary floor so every one of the
+    // 24 tasks fires its summary call and prints the completion line.
+    for (let i = 0; i < 26; i++) script.push({ role: 'assistant', content: 'SOAKPULSE-' + i + ' ' + 'rss soak padding so every task writes its summary bullet. '.repeat(5) });
     const m = startMock(script);
     await new Promise(r => setTimeout(r, 600));
     const steps = [];
@@ -369,7 +371,8 @@ scenarios.push({
     record('audit: pasted /btw lands before task starts', r3.out.includes('AF3-DONE') && !!firstUser && String(firstUser.content).includes('BTW-NOTE-SUMMARY') && String(firstUser.content).includes('task body'), firstUser ? String(firstUser.content).substring(0, 80) : 'no main req');
     stopMock(m3);
 
-    // 4) ask_user on a closed readline (server mode) returns skipped instead of hanging
+    // 4) ask_user on a closed readline (server mode) returns the P2-15
+    //    unreachable-instruction instead of hanging (wording updated by P2-15)
     const cwd4 = freshCwd('h8d');
     const m4 = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'af4', type: 'function', function: { name: 'ask_user_question_tool', arguments: JSON.stringify({ question: 'q' }) } }] },
@@ -387,7 +390,7 @@ scenarios.push({
     try {
       const resp = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] });
       const q = tr(readLog(m4.log), 'af4');
-      record('audit: ask_user on closed input returns skipped, request completes', resp.status === 200 && q && q.c.includes('input stream is closed'), 'status=' + resp.status + ' q=' + (q ? q.c.substring(0, 50) : 'none'));
+      record('audit: ask_user on closed input returns unreachable-instruction, request completes', resp.status === 200 && q && q.c.includes('User is unreachable') && q.c.includes('Do NOT assume an answer'), 'status=' + resp.status + ' q=' + (q ? q.c.substring(0, 80) : 'none'));
     } finally {
       try { srv.kill(); } catch (e) {}
       stopMock(m4);

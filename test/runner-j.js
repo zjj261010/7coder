@@ -124,7 +124,9 @@ scenarios.push({
     const cwd = freshCwd('j4');
     const script = [];
     for (let i = 1; i <= 5; i++) {
-      script.push({ role: 'assistant', content: 'M' + i + '-REPLY' });
+      // AST-R1: replies padded past the 200-char summary floor so each of the
+      // five tasks fires its summary and the log ends with exactly five bullets.
+      script.push({ role: 'assistant', content: 'M' + i + '-REPLY ' + 'task ' + i + ' detail padded past the summary floor. '.repeat(6) });
       script.push({ role: 'assistant', content: 'summary ' + i });
     }
     const m = startMock(script);
