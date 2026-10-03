@@ -28,7 +28,9 @@ http.createServer((req, res) => {
     const id = 'x' + i;
     if (body.indexOf('"stream":true') >= 0) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
-      const chunk = (delta, fin) => res.write('data: ' + JSON.stringify({ id, object: 'chat.completion.chunk', created: 1, model: 'mock', choices: [{ index: 0, delta, finish_reason: fin || null }] }) + '\n\n');
+      // GAP-8: usage rides on the finish_reason:'stop' chunk (OpenAI style).
+      // Extra top-level field - the old client parsers only read choices[].delta.
+      const chunk = (delta, fin, usage) => res.write('data: ' + JSON.stringify(Object.assign({ id, object: 'chat.completion.chunk', created: 1, model: 'mock', choices: [{ index: 0, delta, finish_reason: fin || null }] }, usage ? { usage: usage } : {})) + '\n\n');
       if (step.reasoning) {
         const r = step.reasoning;
         chunk({ reasoning_content: r.substring(0, Math.max(1, Math.floor(r.length / 2))) }, null);
@@ -43,12 +45,13 @@ http.createServer((req, res) => {
       } else {
         chunk({ role: 'assistant', content: '' }, null);
       }
-      chunk({}, 'stop');
+      chunk({}, 'stop', { prompt_tokens: 100, completion_tokens: 50 });
       res.write('data: [DONE]\n\n');
       res.end();
       return;
     }
-    const out = { id, object: 'chat.completion', created: 1, model: 'mock', choices: [{ index: 0, message: step, finish_reason: step.tool_calls ? 'tool_calls' : 'stop' }] };
+    // GAP-8: non-stream responses carry a usage object too.
+    const out = { id, object: 'chat.completion', created: 1, model: 'mock', usage: { prompt_tokens: 100, completion_tokens: 50 }, choices: [{ index: 0, message: step, finish_reason: step.tool_calls ? 'tool_calls' : 'stop' }] };
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(out));
   });

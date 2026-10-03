@@ -154,6 +154,11 @@ const MCP_NPX_PKGS = (process.env.MCP_NPX_PKGS || '').split(',').map(s => s.trim
 const ENABLE_AUTO_DEBUG = process.env.ENABLE_AUTO_DEBUG === 'true';
 const DEBUG_TEST_MINUTES = parseInt(process.env.DEBUG_TEST_MINUTES, 10) || 3;
 const BICKER_ROUNDS = parseInt(process.env.BICKER_ROUNDS, 10) || 5;
+// GAP-10: web_search_tool provider. ''/'ddg' keeps the DuckDuckGo lite scrape;
+// 'searxng' needs SEARCH_ENDPOINT; 'brave'/'bing' need SEARCH_API_KEY.
+const SEARCH_PROVIDER = (process.env.SEARCH_PROVIDER || '').toLowerCase().trim();
+const SEARCH_API_KEY = process.env.SEARCH_API_KEY || '';
+const SEARCH_ENDPOINT = process.env.SEARCH_ENDPOINT || '';
 const APP_VERSION = require('./package.json').version;
 
 // Structured audit log (D5): every tool call and permission-mode change is
@@ -509,7 +514,10 @@ const AUTO_SAFE_TOOLS = [
   'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'mcp_list_tools_tool', 'tool_search_tool',
   'prompt_from_file', 'snip_tool', 'cron_list_tool', 'process_list_tool', 'bickering_tool',
   'task_get_tool', 'task_list_tool', 'task_output_tool', 'skill_tool', 'synthetic_output_tool',
-  'git_status_tool', 'git_diff_tool'
+  'git_status_tool', 'git_diff_tool',
+  // GAP-5: read-only diagnostics - executes ONLY binaries inside the workspace's
+  // own node_modules (never a global install, never a shell string).
+  'diagnostics_tool'
 ];
 
 // ====================== TOOL DEFINITIONS ======================
@@ -557,6 +565,7 @@ const tools = [
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
   { type: "function", function: { name: "workflow_tool", description: "Run a sequence of tool calls from a JSON plan: steps=[{tool, args, optional}]. Steps execute in order through the normal permission system; a failing step stops the workflow unless optional=true. Max 50 steps; nested workflows are rejected.", parameters: { type: "object", properties: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" }, optional: { type: "boolean" } }, required: ["tool"] } }, description: { type: "string" } }, required: ["steps"] } } },
   { type: "function", function: { name: "run_tests_tool", description: "Run a test suite and parse the output into structured pass/fail counts. Supported: jest/mocha/karma (N passing, M failing), node:test (# pass N), generic. Auto-detects (npm test / node --test) when command omitted.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_seconds: { type: "number" } } } } },
+  { type: "function", function: { name: "diagnostics_tool", description: "Run project-local static diagnostics and list problems. Uses typescript (tsc --noEmit, whole project) if installed in node_modules, else eslint (--format json). Read-only; safe to run anytime.", parameters: { type: "object", properties: { path: { type: "string", description: "Optional target for eslint (file/folder); ignored by tsc which always checks the whole project" } } } } },
   { type: "function", function: { name: "git_status_tool", description: "Show the working tree status (branch, staged/untracked/modified files) and last commit. Safe/read-only.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "git_diff_tool", description: "Show unstaged (or staged with staged=true) diff for a file or the whole tree. Safe/read-only.", parameters: { type: "object", properties: { path: { type: "string" }, staged: { type: "boolean" } } } } },
   { type: "function", function: { name: "git_commit_tool", description: "Stage all changes and create a git commit. If message is omitted, one is generated from the session audit log. A pre-commit snapshot (git stash create) is recorded so /undo-style recovery is possible; nothing is pushed.", parameters: { type: "object", properties: { message: { type: "string" }, stage_all: { type: "boolean" } } } } },
@@ -1100,6 +1109,16 @@ async function describeWithVision(imageUrl) {
 }
 
 // ====================== LIGHT/HEAVY CALLER ======================
+// GAP-8: token usage observability. The upstream reports per-response token
+// usage; sessionUsage aggregates every callOpenAI call made by THIS process
+// (a CLI session, or a server since it started). recordUsage() tolerates
+// endpoints that omit the field entirely.
+const sessionUsage = { prompt: 0, completion: 0 };
+function recordUsage(u) {
+  if (!u || typeof u !== 'object') return;
+  if (typeof u.prompt_tokens === 'number') sessionUsage.prompt += u.prompt_tokens;
+  if (typeof u.completion_tokens === 'number') sessionUsage.completion += u.completion_tokens;
+}
 // Parses an OpenAI SSE stream and assembles a normal `choice` object.
 // Calls onDelta(text) for every content fragment (used for live output).
 function parseSSEStream(stream, onDelta, onReasoning) {
@@ -1110,6 +1129,7 @@ function parseSSEStream(stream, onDelta, onReasoning) {
     const message = { role: 'assistant', content: '' };
     const toolCalls = [];
     let finishReason = null;
+    let usage = null; // GAP-8: usage chunk (OpenAI sends it on the final chunk) - last one wins
     let sawAnything = false;
     let upstreamErrorSeen = false;
     let sawReasoning = false;
@@ -1152,6 +1172,7 @@ if (parsed.error) {
   return reject(new Error('upstream error: ' + em));
 }
 const ch = parsed.choices && parsed.choices[0];
+        if (parsed.usage) usage = parsed.usage; // GAP-8: capture before the no-choices gate (usage-only final chunks exist)
         if (!ch) continue;
         sawAnything = true;
         const delta = ch.delta || {};
@@ -1184,7 +1205,9 @@ const ch = parsed.choices && parsed.choices[0];
       if (merged.length) message.tool_calls = merged;
       if (!message.content && !merged.length && sawReasoning) message.reasoning_only = true;
       if (!sawAnything) return resolve(null);
-      resolve({ message, finish_reason: finishReason || 'stop' });
+      const out = { message, finish_reason: finishReason || 'stop' };
+      if (usage) out.usage = usage; // GAP-8: attach upstream usage for callOpenAI to record
+      resolve(out);
     });
     stream.on('error', reject);
   });
@@ -1225,6 +1248,7 @@ async function callOpenAI(currentMessages, options = {}) {
           responseType: 'stream'
         });
         const choice = await parseSSEStream(response.data, onDelta, onReasoning);
+        if (choice) recordUsage(choice.usage); // GAP-8: streamed usage rides on the assembled choice
         if (choice && (choice.message.content || (choice.message.tool_calls && choice.message.tool_calls.length))) {
           return choice;
         }
@@ -1235,6 +1259,7 @@ async function callOpenAI(currentMessages, options = {}) {
         timeout: 420000, // 7 minutes - generous for slow local LLM endpoints
       });
       if (response.data && response.data.choices && response.data.choices[0]) {
+        recordUsage(response.data.usage); // GAP-8: non-stream usage lives on the response envelope
         return response.data.choices[0];
       }
       throw new Error('Invalid API response structure: ' + JSON.stringify(response.data));
@@ -1284,6 +1309,7 @@ const DETERMINISTIC_EXPLAIN = {
   run_tests_tool: (a) => `Run test suite: ${String(a.command || 'auto-detected').substring(0, 80)}`,
   git_status_tool: () => 'Show git working tree status (read-only)',
   git_diff_tool: (a) => `Show git diff${a.staged ? ' (staged)' : ''}${a.path ? ' for ' + a.path : ''} (read-only)`,
+  diagnostics_tool: (a) => `Run project-local static diagnostics (tsc/eslint from node_modules)${a.path ? ' on ' + a.path : ''} (read-only)`,
   git_commit_tool: (a) => `Stage all and commit${a.message ? ': ' + String(a.message).substring(0, 60) : ' (auto message)'} (snapshot taken)`
 };
 
@@ -1539,12 +1565,35 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
   }
   if (name === 'web_search_tool') {
+    // GAP-10: pluggable search providers. Unknown values fail fast with the
+    // legal list - never a silent network fallback.
+    const validProviders = "'' (DuckDuckGo lite), ddg, searxng, brave, bing";
+    if (SEARCH_PROVIDER !== '' && SEARCH_PROVIDER !== 'ddg' && SEARCH_PROVIDER !== 'searxng' && SEARCH_PROVIDER !== 'brave' && SEARCH_PROVIDER !== 'bing') {
+      return `Search error (provider): Unknown SEARCH_PROVIDER "${SEARCH_PROVIDER}". Valid values: ${validProviders}.`;
+    }
     try {
       const q = encodeURIComponent(args.query);
+      if (SEARCH_PROVIDER === 'searxng') {
+        const base = SEARCH_ENDPOINT.replace(/\/+$/, '');
+        if (!base) return 'Search error (provider): SEARCH_ENDPOINT is required when SEARCH_PROVIDER=searxng (check SEARCH_* configuration)';
+        const res = await axios.get(`${base}/search?q=${q}&format=json`, { timeout: 10000 });
+        const rows = (((res.data || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
+        return `Search results:\n${rows.join('\n')}`;
+      }
+      if (SEARCH_PROVIDER === 'brave') {
+        const res = await axios.get(`https://api.search.brave.com/res/v1/web/search?q=${q}`, { timeout: 10000, headers: SEARCH_API_KEY ? { 'X-Subscription-Token': SEARCH_API_KEY } : {} });
+        const rows = ((((res.data || {}).web || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
+        return `Search results:\n${rows.join('\n')}`;
+      }
+      if (SEARCH_PROVIDER === 'bing') {
+        const res = await axios.get(`https://api.bing.microsoft.com/v7.0/search?q=${q}`, { timeout: 10000, headers: SEARCH_API_KEY ? { 'Ocp-Apim-Subscription-Key': SEARCH_API_KEY } : {} });
+        const rows = ((((res.data || {}).webPages || {}).value) || []).slice(0, 10).map(r => `${r.name} -> ${r.url}`);
+        return `Search results:\n${rows.join('\n')}`;
+      }
       const res = await axios.get(`https://lite.duckduckgo.com/lite?q=${q}`, { timeout: 10000 });
       const links = [...res.data.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].slice(0, 10).map(m => `${m[2]} -> ${m[1]}`);
       return `Search results:\n${links.join('\n')}`;
-    } catch (e) { return `Search error: ${e.message}`; }
+    } catch (e) { return `Search error (provider): ${e.message} (check SEARCH_PROVIDER/SEARCH_ENDPOINT/SEARCH_API_KEY configuration)`; }
   }
 
   if (name === 'web_browser_tool') {
@@ -2092,6 +2141,65 @@ function parseTestOutput(text) {
     return res;
   }
 
+// ====================== DIAGNOSTICS FORMATTING (GAP-5) ======================
+// One header line + per-problem '  <file>:<line> <code> <msg>' lines, capped.
+function formatDiagResult(toolLabel, problems) {
+  if (!problems.length) return '[DIAG] clean (0 problems)';
+  const CAP = 50;
+  const lines = problems.slice(0, CAP).map(p => '  ' + p.file + ':' + p.line + ' ' + p.code + ' ' + String(p.msg || '').substring(0, 120));
+  let out = '[DIAG] ' + toolLabel + ': ' + problems.length + ' 个问题\n' + lines.join('\n');
+  if (problems.length > CAP) out += '\n  ... and ' + (problems.length - CAP) + ' more problems (truncated to ' + CAP + ')';
+  return out;
+}
+
+  if (name === 'diagnostics_tool') {
+    // GAP-5: project-local toolchain diagnostics. Only binaries inside THIS
+    // workspace's node_modules are ever executed (node <bin> via execFile -
+    // never a shell string, never a global install), so the tool is read-only
+    // and auto-safe.
+    try {
+      const tscBin = path.join(launchDir, 'node_modules', 'typescript', 'bin', 'tsc');
+      const eslintBin = path.join(launchDir, 'node_modules', 'eslint', 'bin', 'eslint.js');
+      const problems = [];
+      if (fs.existsSync(tscBin)) {
+        // args.path is deliberately ignored for tsc: `tsc --noEmit <file>`
+        // bypasses the project tsconfig and reports a different problem set
+        // than the project build - diagnostics stay whole-project instead.
+        const { r } = await awaitCommandCancellable(runCommandAsync({ file: process.execPath, args: [tscBin, '--noEmit'] }, { timeout: 120000 }), cancelled);
+        // exit 2 is tsc's "has errors" - the callback's stdout still carries the list
+        for (const line of String(r.stdout || '').split('\n')) {
+          const m = line.match(/^([^(]+)\((\d+),(\d+)\): error (TS\d+): (.*)$/);
+          if (m) problems.push({ file: m[1].trim(), line: m[2], code: m[4], msg: m[5] });
+        }
+        if (!problems.length && r.error && !String(r.stdout || '').trim() && !String(r.stderr || '').trim()) {
+          return 'Diagnostics error: tsc failed: ' + (r.error.message || 'exit ' + r.error.code);
+        }
+        return formatDiagResult('tsc', problems);
+      }
+      if (fs.existsSync(eslintBin)) {
+        let target = '.';
+        if (args.path && String(args.path).trim()) {
+          try { target = sanitizePath(String(args.path).trim()) || '.'; } catch (e2) { return 'Diagnostics error: ' + e2.message; }
+        }
+        const { r } = await awaitCommandCancellable(runCommandAsync({ file: process.execPath, args: [eslintBin, '--format', 'json', target] }, { timeout: 120000 }), cancelled);
+        let rows = null;
+        try { rows = JSON.parse(String(r.stdout || 'null')); } catch (e2) { rows = null; }
+        if (rows === null) {
+          return 'Diagnostics error: eslint output was not valid JSON' + (r.error ? (': ' + r.error.message) : '') + (String(r.stderr || '').trim() ? (' | ' + String(r.stderr).trim().substring(0, 200)) : '');
+        }
+        for (const f of rows) {
+          for (const msg of (f.messages || [])) {
+            problems.push({ file: f.filePath, line: msg.line, code: msg.ruleId || '(no rule)', msg: msg.message });
+          }
+        }
+        return formatDiagResult('eslint', problems.slice(0, 30));
+      }
+      return 'Diagnostics: no toolchain found (install typescript or eslint in node_modules).';
+    } catch (e) {
+      return 'Diagnostics error: ' + e.message;
+    }
+  }
+
 // ====================== GIT INTEGRATION (D1) ======================
 // AST-01: git must never go through a shell. Args are ALWAYS an array and
 // user input (paths, commit messages) is passed as single argv entries, so
@@ -2408,6 +2516,11 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
     : /declined/i.test(res) ? 'declined'
     : toolFailed(res) ? 'error'
     : 'ok';
+  // GAP-12: remember mutating calls for the end-of-task [CHANGES] summary.
+  // argsPreview values are the redacted/truncated audit previews - reuse them.
+  if (CHANGE_TOOLS[func.name] && taskChanges.length < 1000) {
+    taskChanges.push({ tool: func.name, path: argsPreview.path || argsPreview.url || '', status: status });
+  }
   audit({ ts: new Date().toISOString(), type: 'tool', tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: first.substring(0, 160) });
   return res;
 }
@@ -2470,7 +2583,8 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       cron_delete_tool: 'MEDIUM', process_kill_tool: 'HIGH',
       run_command: 'HIGH', bash_tool: 'HIGH', powershell_tool: 'HIGH',
       task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH', run_tests_tool: 'HIGH',
-      git_status_tool: 'LOW', git_diff_tool: 'LOW', git_commit_tool: 'HIGH'
+      git_status_tool: 'LOW', git_diff_tool: 'LOW', git_commit_tool: 'HIGH',
+      diagnostics_tool: 'LOW'
     };
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 
@@ -2560,7 +2674,7 @@ async function askApproval(question, approvalBridge) {
 // step-stop check and the audit status mapping both consume this regex, so
 // they can never drift apart again (they once disagreed: 'List error' and
 // declined steps let workflows continue and audit logged denials as 'ok').
-const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined)/;
+const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined|Search error|Diagnostics error)/;
 function toolFailed(res) { return TOOL_FAIL_RE.test(String(res)); }
 
 // Central choke point for every model call: caps tool result size and
@@ -2716,6 +2830,25 @@ async function processWithTools(currentMessages, opts = {}) {
   const finalChoice = await callOpenAI(currentMessages, { useTools: false, onDelta, onReasoning, model: reqModel });
   currentMessages.push(finalChoice.message);
   return finalChoice.message.content || '';
+}
+
+// ====================== TASK CHANGE SUMMARY (GAP-12) ======================
+// Per-task log of mutating tool calls, printed as [CHANGES] when the CLI task
+// ends. Records are appended by safeExecuteTool (after the status is known) -
+// argsPreview values are the already-redacted/truncated audit previews.
+const taskChanges = [];
+// mutating tools whose calls belong in the [CHANGES] summary
+const CHANGE_TOOLS = { write_file: 1, append_file: 1, edit_file: 1, notebook_edit_tool: 1, download_tool: 1, git_commit_tool: 1, mcp_tool: 1 };
+function resetTaskChanges() { taskChanges.length = 0; }
+function printTaskChanges() {
+  if (!taskChanges.length) return; // a task with no changes stays silent
+  const ok = taskChanges.filter(c => c.status === 'ok').length;
+  console.log('[CHANGES] this task: ' + ok + ' ok, ' + (taskChanges.length - ok) + ' blocked/failed');
+  for (const c of taskChanges.slice(0, 20)) console.log('  ' + c.tool + ' ' + c.path + ' -> ' + c.status);
+}
+// GAP-8: end-of-session token usage trailer.
+function logSessionUsage() {
+  console.log('[USAGE] this process: prompt=' + sessionUsage.prompt + ' completion=' + sessionUsage.completion + ' total=' + (sessionUsage.prompt + sessionUsage.completion) + ' tokens');
 }
 
 // ====================== CORE EXECUTION ======================
@@ -2964,6 +3097,7 @@ function updateCompleteSummary(newSummary) {
 
 // ====================== CORE EXECUTION ======================
 async function executeTask() {
+  resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
   console.log(`7coder is ${getRandomSpinner()}`);
   try {
     let streamed = false;
@@ -2995,8 +3129,12 @@ async function executeTask() {
 
     if (streamed) console.log(''); // deltas were already printed live
     else console.log(`\n7coder: ${displayReply}`);
+    printTaskChanges(); // GAP-12: silent when the task changed nothing
+    logSessionUsage(); // GAP-8
   } catch (err) {
     console.error(`[ERROR] Error: ${err.message}`);
+    printTaskChanges(); // GAP-12: failure path reports what did happen too
+    logSessionUsage(); // GAP-8
     process.exitCode = 1;
   }
 }
@@ -3084,7 +3222,7 @@ function startHttpServer() {
   }
   if (req.method === 'GET' && req.url === '/api/info') {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList() }));
+    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(), usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
     return;
   }
     if (req.method === 'GET' && req.url === '/v1/models') {

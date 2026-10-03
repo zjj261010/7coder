@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-03 午后）：单文件 index.js（~3690 行），v2.16.0；GAP-1 MCP 轮后 A–J 全绿 468 项（A 85/B 160/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
+> 规模快照（2026-10-03 傍晚）：单文件 index.js（~3810 行），v2.16.0；快赢批③后 A–J 全绿 475 项（A 85/B 167/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）；
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 149 |
+| runner-b.js | 156 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **441** |
+| **合计** | **448** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -272,19 +272,19 @@
 
 | # | 现状 | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
-| GAP-5 | 无 LSP（=D3 老项未排期）；编辑后类型/语法错误只能等跑测试才发现 | 修错反馈环长 | 最小版先不做 LSP：加 diagnostics_tool 包装 `tsc --noEmit` / `eslint -f json`（按项目探测），编辑后模型可主动调用；完整 LSP 仍是周级工程 | 小→大 |
+| GAP-5 | 无 LSP；编辑后错误只能等跑测试 | 修错反馈环长 | 最小版 diagnostics_tool【✅ 2026-10-03 快赢批③】：只探测并运行项目本地 node_modules 的 tsc/eslint（零网络、异步、auto-safe LOW），tsc 行解析 / eslint JSON 解析，[DIAG] 结构化输出；tsc 忽略 path 参数（单文件+项目混用会失真，schema 已注明）。shim 版 tsc 红绿验证解析（diag 2 断言）。完整 LSP 仍留 D3 | 小→大 |
 | GAP-6 | todo_write_tool 只是往 TODO.md 追加文本行 | 无结构化任务列表，无状态流转（doing/done），web UI 也无从展示进度 | 结构化 {id,title,status,updated} 存 `.7coder/todos.json`，工具改读写 JSON；web UI 侧栏渲染进度 | 小 |
 | GAP-7 | REPL 仅固定命令（/bye /clear /undo /btw /resume /execute-task-now）；无 hooks | 用户无法沉淀自定义工作流（一键"跑测+修复"类），无法注入 pre/post-tool 规则（如"禁止改 src/legacy/**"） | ① `.7coder/commands/*.md` 斜杠命令展开为 prompt ② 工具调用前后钩子（复用审批管线位置，用户脚本 exit≠0 即拦截） | 中 |
-| GAP-8 | 上游响应的 usage 字段完全未用（grep 无 prompt_tokens/usage 统计） | 无 token/费用可观测，长会话无感知 | callOpenAI 累计 usage 入会话与审计日志；REPL 提示符旁与 web UI 设置面板显示累计值 | 小 |
+| GAP-8 | usage 字段完全未用 | 无 token 可观测 | 【✅ 2026-10-03 快赢批③】sessionUsage 累计（流式末块/非流式信封两路），CLI 任务尾打印 [USAGE]、/api/info 暴露 usage 对象；mock-server 补 usage 字段（纯增量）供断言（usage-track 2 断言，红 0/7 先证）。审计入账与 web UI 面板显示为后续增量（原建议后半，未做） | 小 |
 | GAP-9 | 记忆=7CODER.md 单文件（auto-log 标记节 + dream 整理）+ BTW.md | 扁平无分层：项目事实/用户偏好/临时笔记混一处，长了靠压缩 | 分层 memory（.7coder/memory/*.md 按主题）+ 任务启动时按关键词召回注入；dream 改为整理归档 | 中 |
-| GAP-10 | web_search_tool 抓 lite.duckduckgo.com 的 HTML 用正则提链接（index.js:1262-1268） | 无 API、正则脆弱、易限流、无降级 | 保底可用的同时留 API 提供方配置（SearXNG/Bing/Brave 任一 key 即切换）；失败时明确告知而非空结果 | 小 |
+| GAP-10 | web_search 正则抓 DDG-lite HTML | 脆弱易限流无降级 | 【✅ 2026-10-03 快赢批③】SEARCH_PROVIDER/SEARCH_API_KEY/SEARCH_ENDPOINT 三键：searxng/brave/bing 分支 + ddg 原样兜底；显式未知值报错不回退网络；Search error 前缀入 TOOL_FAIL_RE。离线假 searxng 实例验证（search-api 2 断言先红后绿）；真实 brave/bing key 未测（付费） | 小 |
 
 ### C 级——打磨与可选
 
 | # | 现状 | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
 | GAP-11 | PROTECTED_FILES 硬编码 12 项（index.js:489-493）；权限仅四模式 | 用户不可扩展保护清单，也无 allow/deny 规则 | `.7coder/permissions.json`：protected_extra/allow/deny（glob 规则），启动加载并公告 | 小 |
-| GAP-12 | 备份按文件 5 份可 /undo 单文件；git_commit_tool 可整树快照 | 缺"本次任务改了什么"的汇总视图/检查点 | 任务结束时输出改动清单（backup/audit 已有数据可聚合）；或任务前自动 git stash-create 检查点 | 小 |
+| GAP-12 | 缺任务级改动汇总 | 任务收尾无"改了什么"总览 | 【✅ 2026-10-03 快赢批③】taskChanges 在审计包装处收集写类工具 {tool,path,status}（HTTP 常驻模式 1000 条上限——GLM 自纠的盲区），任务成败两路都打印 [CHANGES] 清单（≤20 行）（task-changes 断言先红后绿）。任务前 git stash 检查点半项未做 | 小 |
 | GAP-13 | 上下文压缩按字符数近似（=C9 老项） | 字符≠token，CJK 尤其失真，压缩触发偏晚 | 引入轻量 tokenizer 估算（需验证 Node 13 兼容的纯 JS 实现）；或按 (字符+CJK×2) 折算近似 | 中 |
 | GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 低优先；sessions/ 已有时间戳副本，补"从第 N 轮分叉"命令即可 | 中 |
 

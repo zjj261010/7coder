@@ -1547,5 +1547,140 @@ scenarios.push({
   }
 });
 
+// --- B29: GAP-8 token usage observability (/api/info usage + [USAGE] trailer) ---
+scenarios.push({
+  name: 'usage-track',
+  fn: async () => {
+    // (a) server: one non-stream chat, then /api/info must expose usage.prompt >= 100
+    const cwd = freshCwd('b-usage');
+    const m = startMock([{ role: 'assistant', content: 'USAGE-REPLY-OK' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 430;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const chat = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] });
+      const info = await httpReq(srvPort, 'GET', '/api/info', null);
+      let usagePrompt = null, usageTotal = null;
+      try { const j = JSON.parse(info.body); if (j.usage) { usagePrompt = j.usage.prompt; usageTotal = j.usage.total; } } catch (e) {}
+      record('usage: /api/info exposes usage object with prompt >= 100 after a non-stream chat',
+        chat.status === 200 && info.body.includes('usage') && typeof usagePrompt === 'number' && usagePrompt >= 100,
+        'chat=' + chat.status + ' prompt=' + JSON.stringify(usagePrompt) + ' total=' + JSON.stringify(usageTotal) + ' info=' + info.body.substring(0, 160));
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+    // (b) CLI one-shot task: stdout carries the [USAGE] trailer
+    const cwd2 = freshCwd('b-usage-cli');
+    const m2 = startMock([{ role: 'assistant', content: 'USAGE-CLI-OK' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd2, timeoutMs: 60000 });
+    record('usage: CLI one-shot prints [USAGE] prompt=/completion= trailer', r.out.includes('[USAGE]') && r.out.includes('prompt='), r.out.substring(Math.max(0, r.out.length - 250)));
+    stopMock(m2);
+  }
+});
+
+// --- B30: GAP-10 web_search providers (searxng endpoint + bogus provider error) ---
+scenarios.push({
+  name: 'search-api',
+  fn: async () => {
+    // local fake searxng on a random port
+    const searx = http.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ results: [
+        { title: 'Searx One', url: 'https://example.com/1' },
+        { title: 'Searx Two', url: 'https://example.com/2' }
+      ] }));
+    });
+    const searxPort = await new Promise(resolve => { searx.listen(0, '127.0.0.1', () => resolve(searx.address().port)); });
+    try {
+      const cwd = freshCwd('b-search');
+      const m = startMock([
+        { role: 'assistant', content: null, tool_calls: [{ id: 'se1', type: 'function', function: { name: 'web_search_tool', arguments: '{"query":"x"}' } }] },
+        { role: 'assistant', content: 'SEARCH-DONE' }
+      ]);
+      await new Promise(r => setTimeout(r, 600));
+      await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', SEARCH_PROVIDER: 'searxng', SEARCH_ENDPOINT: 'http://127.0.0.1:' + searxPort }, cwd, timeoutMs: 60000 });
+      const se1 = tr(readLog(m.log), 'se1');
+      record('search: searxng provider queries SEARCH_ENDPOINT and returns title/url', se1 && se1.c.includes('Searx One') && se1.c.includes('example.com'), se1 ? se1.c : 'no result');
+      stopMock(m);
+      // bogus provider -> explicit error naming the legal values (no network fallback)
+      const cwd2 = freshCwd('b-search-bogus');
+      const m2 = startMock([
+        { role: 'assistant', content: null, tool_calls: [{ id: 'se2', type: 'function', function: { name: 'web_search_tool', arguments: '{"query":"x"}' } }] },
+        { role: 'assistant', content: 'SEARCH2-DONE' }
+      ]);
+      await new Promise(r => setTimeout(r, 600));
+      await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', SEARCH_PROVIDER: 'bogus' }, cwd: cwd2, timeoutMs: 60000 });
+      const se2 = tr(readLog(m2.log), 'se2');
+      record('search: bogus SEARCH_PROVIDER -> Unknown SEARCH_PROVIDER error listing valid values',
+        se2 && se2.c.includes('Unknown SEARCH_PROVIDER') && se2.c.includes('searxng') && se2.c.includes('brave') && se2.c.includes('bing') && se2.c.includes('ddg'),
+        se2 ? se2.c : 'no result');
+      stopMock(m2);
+    } finally {
+      try { searx.close(); } catch (e) {}
+    }
+  }
+});
+
+// --- B31: GAP-12 per-task change summary ([CHANGES] trailer) ---
+scenarios.push({
+  name: 'task-changes',
+  fn: async () => {
+    const cwd = freshCwd('b-changes');
+    fs.writeFileSync(path.join(cwd, 'b.txt'), 'orig\n');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ch1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'a.txt', content: 'A' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ch2', type: 'function', function: { name: 'edit_file', arguments: JSON.stringify({ path: 'b.txt', old_string: 'orig', new_string: 'edited' }) } }] },
+      { role: 'assistant', content: 'CHANGES-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    record('changes: [CHANGES] summary lists both touched files', r.out.includes('[CHANGES]') && r.out.includes('a.txt') && r.out.includes('b.txt'), r.out.substring(Math.max(0, r.out.length - 300)));
+    stopMock(m);
+  }
+});
+
+// --- B32: GAP-5 diagnostics_tool (tsc shim parse + no-toolchain message) ---
+scenarios.push({
+  name: 'diag',
+  fn: async () => {
+    const cwd = freshCwd('b-diag');
+    fs.mkdirSync(path.join(cwd, 'node_modules', 'typescript', 'bin'), { recursive: true });
+    // tsc shim: prints two fixed diagnostics and exits 2 (tsc's real exit code for problems)
+    fs.writeFileSync(path.join(cwd, 'node_modules', 'typescript', 'bin', 'tsc'), [
+      'console.log("src/a.ts(3,7): error TS2322: Type X is not assignable to Y");',
+      'console.log("src/b.ts(1,1): error TS1005: semicolon expected");',
+      'process.exit(2);'
+    ].join('\n'));
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'dg1', type: 'function', function: { name: 'diagnostics_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: 'DIAG-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const dg1 = tr(readLog(m.log), 'dg1');
+    record('diag: project-local tsc shim problems parsed as file:line code msg (exit 2 still yields stdout)',
+      dg1 && dg1.c.includes('[DIAG]') && dg1.c.includes('TS2322') && dg1.c.includes('src/a.ts:3') && dg1.c.includes('src/b.ts:1'),
+      dg1 ? dg1.c : 'no result');
+    stopMock(m);
+    // bare workspace without node_modules -> no toolchain message
+    const cwd2 = freshCwd('b-diag-bare');
+    const m2 = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'dg2', type: 'function', function: { name: 'diagnostics_tool', arguments: '{}' } }] },
+      { role: 'assistant', content: 'DIAG2-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd2, timeoutMs: 60000 });
+    const dg2 = tr(readLog(m2.log), 'dg2');
+    record('diag: bare workspace (no node_modules toolchain) -> clear no-toolchain message',
+      dg2 && dg2.c.includes('no toolchain found'), dg2 ? dg2.c : 'no result');
+    stopMock(m2);
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);
