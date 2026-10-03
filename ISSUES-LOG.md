@@ -50,7 +50,7 @@
 | A9 | Ralph 循环复用 MAX_RETRIES | ✅ 独立 RALPH_ITERATIONS |
 | A10 | /bye 不清理 cron/dream 锁 | ✅ 退出时停止定时器/删锁/拒绝新任务 |
 | A11 | glob/grep 仅匹配文件名 | ✅ 目录感知 globToRegex（`src/**/*.js` 语义） |
-| A12 | 解析器怪癖：空 `--prompt ""` 静默进 REPL；未知 flag 并入任务文本 | 🔶 空 prompt 已 fail-fast（index.js:56，exit 1）；词序重排保留为两遍解析的既定设计，严格模式另立条目 |
+| A12 | 解析器怪癖：空 `--prompt ""` 静默进 REPL；未知 flag 并入任务文本 | ⛔ 用户决策（2026-10-03）：严格解析模式不做——两遍解析的词序重排为既定设计保留；空 prompt fail-fast 部分此前已修（index.js:56 exit 1） |
 | A13 | HTTP content 非字符串字面化为 "[object Object]" | ✅ JSON.stringify 回退 |
 
 ### B 系列：决策（全部关闭）
@@ -157,7 +157,7 @@
 | P2-14 | README/INSTALL | 打包机需现代 Node（pack-offline 用 rmSync）未声明 | ⬜ |
 | P2-15 | ask_user_tool | 非交互模式返回 "skipped"，模型可能误读为已作答 | ⬜（改强指令文案） |
 | P2-16 | webui.html:345,400 | 死代码 var keyOk / var sessionPath；.cursor 样式未定义 | ⬜ |
-| P2-17 | .npmignore | 已决策不发 npm，文件去留未决 | ⬜ |
+| P2-17 | .npmignore | 已决策不发 npm，文件去留未决 | ✅ 用户决策执行（2026-10-03）：已删除。文件仅一行 .env、只在 npm 发布时生效，B5 已决策不发布；.env 已由 .gitignore 覆盖，无损失 |
 
 ### 方向性优化建议（OPT）
 
