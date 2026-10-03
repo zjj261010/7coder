@@ -1330,5 +1330,81 @@ scenarios.push({
   }
 });
 
+// --- B26: AST-09 event loop stays responsive during a long command ---
+scenarios.push({
+  name: 'loopfree',
+  fn: async () => {
+    const cwd = freshCwd('b-loopfree');
+    const pad = 'final reply padded past the summary floor for the budget skip. ';
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'lf1', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'ping -n 4 127.0.0.1' }) } }] },
+      { role: 'assistant', content: 'LOOPFREE-DONE ' + pad.repeat(5) },
+      { role: 'assistant', content: 'lf-summary' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 431;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'k', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', HEAVY_MODEL: 'lf-model', LIGHT_MODEL: 'lf-model', MAX_RETRIES: '1', HTTP_PORT: String(srvPort), PERMISSION_MODE: 'bypass' }),
+      cwd, stdio: 'ignore'
+    });
+    try {
+      await new Promise(r => setTimeout(r, 2500));
+      // fire the chat request WITHOUT awaiting it - the mock's first reply is
+      // a run_command tool call that sleeps ~3s (ping -n 4)
+      const chatP = httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] });
+      await new Promise(r => setTimeout(r, 800)); // command is now mid-flight
+      const t0 = Date.now();
+      const info = await httpReq(srvPort, 'GET', '/api/info', null);
+      const infoMs = Date.now() - t0;
+      record('loopfree: /api/info answers while a command runs (event loop not blocked)', info.status === 200 && infoMs < 2000, 'status=' + info.status + ' ms=' + infoMs + ' (sync execSync would freeze >=3000ms)');
+      const chat = await chatP;
+      record('loopfree: long-command chat request completes normally', chat.status === 200 && chat.body.includes('LOOPFREE-DONE'), 'status=' + chat.status);
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
+// --- B27: AST-10 bounded body reader - immediate 413, no accumulation ---
+scenarios.push({
+  name: 'bodycap',
+  fn: async () => {
+    const cwd = freshCwd('b-bodycap');
+    const m = startMock([{ role: 'assistant', content: 'BODYCAP-DONE ' + 'bodycap reply padded past the summary floor. '.repeat(5) }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 433;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'k', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', HEAVY_MODEL: 'bc-model', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    const postRaw = (path, bodyStr) => new Promise((resolve, reject) => {
+      const data = Buffer.from(bodyStr, 'utf8');
+      const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': data.length } },
+        res => { let out = ''; res.on('data', d => out += d); res.on('end', () => resolve({ status: res.statusCode, body: out })); });
+      req.on('error', reject);
+      req.write(data); req.end();
+    });
+    try {
+      await new Promise(r => setTimeout(r, 2500));
+      const big = JSON.stringify({ id: 'x', approved: true, pad: 'a'.repeat(2 * 1024 * 1024) }); // 2MB > 1MB route cap
+      const over = await postRaw('/api/approve', big);
+      record('bodycap: 2MB POST to /api/approve rejected 413', over.status === 413, 'status=' + over.status);
+      const alive = await httpReq(srvPort, 'GET', '/api/info', null);
+      record('bodycap: server responsive right after the 413', alive.status === 200, 'status=' + alive.status);
+      const small = await postRaw('/api/approve', JSON.stringify({ id: 'nope', approved: true }));
+      record('bodycap: small POST still processed (400 unknown id, not 413)', small.status === 400 && /no pending approval/.test(small.body), 'status=' + small.status + ' body=' + small.body.substring(0, 80));
+      const chatOver = await postRaw('/v1/chat/completions', JSON.stringify({ messages: [{ role: 'user', content: 'b'.repeat(11 * 1024 * 1024) }] }));
+      record('bodycap: 11MB chat body rejected 413', chatOver.status === 413, 'status=' + chatOver.status);
+      const chatOk = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'hi' }] });
+      record('bodycap: normal chat still works after the caps', chatOk.status === 200 && chatOk.body.includes('BODYCAP-DONE'), 'status=' + chatOk.status);
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);

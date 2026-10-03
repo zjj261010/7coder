@@ -632,6 +632,36 @@ function withUtf8Codepage(cmd) {
   return process.platform === 'win32' ? 'chcp 65001>nul & ' + cmd : cmd;
 }
 
+// AST-09: async child-process runner. The model-facing command tools must
+// never block the event loop - under the old exec*Sync calls one long command
+// froze HTTP health checks, approvals and cancellation for its whole 5-minute
+// timeout. Semantics preserved from the sync versions: cwd=launchDir, 300s
+// timeout, 10MB maxBuffer, utf8. `kill` lets a cancelled request stop the OS
+// process instead of orphaning it.
+function runCommandAsync(spec, opts) {
+  let child = null;
+  const promise = new Promise(resolve => {
+    const base = Object.assign({ encoding: 'utf8', cwd: launchDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024 }, opts || {});
+    const done = (error, stdout, stderr) => resolve({ error, stdout: stdout || '', stderr: stderr || '' });
+    try {
+      child = spec.args
+        ? child_process.execFile(spec.file, spec.args, base, done)
+        : child_process.exec(spec.cmd, base, done);
+    } catch (e) { resolve({ error: e, stdout: '', stderr: '' }); }
+  });
+  return { promise, kill: () => { try { if (child) child.kill(); } catch (e) {} } };
+}
+// Race a running command against the request's cancellation token: poll and
+// kill the child, then surface the same aborted marker the step boundary uses.
+async function awaitCommandCancellable(runner, cancelled) {
+  if (!cancelled) return { r: await runner.promise, aborted: false };
+  const poll = setInterval(() => { if (cancelled()) { try { runner.kill(); } catch (e) {} } }, 250);
+  try {
+    const r = await runner.promise;
+    return { r, aborted: cancelled() };
+  } finally { clearInterval(poll); }
+}
+
 // Converts a glob pattern to an anchored case-insensitive regex with standard
 // semantics: `**` spans directory separators, `*` and `?` stay within one
 // segment, everything else is escaped literally. Backslashes in the pattern
@@ -1143,7 +1173,7 @@ Reply ONLY with YES or NO.`;
 // ====================== TOOL EXECUTION ======================
 // `conversation` is the current message array (used by snip_tool); tools that
 // spawn their own sub-conversations must NOT push into it mid-tool-call.
-async function executeToolRaw(name, args, conversation, approvalBridge) {
+async function executeToolRaw(name, args, conversation, approvalBridge, cancelled) {
   if (name === 'read_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path || ''));
@@ -1219,12 +1249,11 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
     let cmd = args.command || '';
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') console.log(`[WARN] Running: ${cmd}`);
 
-    try {
-      const output = child_process.execSync(withUtf8Codepage(cmd), { encoding: 'utf8', cwd: launchDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
-      return `Command OK:\n${output}`;
-    } catch (e) {
-      return `[ERROR] Command failed:\n${e.message}\n${e.stderr || ''}`;
-    }
+    // AST-09: async exec - a long command no longer freezes the HTTP server.
+    const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ cmd: withUtf8Codepage(cmd) }), cancelled);
+    if (aborted) return '[aborted: client disconnected]';
+    if (r.error) return `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`;
+    return `Command OK:\n${r.stdout}`;
   }
 
   if (name === 'bash_tool') {
@@ -1234,12 +1263,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
     if (!bash) {
       return 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.';
     }
-    try {
-      const output = child_process.execFileSync(bash, ['-c', String(cmd)], { encoding: 'utf8', cwd: launchDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
-      return `Command OK:\n${output}`;
-    } catch (e) {
-      return `[ERROR] Command failed:\n${e.message}\n${e.stderr || ''}`;
-    }
+    const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: bash, args: ['-c', String(cmd)] }), cancelled);
+    if (aborted) return '[aborted: client disconnected]';
+    if (r.error) return `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`;
+    return `Command OK:\n${r.stdout}`;
   }
 
   if (name === 'powershell_tool') {
@@ -1248,15 +1275,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
     }
     let cmd = args.command || '';
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') console.log(`[WARN] Running (PowerShell): ${cmd.substring(0, 200)}`);
-    try {
-      // -EncodedCommand takes Base64 UTF-16LE: immune to quoting/injection issues
-      // and supported since PowerShell 2.0 (Windows 7).
-      const encoded = Buffer.from(String(cmd), 'utf16le').toString('base64');
-      const output = child_process.execSync(`powershell -NoProfile -NonInteractive -EncodedCommand ${encoded}`, { encoding: 'utf8', cwd: launchDir, timeout: 300000, maxBuffer: 10 * 1024 * 1024 });
-      return `Command OK:\n${output}`;
-    } catch (e) {
-      return `[ERROR] Command failed:\n${e.message}\n${e.stderr || ''}`;
-    }
+    // -EncodedCommand takes Base64 UTF-16LE: immune to quoting/injection issues
+    // and supported since PowerShell 2.0 (Windows 7).
+    const encoded = Buffer.from(String(cmd), 'utf16le').toString('base64');
+    const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: 'powershell', args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded] }), cancelled);
+    if (aborted) return '[aborted: client disconnected]';
+    if (r.error) return `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`;
+    return `Command OK:\n${r.stdout}`;
   }
 
   if (name === 'glob_tool') {
@@ -1284,10 +1309,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
   }
 
   if (name === 'process_list_tool') {
-    try {
-      const cmd = process.platform === 'win32' ? 'tasklist' : 'ps -eo pid,comm';
-      return child_process.execSync(withUtf8Codepage(cmd), { encoding: 'utf8', timeout: 30000, maxBuffer: 10 * 1024 * 1024 });
-    } catch (e) { return `Process list error: ${e.message}`; }
+    // AST-09: async - tasklist can take seconds on a busy system.
+    const { r } = await awaitCommandCancellable(runCommandAsync({ cmd: withUtf8Codepage(process.platform === 'win32' ? 'tasklist' : 'ps -eo pid,comm') }), cancelled);
+    if (r.error) return `Process list error: ${r.error.message}`;
+    return r.stdout;
   }
   if (name === 'process_kill_tool') {
     const pid = parseInt(args.pid, 10);
@@ -1797,7 +1822,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge) {
         continue;
       }
       const stepArgs = (st.args && typeof st.args === 'object' && !Array.isArray(st.args)) ? st.args : {};
-      const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation, approvalBridge);
+      const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation, approvalBridge, cancelled);
       const firstLine = String(res).split('\n')[0];
       transcript.push('step ' + (i + 1) + ' (' + toolName + '): ' + firstLine.substring(0, 160));
       if (!st.optional && toolFailed(res)) {
@@ -1852,11 +1877,14 @@ function parseTestOutput(text) {
     console.log("[TESTS] running: " + command);
     let out = "";
     let exitStatus = 0;
-    try {
-      out = child_process.execSync(command, { encoding: "utf8", cwd: launchDir, timeout: timeoutMs, maxBuffer: 10 * 1024 * 1024 });
-    } catch (e) {
-      out = (e.stdout || "") + (e.stderr || "");
-      exitStatus = e.status;
+    // AST-09: async - a test run can hold the old sync call for up to 600s,
+    // freezing the whole HTTP server for its entire duration.
+    const { r: cmdR } = await awaitCommandCancellable(runCommandAsync({ cmd: command }, { timeout: timeoutMs }), cancelled);
+    // callback-args stdout/stderr are authoritative on failure (the error
+    // object's copies are not populated consistently across exec backends)
+    out = (cmdR.stdout || "") + (cmdR.stderr || "");
+    if (cmdR.error) {
+      exitStatus = (typeof cmdR.error.code === 'number') ? cmdR.error.code : (cmdR.error.status !== undefined ? cmdR.error.status : 1);
     }
     const r = parseTestOutput(out);
     if (!r.parsed) return "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.'\n'Output tail:'\n'" + out.substring(out.length - 2000);
@@ -2172,12 +2200,12 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
 // ====================== SAFE TOOL EXECUTION ======================
 // Auditing wrapper: records every tool call (args preview, status, duration)
 // to .7coder/audit.jsonl, then delegates to the real implementation.
-async function safeExecuteTool(toolCall, conversation, approvalBridge) {
+async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled) {
   const t0 = Date.now();
   const func = toolCall.function;
   let argsPreview = {};
   try { const a = JSON.parse(func.arguments || '{}'); for (const k of Object.keys(a)) argsPreview[k] = String(JSON.stringify(a[k])).substring(0, 200); } catch (e) { argsPreview = { raw: String(func.arguments || '').substring(0, 200) }; }
-  const res = await safeExecuteToolInner(toolCall, conversation, approvalBridge);
+  const res = await safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled);
   const first = String(res).split('\n')[0];
   const status = (/^BLOCKED/.test(res) || /^Permission mode = denial/.test(res)) ? 'blocked'
     : /declined/i.test(res) ? 'declined'
@@ -2187,7 +2215,7 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge) {
   return res;
 }
 
-async function safeExecuteToolInner(toolCall, conversation, approvalBridge) {
+async function safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled) {
   const func = toolCall.function;
   let args;
   try { args = JSON.parse(func.arguments || '{}'); } catch (e) { return `Parse error: ${e.message}`; }
@@ -2219,7 +2247,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge) {
     }
     if (!protectedRead && !protectedWrite && (AUTO_SAFE_TOOLS.includes(name) || isAutoLogWrite)) {
       console.log(`[TOOL] Auto-executing safe tool: ${name}`);
-      return await executeToolRaw(name, args, conversation, approvalBridge);
+      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
     }
 
     if (['run_command', 'bash_tool', 'powershell_tool', 'task_create_tool'].includes(name)) {
@@ -2300,7 +2328,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge) {
     }
 
     console.log(`[TOOL] Executing approved tool: ${name}`);
-    return await executeToolRaw(name, args, conversation);
+    return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
   } catch (e) {
     // Never let a tool exception kill the whole conversation - feed the error
     // back to the model so it can react.
@@ -2471,7 +2499,7 @@ async function processWithTools(currentMessages, opts = {}) {
       const calls = assistantMsg.tool_calls;
       if (calls.length > 1 && calls.every(tc => READ_ONLY.has(tc.function.name))) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge).catch(e => 'Tool error: ' + e.message)));
+        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled).catch(e => 'Tool error: ' + e.message)));
         for (let i = 0; i < calls.length; i++) {
           currentMessages.push({ role: 'tool', tool_call_id: calls[i].id, content: capToolResult(results[i]) });
         }
@@ -2479,7 +2507,7 @@ async function processWithTools(currentMessages, opts = {}) {
       }
       for (const tc of calls) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const result = await safeExecuteTool(tc, currentMessages, approvalBridge);
+        const result = await safeExecuteTool(tc, currentMessages, approvalBridge, cancelled);
         currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(result) });
       }
       continue;
@@ -2799,6 +2827,41 @@ function conversationFromClient(clientMessages) {
 }
 
 // ====================== HTTP SERVER ======================
+// AST-10: bounded JSON body reader shared by every POST route. Bytes are
+// counted as they arrive (utf8-decoded chunk lengths); on overflow the 413
+// response goes out immediately, later chunks are drained without
+// accumulating, and a safety timer closes the socket if the client never
+// finishes. Before this, the chat route only set a flag and kept growing the
+// string until 'end', and the other POST routes had no cap at all.
+const BODY_LIMIT_DEFAULT = 1024 * 1024; // 1MB is plenty for every non-chat route
+function readJsonBody(req, res, limitBytes, then) {
+  let body = '';
+  let over = false;
+  let safety = null;
+  req.setEncoding('utf8');
+  req.on('data', c => {
+    if (over) return; // keep draining so the client can finish and read the 413
+    body += c;
+    if (Buffer.byteLength(body, 'utf8') > limitBytes) {
+      over = true;
+      body = '';
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Request body too large (limit ' + limitBytes + ' bytes)' } }));
+      safety = setTimeout(() => { try { req.destroy(); } catch (e) {} }, 60000);
+    }
+  });
+  req.on('end', () => {
+    if (over) { if (safety) clearTimeout(safety); return; }
+    try { then(body); } catch (e) {
+      try {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      } catch (e2) {}
+    }
+  });
+  req.on('error', () => { if (safety) clearTimeout(safety); });
+}
+
 function startHttpServer() {
   const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(HTTP_BIND);
   if (!isLoopback && !HTTP_API_KEY) {
@@ -2867,10 +2930,7 @@ function startHttpServer() {
         res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
         return;
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const wanted = String(JSON.parse(body).file || "");
           if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
@@ -2895,10 +2955,7 @@ function startHttpServer() {
         res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
         return;
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const wanted = String(JSON.parse(body).file || "");
           if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
@@ -2921,10 +2978,7 @@ function startHttpServer() {
         res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
         return;
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const j = JSON.parse(body);
           const id = String(j.id || '');
@@ -2947,10 +3001,7 @@ function startHttpServer() {
         res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
         return;
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const msgs = JSON.parse(body).messages;
           if (!Array.isArray(msgs)) throw new Error("messages must be an array");
@@ -2981,10 +3032,7 @@ function startHttpServer() {
         res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
         return;
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const j = JSON.parse(body);
           const target = j.target;
@@ -3047,10 +3095,7 @@ function startHttpServer() {
         res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
         return;
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const j = JSON.parse(body);
           const updates = {};
@@ -3114,10 +3159,7 @@ function startHttpServer() {
         res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
         return;
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const j = JSON.parse(body);
           const profiles = j.profiles;
@@ -3152,10 +3194,7 @@ function startHttpServer() {
           return;
         }
       }
-      let body = '';
-      req.setEncoding('utf8');
-      req.on('data', c => { body += c; });
-      req.on('end', () => {
+      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
           const wanted = (JSON.parse(body).mode || '').toLowerCase().trim();
           if (!VALID_PERMISSION_MODES.includes(wanted)) {
@@ -3186,21 +3225,12 @@ function startHttpServer() {
           return;
         }
       }
-      let body = '';
-      let oversized = false;
-      req.setEncoding('utf8');
-      req.on('data', chunk => {
-        body += chunk;
-        if (body.length > 10 * 1024 * 1024) oversized = true;
-      });
-      req.on('end', async () => {
-        let wantsStream = false;
-        try {
-          if (oversized) {
-            res.writeHead(413, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: 'Request body too large' } }));
-            return;
-          }
+      // AST-10: bounded reader - bytes are counted as they arrive and the
+      // 413 goes out IMMEDIATELY on overflow (chunks keep draining so the
+      // client can finish and read the response, but nothing accumulates).
+      readJsonBody(req, res, 10 * 1024 * 1024, async body => {
+          let wantsStream = false;
+          try {
           const data = JSON.parse(body);
           const reqModel = (typeof data.model === 'string' && data.model.trim()) ? data.model.trim().substring(0, 200) : HEAVY_MODEL;
           wantsStream = data.stream === true;
@@ -3273,20 +3303,23 @@ function startHttpServer() {
               try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; clearInterval(ka); }
             }, 5000);
             const releaseGate = await requestGate(); // AST-03: serialize requests (permission globals)
+            // AST-09: keep-alive timer, pending approvals and the gate are ALL
+            // cleaned in one finally - an exception mid-stream used to leak the
+            // interval (keep-alive writes on a dead response) and the approvals.
             try {
               const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null), onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: args } }, null), approvalBridge: approvalBridge });
-              clearInterval(ka);
-              approvalBridge.dispose();
               // Give the socket-close event a moment to land when the client
               // aborted at the very end of the run - then skip the summary.
               await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
-              if (clientGone) { releaseGate(); return; } // aborted: skip summary, 7CODER.md untouched
+              if (clientGone) return; // aborted: skip summary, 7CODER.md untouched
               writeChunk({}, 'stop');
               res.write('data: [DONE]\n\n');
               res.end();
               const newSummary = await summarizeAction(rawPrompt, result);
               updateCompleteSummary(newSummary);
             } finally {
+              clearInterval(ka);
+              approvalBridge.dispose();
               releaseGate();
             }
             return;
