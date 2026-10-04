@@ -798,8 +798,12 @@ function loadPermRules() {
       if (!Array.isArray(list)) continue;
       const target = bucket === 'protected_extra' ? permRules.protectedExtra : permRules[bucket];
       for (const raw of list) {
-        if (seen[String(raw)]) continue;
-        seen[String(raw)] = true;
+        // A2-02: the dedup key MUST include the bucket - a bare-string key
+        // let an install-level allow swallow a workspace deny of the SAME
+        // rule text (the deny was read second and silently dropped).
+        const seenKey = bucket + '|' + String(raw);
+        if (seen[seenKey]) continue;
+        seen[seenKey] = true;
         let c = null;
         if (bucket === 'protected_extra') {
           // pure path pattern - no tool prefix. Matches the relative path
@@ -1267,6 +1271,13 @@ function scheduleCronJob(jobId, schedule, command) {
   const job = { schedule, command, parsed, nextRun: null, timer: null, runs: 0, lastError: null, stopped: false };
   const runCommand = () => {
     job.runs++;
+    // OP2-2: re-check at FIRE time too - the job was vetted when created,
+    // but isSuperDangerous patterns or the command string must not run just
+    // because they passed an older, narrower gate (config drift defense).
+    if (isSuperDangerous(command)) {
+      job.lastError = 'BLOCKED at fire time: super-dangerous command.';
+      return;
+    }
     job.child = child_process.exec(command, { cwd: launchDir, timeout: 300000 }, (err) => {
       if (err) job.lastError = err.message;
       job.child = null;
@@ -2247,6 +2258,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const content = typeof args.content === 'string' ? args.content : '';
       if (!memoryTopicValid(topic)) return 'Tool error: memory_tool save requires a topic of [a-z0-9][a-z0-9_-] (max 40 chars)';
       if (!content.trim()) return 'Tool error: memory_tool save requires non-empty content';
+      const guard = memoryPathGuard(topic); // A2-01: junction/protected_extra fail closed
+      if (guard) return guard;
       const existed = readMemoryFile(topic) !== null;
       const MAX = 32 * 1024;
       saveMemoryFile(topic, content.length > MAX ? content.substring(0, MAX) + '\n[truncated at 32KB]' : content);
@@ -2255,6 +2268,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (action === 'read') {
       const topic = String(args.topic || '').trim();
       if (!memoryTopicValid(topic)) return 'Tool error: invalid topic';
+      const guard = memoryPathGuard(topic); // A2-01
+      if (guard) return guard;
       const body = readMemoryFile(topic);
       if (body === null) return `Tool error: no memory note named "${topic}"`;
       return `## ${topic}\n${body}`;
@@ -2271,6 +2286,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (action === 'delete') {
       const topic = String(args.topic || '').trim();
       if (!memoryTopicValid(topic)) return 'Tool error: invalid topic';
+      const guard = memoryPathGuard(topic); // A2-01
+      if (guard) return guard;
       try { fs.unlinkSync(memoryFilePath(topic)); return `[OK] Memory note deleted: ${topic}.md`; }
       catch (e) { return `Tool error: no memory note named "${topic}"`; }
     }
@@ -2340,7 +2357,12 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         }
         argsToken = json;
       }
-      return await executeToolRaw('run_command', { command: `npx ${effectiveNpx} ${toolName} ${argsToken}`.trim() }, conversation);
+      // A2-17: the legacy npx bridge composes a shell command - run it through
+      // the hard rail explicitly (calling executeToolRaw directly skips every
+      // check in safeExecuteToolInner).
+      const npxCmd = `npx ${effectiveNpx} ${toolName} ${argsToken}`.trim();
+      if (isSuperDangerous(npxCmd)) return 'BLOCKED: Super-dangerous command prevented (even in danger mode).';
+      return await executeToolRaw('run_command', { command: npxCmd }, conversation);
     } else {
       return `MCP error: no endpoint configured. Add servers to .7coder/mcp.json (stdio, recommended - see README), or set MCP_SERVER_URLS / MCP_NPX_PKGS in .env, or pass server/mcp_url/npx_pkg parameters. Args: ${JSON.stringify(toolArgs)}`;
     }
@@ -2621,11 +2643,15 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 // ====================== TEST RUNNER PARSING (D2) ======================
 // Turns noisy test-runner output into structured counts the model can act on.
 function parseTestOutput(text) {
-  const t = String(text);
+  // OP2-1: cap the scanned text first - the old (\d+)+ patterns (now fixed)
+  // were an exponential-backtracking regex, and even a linear scan has no
+  // business walking an unbounded command dump. Counts live near the summary,
+  // so the tail is where they appear.
+  const t = String(text).substring(String(text).length > 65536 ? String(text).length - 65536 : 0);
   const num = (re) => { const m = t.match(re); return m ? parseInt(m[1], 10) : null; };
-  let passed = num(/(\d+)+\s+pass(?:ing|ed)?/i);
-  let failed = num(/(\d+)+\s+fail(?:ing|ed)?/i) || num(/#\s*fail\s+(\d+)/i);
-  const skipped = num(/(\d+)+\s+skipped/i) || num(/#\s*skipped\s+(\d+)/i);
+  let passed = num(/(\d+)\s+pass(?:ing|ed)?/i);
+  let failed = num(/(\d+)\s+fail(?:ing|ed)?/i) || num(/#\s*fail\s+(\d+)/i);
+  const skipped = num(/(\d+)\s+skipped/i) || num(/#\s*skipped\s+(\d+)/i);
   if (passed === null) passed = num(/#\s*pass\s+(\d+)/i);
   const failures = [];
   for (const line of t.split('\n')) {
@@ -3116,7 +3142,11 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
     }
 
-    if (['run_command', 'bash_tool', 'powershell_tool', 'task_create_tool'].includes(name)) {
+    // OP2-2/A2-17: EVERY tool that ultimately reaches a shell command goes
+    // through the hard rail here - cron tools exec periodically, run_tests
+    // execs a user-given command; leaving them off this list let bypass mode
+    // schedule `rm -rf /` on a timer (README promises even bypass blocks it).
+    if (['run_command', 'bash_tool', 'powershell_tool', 'task_create_tool', 'schedule_cron_tool', 'cron_create_tool', 'run_tests_tool'].includes(name)) {
       if (isSuperDangerous(args.command)) return 'BLOCKED: Super-dangerous command prevented (even in danger mode).';
     }
 
@@ -3458,6 +3488,36 @@ const MEMORY_MAX_FILES = 20;
 const MEMORY_RECALL_UNITS = parseInt(process.env.MEMORY_RECALL_CHARS, 10) || 3000;
 function memoryTopicValid(t) { return /^[a-z0-9][a-z0-9_-]{0,39}$/i.test(String(t || '')); }
 function memoryFilePath(topic) { return path.join(MEMORY_DIR, topic + '.md'); }
+// A2-01: the memory store is INSIDE the workspace by construction - verify
+// that against the real filesystem, not the lexical path. A junction planted
+// at .7coder/memory (or a symlinked note file) must fail closed, never read
+// or write outside. Returns null when the real path is safely inside, or an
+// error string when it is not.
+function memoryPathGuard(topic) {
+  try {
+    const realNote = realPathSafe(memoryFilePath(topic));
+    const realStore = realPathSafe(MEMORY_DIR);
+    // The STORE must itself sit inside the workspace: a junction planted at
+    // .7coder/memory redirects both note and store outside together, which
+    // would pass a naive note-inside-store check.
+    if (!isInsideDir(getLaunchDirReal(), realStore)) {
+      return 'Tool error: .7coder/memory resolves outside the workspace (junction/symlink?) - refused';
+    }
+    if (!isInsideDir(realStore, realNote)) {
+      return 'Tool error: memory note path resolves outside .7coder/memory (junction/symlink?) - refused';
+    }
+    const rel = path.relative(launchDir, realNote).split(path.sep).join('/');
+    const base = path.basename(rel);
+    for (const r of permRules.protectedExtra) {
+      if (r.argRe.test(rel) || r.argRe.test(base)) {
+        return `Tool error: memory note "${topic}" matches a protected_extra pattern - refused`;
+      }
+    }
+    return null; // safe
+  } catch (e) {
+    return 'Tool error: memory path cannot be resolved safely - refused';
+  }
+}
 function listMemoryTopics() {
   try {
     if (!fs.existsSync(MEMORY_DIR)) return [];

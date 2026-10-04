@@ -2128,5 +2128,113 @@ scenarios.push({
   }
 });
 
+// --- B40: review-batch-1 security core (OP2-1 ReDoS / OP2-2 cron rail / A2-01 memory boundary / A2-02 deny swallow) ---
+scenarios.push({
+  name: 'sec1',
+  fn: async () => {
+    // OP2-1: extract parseTestOutput and time it on the evil shape (32 digits).
+    // On HEAD ((\d+)+) this takes seconds-to-minutes; fixed must be < 2s.
+    const src = fs.readFileSync(IDX, 'utf8');
+    const fnSrc = (() => {
+      const s0 = src.indexOf('function parseTestOutput');
+      const e0 = src.indexOf('\n}', s0);
+      return src.substring(s0, e0 + 2);
+    })();
+    const pto = eval('(' + fnSrc + ')');
+    const t0 = Date.now();
+    const evil = pto('9'.repeat(32) + '!');
+    const evilMs = Date.now() - t0;
+    record('sec1: 32-digit run through parseTestOutput completes fast (ReDoS fixed)', evilMs < 2000, 'ms=' + evilMs);
+    record('sec1: no nested quantifier survives in the parser source', !/\(\\d\+\)\+/.test(fnSrc.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')), fnSrc.substring(0, 100));
+    const shape = pto('Tests: 1 failed, 3 passed, 4 total\nFAIL x\nnot ok 1 a');
+    record('sec1: summary shapes still parse after the fix', shape.passed === 3 && shape.failed === 1, JSON.stringify(shape).substring(0, 60));
+
+    // OP2-2 + A2-17: cron / run_tests now hit the super-dangerous rail even in bypass
+    const cwd2 = freshCwd('b-sec1b');
+    const tc = (id, name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: name, arguments: JSON.stringify(args) } }] });
+    const m2 = startMock([
+      tc('s1a', 'cron_create_tool', { schedule: '30s', command: 'echo mkfs REVIEW-NONEXEC-PROBE' }),
+      tc('s1b', 'run_tests_tool', { command: 'echo mkfs REVIEW-NONEXEC-PROBE' }),
+      tc('s1c', 'mcp_tool', { tool_name: 'x', npx_pkg: 'pkg', args: {} }),
+      { role: 'assistant', content: 'SEC1-DONE ' + 'sec1 scenario reply padded past the summary floor for the budget skip. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd2, timeoutMs: 60000 });
+    const l2 = readLog(m2.log);
+    const s1a = tr(l2, 's1a'), s1b = tr(l2, 's1b'), s1c = tr(l2, 's1c');
+    record('sec1: cron_create with dangerous command BLOCKED in bypass', s1a && s1a.c.includes('BLOCKED: Super-dangerous'), s1a ? s1a.c.substring(0, 80) : 'no result');
+    record('sec1: run_tests with dangerous command BLOCKED in bypass', s1b && s1b.c.includes('BLOCKED: Super-dangerous'), s1b ? s1b.c.substring(0, 80) : 'no result');
+    // npx legacy composes 'npx pkg x' - not dangerous by pattern; just assert it still runs the legacy path shape
+    record('sec1: npx legacy non-dangerous path still executes (no false positive)', s1c && !/BLOCKED: Super-dangerous/.test(s1c.c), s1c ? s1c.c.substring(0, 80) : 'no result');
+    stopMock(m2);
+
+    // A2-01: junction at .7coder/memory must fail closed on read/save/delete
+    const cwd3 = freshCwd('b-sec1c');
+    const outsideDir = path.join(ROOT, 'sec1-outside-' + Date.now());
+    fs.mkdirSync(path.join(cwd3, '.7coder'), { recursive: true });
+    fs.mkdirSync(outsideDir, { recursive: true });
+    fs.writeFileSync(path.join(outsideDir, 'review.md'), 'OUTSIDE-ONLY-FAKE-DATA');
+    const mk = spawnSync('cmd', ['/c', 'mklink', '/J', path.join(cwd3, '.7coder', 'memory'), outsideDir]);
+    if (mk.status !== 0) {
+      record('sec1: junction probe setup (skip if mklink unavailable)', true, 'mklink failed - skipping junction assertions: ' + String(mk.stderr || '').substring(0, 60));
+    } else {
+      const m3 = startMock([
+        tc('s2a', 'memory_tool', { action: 'read', topic: 'review' }),
+        tc('s2b', 'memory_tool', { action: 'save', topic: 'review', content: 'CHANGED-OUTSIDE' }),
+        { role: 'assistant', content: 'SEC1C-DONE ' + 'sec1 junction reply padded past the summary floor for budget skip. '.repeat(5) }
+      ]);
+      await new Promise(r => setTimeout(r, 600));
+      await runCli({ port: m3.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd3, timeoutMs: 60000 });
+      const l3 = readLog(m3.log);
+      const s2a = tr(l3, 's2a'), s2b = tr(l3, 's2b');
+      record('sec1: memory read through junction refused', s2a && s2a.c.indexOf('Tool error:') === 0 && !s2a.c.includes('OUTSIDE-ONLY-FAKE-DATA'), s2a ? s2a.c.substring(0, 80) : 'no result');
+      record('sec1: memory save through junction refused, outside file untouched', s2b && s2b.c.indexOf('Tool error:') === 0 && fs.readFileSync(path.join(outsideDir, 'review.md'), 'utf8') === 'OUTSIDE-ONLY-FAKE-DATA', (s2b ? s2b.c.substring(0, 60) : 'no result') + ' outside=' + fs.readFileSync(path.join(outsideDir, 'review.md'), 'utf8').substring(0, 20));
+      stopMock(m3);
+    }
+    // protected_extra over a memory topic (no junction needed)
+    const cwd4 = freshCwd('b-sec1d');
+    fs.mkdirSync(path.join(cwd4, '.7coder', 'memory'), { recursive: true });
+    fs.writeFileSync(path.join(cwd4, '.7coder', 'permissions.json'), JSON.stringify({ protected_extra: ['.7coder/memory/secretnote.md'] }));
+    const m4 = startMock([
+      tc('s3a', 'memory_tool', { action: 'save', topic: 'secretnote', content: 'SHOULD-NOT-WRITE' }),
+      { role: 'assistant', content: 'SEC1D-DONE ' + 'sec1 protected reply padded past the summary floor for budget skip. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m4.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd4, timeoutMs: 60000 });
+    const s3a = tr(readLog(m4.log), 's3a');
+    record('sec1: protected_extra pattern blocks the matching memory note', s3a && s3a.c.includes('protected_extra') && !fs.existsSync(path.join(cwd4, '.7coder', 'memory', 'secretnote.md')), s3a ? s3a.c.substring(0, 80) : 'no result');
+    stopMock(m4);
+    try { spawnSync('cmd', ['/c', 'rmdir', path.join(cwd3, '.7coder', 'memory')]); } catch (e) {}
+    try { fs.rmSync(outsideDir, { recursive: true, force: true }); } catch (e) {}
+
+    // A2-02: install-level allow must NOT swallow a workspace deny of the same text.
+    // The install dir is fixed, so simulate via the workspace file ONLY when the
+    // install file does not exist; otherwise this leg is not runnable - record skip.
+    const installPerm = path.join(path.dirname(IDX), 'permissions.json');
+    if (fs.existsSync(installPerm)) {
+      record('sec1: cross-layer deny test (skipped - install permissions.json exists)', true, 'manual environment, not a failure');
+    } else {
+      // Temporarily create an install-level allow, run, then remove it.
+      fs.writeFileSync(installPerm, JSON.stringify({ allow: ['write_file(blocked.txt)'] }));
+      try {
+        const cwd5 = freshCwd('b-sec1e');
+        fs.mkdirSync(path.join(cwd5, '.7coder'), { recursive: true });
+        fs.writeFileSync(path.join(cwd5, '.7coder', 'permissions.json'), JSON.stringify({ deny: ['write_file(blocked.txt)'] }));
+        const m5 = startMock([
+          tc('s4a', 'write_file', { path: 'blocked.txt', content: 'X' }),
+          { role: 'assistant', content: 'SEC1E-DONE ' + 'sec1 layers reply padded past the summary floor for budget skip. '.repeat(5) }
+        ]);
+        await new Promise(r => setTimeout(r, 600));
+        await runCli({ port: m5.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd5, timeoutMs: 60000 });
+        const s4a = tr(readLog(m5.log), 's4a');
+        record('sec1: workspace deny beats install-level allow of the same rule text', s4a && s4a.c.includes('BLOCKED by user permission rule') && !fs.existsSync(path.join(cwd5, 'blocked.txt')), s4a ? s4a.c.substring(0, 80) : 'no result');
+        stopMock(m5);
+      } finally {
+        try { fs.unlinkSync(installPerm); } catch (e) {}
+      }
+    }
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);
