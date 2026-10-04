@@ -242,6 +242,7 @@ work but are legacy - real MCP ecosystem servers need the stdio config above.
 ## Other Features
 
 - **7CODER.md** — AI automatically creates and updates this file in the project root with all findings and progress.
+- **Layered memory (GAP-9)** — durable topic notes in `.7coder/memory/<topic>.md` via `memory_tool {action:save|read|list|delete, topic, content}`; at task start notes whose keywords match your prompt are recalled automatically (plus a topic index). Dream sessions may consolidate them. CJK-aware context budgeting (han chars count x2 toward CONTEXT_CHARS).
 - **Structured audit log** - every tool call and permission change is appended as JSON lines to `.7coder/audit.jsonl` (machine-readable, 5 MB rotation, `AUDIT_LOG=false` to disable).
 - **Ralph Wiggum self-iteration loop** — still available (`ENABLE_RALPH_MODE=true`)
 - **Anti-frustration system** — detects when you’re mad and makes the model extra calm/helpful

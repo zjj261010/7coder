@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-04 发布轮，**v2.17.0** 已打 tag）：单文件 index.js（~4400 行）；双运行时全绿——Node 24 十套件 498 项、Node 13.14.0（包内 runtime）A 85 + B 190 + dom-sim；真实端点 qwen3.7-plus：K 9/9 + R 10/10（首次验证 3.7-plus，此前仅 3.8-max 验证过）；离线包 dist/7coder-v2.17.0-offline-win64.zip（21.6MB）
+> 规模快照（2026-10-04 晚）：单文件 index.js（~4520 行），v2.17.0（发布后追加 GAP-9/13 轮，下个发布并入）；A–J 全绿 509 项（A 85/B 201/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）+ K 9 + R 10；离线包 v2.17.0 仍为当前发布（本轮改动未重打包，属 v2.18 候选内容）
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 179 |
+| runner-b.js | 191 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **471** |
+| **合计** | **483** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -274,9 +274,9 @@
 |---|------|------|------|------|
 | GAP-5 | 无 LSP；编辑后错误只能等跑测试 | 修错反馈环长 | 最小版 diagnostics_tool【✅ 2026-10-03 快赢批③】：只探测并运行项目本地 node_modules 的 tsc/eslint（零网络、异步、auto-safe LOW），tsc 行解析 / eslint JSON 解析，[DIAG] 结构化输出；tsc 忽略 path 参数（单文件+项目混用会失真，schema 已注明）。shim 版 tsc 红绿验证解析（diag 2 断言）。完整 LSP 仍留 D3 | 小→大 |
 | GAP-6 | todo 只是往 TODO.md 追加文本 | 无状态流转，UI 无从展示进度 | 【✅ 2026-10-04 快赢批④（GLM+终检）】`.7coder/todos.json` {items:[{id,title,status,updated}]}（500 条上限、损坏自动重建）；todo_write_tool 改 action 式 add/update/list（旧 content 参数向后兼容）；GET /api/todos；webui 侧栏任务面板三色徽标（autoSave 成功回调刷新）。todos-api 场景 3 断言先红后绿。GLM 纠正了规格错误：todo_write_tool 本就不在 AUTO_SAFE，权限路径零改动 | 小 |
-| GAP-7 | REPL 仅固定命令；无 hooks | 无法沉淀自定义工作流，无法注入 pre/post-tool 规则 | 🔶 半完成（2026-10-04 快赢批④）：7a 斜杠命令 ✅——.7coder/commands/<name>.md 在 REPL 展开为任务（64KB 截断、名字限 [a-z0-9_-] 无遍历、未知 /x 走原逻辑），slashcmd 场景 2 断言先红后绿。7b hooks ⬜ 留主会话（与权限门排序耦合：pre-hook 应在用户 deny 之后、allow 之前还是之后需定语义） | 中 |
+| GAP-7 | REPL 仅固定命令；无 hooks | 无法沉淀自定义工作流，无法注入 pre/post-tool 规则 | 🔶 7a ✅（快赢批④：.7coder/commands/<name>.md 展开，slashcmd 2 断言）。7b hooks **降级**（2026-10-04 用户决策）：原始动机（"禁止改 src/legacy/**"式规则拦截）已被 GAP-11 deny 规则完整覆盖且语义更强（全模式生效）；剩余增量仅自定义动作（如写后 format）。保留待真实需求出现再评估，不排期 | 中 |
 | GAP-8 | usage 字段完全未用 | 无 token 可观测 | 【✅ 2026-10-03 快赢批③】sessionUsage 累计（流式末块/非流式信封两路），CLI 任务尾打印 [USAGE]、/api/info 暴露 usage 对象；mock-server 补 usage 字段（纯增量）供断言（usage-track 2 断言，红 0/7 先证）。审计入账与 web UI 面板显示为后续增量（原建议后半，未做） | 小 |
-| GAP-9 | 记忆=7CODER.md 单文件（auto-log 标记节 + dream 整理）+ BTW.md | 扁平无分层：项目事实/用户偏好/临时笔记混一处，长了靠压缩 | 分层 memory（.7coder/memory/*.md 按主题）+ 任务启动时按关键词召回注入；dream 改为整理归档 | 中 |
+| GAP-9 | 记忆=7CODER.md 单文件 + BTW.md，扁平无分层 | 项目事实/用户偏好/临时笔记混一处，长了靠压缩 | 【✅ 2026-10-04 主会话实施】`.7coder/memory/<topic>.md` 分层笔记：memory_tool {save/read/list/delete}（topic 白名单 [a-z0-9][a-z0-9_-]，auto-safe LOW——与 todo 同信任级，仅写 .7coder/memory/）；任务启动**确定性关键词召回**（无 LLM 调用，score=词重叠，命中注入 ≤5 条/3000 加权单位，附主题索引行）；write_file 对 .7coder/memory/*.md 同享 7CODER.md 自动豁免（dream 可重写）；dream 提示注入主题清单（可选整理，强制目标仍是 7CODER.md，契约不变）；MEMORY_RECALL_CHARS 可配。memory 场景 7 断言（召回命中/不串主题/索引行/CRUD×4） | 中 |
 | GAP-10 | web_search 正则抓 DDG-lite HTML | 脆弱易限流无降级 | 【✅ 2026-10-03 快赢批③】SEARCH_PROVIDER/SEARCH_API_KEY/SEARCH_ENDPOINT 三键：searxng/brave/bing 分支 + ddg 原样兜底；显式未知值报错不回退网络；Search error 前缀入 TOOL_FAIL_RE。离线假 searxng 实例验证（search-api 2 断言先红后绿）；真实 brave/bing key 未测（付费） | 小 |
 
 ### C 级——打磨与可选
@@ -285,7 +285,7 @@
 |---|------|------|------|------|
 | GAP-11 | 保护清单硬编码；权限仅四模式 | 用户不可扩展 | 【✅ 2026-10-03 主会话实施】`.7coder/permissions.json`（+安装目录 permissions.json 双层合并）：protected_extra 纯路径模式（扩展受保护清单，正斜杠跨平台）/deny/allow 规则 `tool(pattern)`。安全序：deny 全模式生效（先于 auto-safe，bypass 也拦）；allow 仅跳过审批层（硬轨之后判定，永远压不过 protected/超级危险命令/denial/deny）。无效规则启动告警并忽略。perm-rules 场景 8 断言先红后绿 | 小 |
 | GAP-12 | 缺任务级改动汇总 | 任务收尾无"改了什么"总览 | 【✅ 2026-10-03 快赢批③】taskChanges 在审计包装处收集写类工具 {tool,path,status}（HTTP 常驻模式 1000 条上限——GLM 自纠的盲区），任务成败两路都打印 [CHANGES] 清单（≤20 行）（task-changes 断言先红后绿）。任务前 git stash 检查点半项未做 | 小 |
-| GAP-13 | 上下文压缩按字符数近似（=C9 老项） | 字符≠token，CJK 尤其失真，压缩触发偏晚 | 引入轻量 tokenizer 估算（需验证 Node 13 兼容的纯 JS 实现）；或按 (字符+CJK×2) 折算近似 | 中 |
+| GAP-13 | 压缩按字符数近似（=C9） | 字符≠token，CJK 失真压缩偏晚 | 【✅ 2026-10-04 主会话实施（启发式半）】textUnits()：CJK/全角/韩文/假名码点 ×2 加权，messageSize 三处调用自动一致；中文密集会话压缩触发点与真实 token 预算对齐。cjk-ctx 场景 4 断言（提取 eval 单元级：汉字×2/混排/消息内容/tool_calls 同权重）。**剩余半**：真 tokenizer 精确估算（需引入纯 JS 依赖，暂缓——启发式已消除主要失真） | 中 |
 | GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 低优先；sessions/ 已有时间戳副本，补"从第 N 轮分叉"命令即可 | 中 |
 
 ### 与既有条目的关系

@@ -1903,5 +1903,80 @@ scenarios.push({
   }
 });
 
+// --- B36: GAP-9 layered memory (recall injection + memory_tool CRUD) ---
+scenarios.push({
+  name: 'memory',
+  fn: async () => {
+    const cwd = freshCwd('b-mem');
+    fs.mkdirSync(path.join(cwd, '.7coder', 'memory'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.7coder', 'memory', 'deploy.md'), 'DEPLOY-NOTE-MARKER use blue-green deploys on the prod cluster; never friday');
+    fs.writeFileSync(path.join(cwd, '.7coder', 'memory', 'cooking.md'), 'COOKING-NOTE-MARKER unrelated filler about pasta');
+    const tc = (id, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: 'memory_tool', arguments: JSON.stringify(args) } }] });
+    const m = startMock([
+      // task 1: prompt mentions deploy -> recall injects deploy.md, not cooking.md
+      { role: 'assistant', content: 'MEM-T1-DONE ' + 'memory scenario first reply padded past the summary floor for the budget skip. '.repeat(5) },
+      // task 2: CRUD round-trip via the tool
+      tc('mm1', { action: 'save', topic: 'conventions', content: 'CONV-NOTE prefer tabs in this repo' }),
+      tc('mm2', { action: 'list' }),
+      tc('mm3', { action: 'read', topic: 'conventions' }),
+      tc('mm4', { action: 'delete', topic: 'cooking' }),
+      { role: 'assistant', content: 'MEM-T2-DONE ' + 'memory scenario second reply padded past the summary floor for the budget skip. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    // task 1: one-shot with deploy keyword in the prompt
+    await runCli({ port: m.port, args: ['--prompt', 'help me with the deploy pipeline'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const log1 = readLog(m.log).filter(x => (x.messages || []).some(mm => mm.role === 'user'));
+    const t1user = log1.length ? String(log1[0].messages.find(mm => mm.role === 'user').content) : '';
+    record('mem: deploy-keyword prompt recalls the deploy note', t1user.includes('DEPLOY-NOTE-MARKER'), t1user.substring(0, 120));
+    record('mem: unrelated cooking note is NOT recalled', !t1user.includes('COOKING-NOTE-MARKER'), '');
+    record('mem: topic index line lists both topics', t1user.includes('Memory topics on disk: cooking, deploy') || t1user.includes('Memory topics on disk: deploy, cooking'), t1user.substring(t1user.indexOf('Memory topics') > 0 ? t1user.indexOf('Memory topics') : 0, 140));
+    stopMock(m);
+
+    // task 2: CRUD via a second mock (separate run so the tool calls are driven)
+    const m2 = startMock([
+      tc('mm1', { action: 'save', topic: 'conventions', content: 'CONV-NOTE prefer tabs in this repo' }),
+      tc('mm2', { action: 'list' }),
+      tc('mm3', { action: 'read', topic: 'conventions' }),
+      tc('mm4', { action: 'delete', topic: 'cooking' }),
+      { role: 'assistant', content: 'MEM-T2-DONE ' + 'memory crud reply padded past the summary floor for the budget skip. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2.port, args: ['--prompt', 'manage notes'], env: { PERMISSION_MODE: 'default' }, cwd, timeoutMs: 60000 }); // default mode: memory_tool must be auto-safe (no approval possible non-interactively)
+    const log2 = readLog(m2.log);
+    const mm1 = tr(log2, 'mm1'), mm2 = tr(log2, 'mm2'), mm3 = tr(log2, 'mm3'), mm4 = tr(log2, 'mm4');
+    record('mem: save works and is auto-safe in default mode', mm1 && mm1.c.includes('Memory note saved: conventions.md'), mm1 ? mm1.c : 'no result');
+    record('mem: list shows all topics with first-line preview', mm2 && mm2.c.includes('conventions') && mm2.c.includes('deploy'), mm2 ? mm2.c.substring(0, 120) : 'no result');
+    record('mem: read returns the note body', mm3 && mm3.c.includes('CONV-NOTE'), mm3 ? mm3.c : 'no result');
+    record('mem: delete removes the note', mm4 && mm4.c.includes('deleted: cooking.md') && !fs.existsSync(path.join(cwd, '.7coder', 'memory', 'cooking.md')), mm4 ? mm4.c : 'no result');
+    stopMock(m2);
+  }
+});
+
+// --- B37: GAP-13 CJK-aware context budget (unit-level: extract textUnits) ---
+scenarios.push({
+  name: 'cjk-ctx',
+  fn: async () => {
+    // Behavioral wiring is swamped by the system prompt (it alone exceeds any
+    // small CONTEXT_CHARS), so pin the weighting at the unit it changes:
+    // extract textUnits + messageSize from index.js and eval them (the
+    // runner-i white-box pattern; both are plain functions with no closure
+    // state beyond each other).
+    const src = fs.readFileSync(IDX, 'utf8');
+    const fnSrc = (name) => {
+      const s = src.indexOf('function ' + name);
+      const e = src.indexOf('\n}', s);
+      return src.substring(s, e + 2);
+    };
+    if (!fnSrc('textUnits') || !fnSrc('messageSize')) { record('cjk: textUnits/messageSize present', false, 'extraction failed'); return; }
+    const tu = eval('(' + fnSrc('textUnits') + ')');
+    // messageSize closes over textUnits - eval them in one shared scope
+    const msz = eval('(function(){ ' + fnSrc('textUnits') + '\n' + fnSrc('messageSize') + '\n return messageSize; })()');
+    record('cjk: textUnits weights a han char x2', tu('汉字') === 4 && tu('ab') === 2 && tu('ｆｕｌｌ') === 8, 'tu(汉字)=' + tu('汉字') + ' tu(ab)=' + tu('ab'));
+    record('cjk: mixed string counts han x2 + ascii x1', tu('a配b置') === 6, 'got=' + tu('a配b置'));
+    record('cjk: messageSize applies the weighting to message content', msz({ content: '配置'.repeat(10) }) === 40 && msz({ content: 'x'.repeat(20) }) === 20, 'cjk40=' + msz({ content: '配置'.repeat(10) }) + ' ascii20=' + msz({ content: 'x'.repeat(20) }));
+    record('cjk: tool_calls measured with the same weighting', msz({ tool_calls: [{ function: { arguments: '{"p":"配"}' } }] }) === tu(JSON.stringify([{ function: { arguments: '{"p":"配"}' } }])), 'ok if equal');
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);

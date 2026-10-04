@@ -511,7 +511,7 @@ if (DANGER_MODE) {
 // Auto-safe tools (no permission prompt ever). Deliberately excludes anything
 // that executes code (run_command, auto_debug_tool) or writes files.
 const AUTO_SAFE_TOOLS = [
-  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'mcp_list_tools_tool', 'tool_search_tool',
+  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'mcp_list_tools_tool', 'memory_tool', 'tool_search_tool',
   'prompt_from_file', 'snip_tool', 'cron_list_tool', 'process_list_tool', 'bickering_tool',
   'task_get_tool', 'task_list_tool', 'task_output_tool', 'skill_tool', 'synthetic_output_tool',
   'git_status_tool', 'git_diff_tool',
@@ -543,6 +543,7 @@ const tools = [
   { type: "function", function: { name: "ask_user_question_tool", description: "Prompt user for input.", parameters: { type: "object", properties: { question: { type: "string" } }, required: ["question"] } } },
   { type: "function", function: { name: "brief_tool", description: "Upload/summarize files to folder.summary.", parameters: { type: "object", properties: { folder: { type: "string" } }, required: ["folder"] } } },
   { type: "function", function: { name: "todo_write_tool", description: "Structured task list persisted in .7coder/todos.json. action=add (title required) appends a pending item; action=update (id required) changes title and/or status (pending|doing|done); action=list returns all items with status. Legacy calls carrying only a content string are treated as add.", parameters: { type: "object", properties: { action: { type: "string", enum: ["add", "update", "list"] }, title: { type: "string" }, id: { type: "string" }, status: { type: "string", enum: ["pending", "doing", "done"] }, content: { type: "string" } } } } },
+  { type: "function", function: { name: "memory_tool", description: "Durable long-term memory notes in .7coder/memory/<topic>.md, recalled automatically at task start when keywords match the prompt. action=save (topic+content, upserts), action=read (topic), action=list, action=delete. Save project conventions, user preferences, hard-won facts - not transient state.", parameters: { type: "object", properties: { action: { type: "string", enum: ["save", "read", "list", "delete"] }, topic: { type: "string", description: "[a-z0-9][a-z0-9_-] max 40 chars" }, content: { type: "string" } }, required: ["action"] } } },
   { type: "function", function: { name: "read_mcp_resource_tool", description: "Read MCP resource (restricted to the .mcp directory).", parameters: { type: "object", properties: { resource_id: { type: "string" } }, required: ["resource_id"] } } },
   { type: "function", function: { name: "sleep_tool", description: "Async delay.", parameters: { type: "object", properties: { ms: { type: "number" } }, required: ["ms"] } } },
   { type: "function", function: { name: "snip_tool", description: "Extract history snippet.", parameters: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } } } } },
@@ -1295,7 +1296,14 @@ Rules (strict, no exceptions):
 - Never generalize to user or use irrelevant examples (e.g. no "how to make toast").
 - Reorganize everything into clean sections, priorities, full code blocks where relevant.
 - At the end of the tool chain, use write_file with path="7CODER.md" and the COMPLETE new organized content (full file, no truncation).`;
-  const dreamUserPrompt = `Begin the DREAM SESSION. Consolidate this content:\n\n${currentContent}`;
+  // GAP-9: dream also sees the memory index - it may rewrite stale notes via
+  // write_file (auto-safe under .7coder/memory/), but the mandatory target
+  // stays 7CODER.md so the existing dream contract is unchanged.
+  const memTopics = listMemoryTopics();
+  const memNote = memTopics.length
+    ? `\n\nMemory notes on disk (${memTopics.join(', ')}): after writing 7CODER.md you MAY also rewrite any of these via write_file to .7coder/memory/<topic>.md if consolidation improves them - skip them otherwise.`
+    : '';
+  const dreamUserPrompt = `Begin the DREAM SESSION. Consolidate this content:\n\n${currentContent}${memNote}`;
   const dreamMessages = [
     { role: 'system', content: dreamSystemPrompt },
     { role: 'user', content: dreamUserPrompt }
@@ -1537,6 +1545,7 @@ const DETERMINISTIC_EXPLAIN = {
   notebook_edit_tool: (a) => `Edit notebook ${a.path}`,
   download_tool: (a) => `Download ${a.url} to ${a.path}`,
   todo_write_tool: (a) => `Update structured task list (.7coder/todos.json): ${a.action === 'list' ? 'list' : (a.action || 'add')}${a.id ? ' ' + a.id : ''}${a.title ? ' "' + String(a.title).substring(0, 40) + '"' : ''}`,
+  memory_tool: (a) => `${a.action === 'save' ? 'Save memory note' : a.action === 'delete' ? 'Delete memory note' : 'Read memory notes'}${a.topic ? ' ' + a.topic : 's (.7coder/memory)'}`,
   brief_tool: (a) => `Summarize folder ${a.folder} into ${a.folder}.summary`,
   enter_worktree_tool: (a) => `Create git worktree at ${a.path}`,
   schedule_cron_tool: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`,
@@ -2109,6 +2118,47 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       return items.map(it => `${it.id}\t[${it.status}]\t${it.title}`).join('\n');
     }
     return 'Tool error: todo_write_tool requires action=add|update|list (or a legacy content string)';
+  }
+
+  if (name === 'memory_tool') {
+    // GAP-9: durable topic notes in .7coder/memory/<topic>.md. save upserts,
+    // read returns one note, list returns the index, delete removes.
+    // Topics are strictly [a-z0-9][a-z0-9_-]{0,39} - no path control at all,
+    // which is why this tool is auto-safe (same trust class as the todo list).
+    const action = args.action;
+    if (action === 'save') {
+      const topic = String(args.topic || '').trim();
+      const content = typeof args.content === 'string' ? args.content : '';
+      if (!memoryTopicValid(topic)) return 'Tool error: memory_tool save requires a topic of [a-z0-9][a-z0-9_-] (max 40 chars)';
+      if (!content.trim()) return 'Tool error: memory_tool save requires non-empty content';
+      const existed = readMemoryFile(topic) !== null;
+      const MAX = 32 * 1024;
+      saveMemoryFile(topic, content.length > MAX ? content.substring(0, MAX) + '\n[truncated at 32KB]' : content);
+      return `[OK] Memory note ${existed ? 'updated' : 'saved'}: ${topic}.md (${content.length} chars)`;
+    }
+    if (action === 'read') {
+      const topic = String(args.topic || '').trim();
+      if (!memoryTopicValid(topic)) return 'Tool error: invalid topic';
+      const body = readMemoryFile(topic);
+      if (body === null) return `Tool error: no memory note named "${topic}"`;
+      return `## ${topic}\n${body}`;
+    }
+    if (action === 'list') {
+      const topics = listMemoryTopics();
+      if (!topics.length) return 'No memory notes yet. Use action=save with a topic and content.';
+      return topics.map(t => {
+        const body = readMemoryFile(t) || '';
+        const head = body.split('\n').find(l => l.trim()) || '';
+        return `${t}\t${head.substring(0, 80)}`;
+      }).join('\n');
+    }
+    if (action === 'delete') {
+      const topic = String(args.topic || '').trim();
+      if (!memoryTopicValid(topic)) return 'Tool error: invalid topic';
+      try { fs.unlinkSync(memoryFilePath(topic)); return `[OK] Memory note deleted: ${topic}.md`; }
+      catch (e) { return `Tool error: no memory note named "${topic}"`; }
+    }
+    return 'Tool error: memory_tool requires action=save|read|list|delete';
   }
 
   if (name === 'list_mcp_resources_tool') {
@@ -2933,7 +2983,13 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
     // protectedWrite (computed from the basename) always vetoes the branch.
     let isAutoLogWrite = false;
     if (name === 'write_file' && args.path && typeof args.path === 'string') {
-      try { isAutoLogWrite = path.relative(launchDir, path.join(launchDir, sanitizePath(args.path))).toLowerCase() === '7coder.md'; } catch (e) {}
+      // GAP-9: the model-owned memory dir (.7coder/memory/*.md) shares the
+      // auto-log exemption - dream sessions and the model itself rewrite
+      // these freely; they are notes, never user source code.
+      try {
+        const rel = path.relative(launchDir, path.join(launchDir, sanitizePath(args.path))).toLowerCase();
+        isAutoLogWrite = rel === '7coder.md' || (rel.indexOf('.7coder/memory/') === 0 && rel.endsWith('.md'));
+      } catch (e) {}
     }
     if (!protectedRead && !protectedWrite && (AUTO_SAFE_TOOLS.includes(name) || isAutoLogWrite)) {
       console.log(`[TOOL] Auto-executing safe tool: ${name}`);
@@ -2969,7 +3025,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
     // classification. Unmapped tools still fall back to the light model.
     const DETERMINISTIC_RISK = {
       write_file: 'MEDIUM', append_file: 'MEDIUM', edit_file: 'MEDIUM',
-      notebook_edit_tool: 'MEDIUM', download_tool: 'MEDIUM', todo_write_tool: 'LOW',
+      notebook_edit_tool: 'MEDIUM', download_tool: 'MEDIUM', todo_write_tool: 'LOW', memory_tool: 'LOW',
       brief_tool: 'LOW', sleep_tool: 'LOW', enter_worktree_tool: 'MEDIUM',
       agent_tool: 'MEDIUM', schedule_cron_tool: 'HIGH', cron_create_tool: 'HIGH',
       cron_delete_tool: 'MEDIUM', process_kill_tool: 'HIGH',
@@ -3088,10 +3144,30 @@ function capToolResult(result) {
     s.substring(s.length - tail);
 }
 
+// GAP-13: chars != tokens, and the gap is worst for CJK - one han character
+// is roughly 1-2 tokens but counted as ONE character, so Chinese-heavy
+// sessions blew past the real token budget before compression ever fired.
+// Weighting CJK code points (and fullwidth/Hangul/Kana neighbors) x2 brings
+// the char-based estimate much closer to the tokenizer's account without
+// any dependency (a real tokenizer is GAP-13's deferred half).
+function textUnits(s) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if ((c >= 0x2E80 && c <= 0x9FFF) ||   // CJK radicals..Yi (incl. han)
+        (c >= 0xF900 && c <= 0xFAFF) ||    // CJK compat ideographs
+        (c >= 0xFF00 && c <= 0xFF60) ||    // fullwidth forms
+        (c >= 0x3040 && c <= 0x30FF) ||    // Kana
+        (c >= 0xAC00 && c <= 0xD7FF)) {    // Hangul syllables
+      n += 2;
+    } else n++;
+  }
+  return n;
+}
 function messageSize(m) {
   let n = 0;
-  if (m.content) n += typeof m.content === 'string' ? m.content.length : JSON.stringify(m.content).length;
-  if (m.tool_calls) n += JSON.stringify(m.tool_calls).length;
+  if (m.content) n += textUnits(typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
+  if (m.tool_calls) n += textUnits(JSON.stringify(m.tool_calls));
   return n;
 }
 
@@ -3252,6 +3328,76 @@ function logSessionUsage() {
 // ====================== CORE EXECUTION ======================
 let currentRawPrompt = '';
 
+// ====================== LAYERED MEMORY (GAP-9) ======================
+// Long-lived topic notes under .7coder/memory/<topic>.md, separate from the
+// chronological 7CODER.md auto-log. At task start the notes whose keywords
+// overlap the user prompt are recalled into the message (deterministic -
+// no LLM call); everything else stays on disk until its turn.
+const MEMORY_DIR = path.join(launchDir, '.7coder', 'memory');
+const MEMORY_MAX_FILES = 20;
+const MEMORY_RECALL_UNITS = parseInt(process.env.MEMORY_RECALL_CHARS, 10) || 3000;
+function memoryTopicValid(t) { return /^[a-z0-9][a-z0-9_-]{0,39}$/i.test(String(t || '')); }
+function memoryFilePath(topic) { return path.join(MEMORY_DIR, topic + '.md'); }
+function listMemoryTopics() {
+  try {
+    if (!fs.existsSync(MEMORY_DIR)) return [];
+    return fs.readdirSync(MEMORY_DIR)
+      .filter(f => f.endsWith('.md'))
+      .slice(0, MEMORY_MAX_FILES)
+      .map(f => f.slice(0, -3))
+      .sort();
+  } catch (e) { return []; }
+}
+function readMemoryFile(topic) {
+  try { return fs.readFileSync(memoryFilePath(topic), 'utf8'); } catch (e) { return null; }
+}
+function saveMemoryFile(topic, content) {
+  fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  fs.writeFileSync(memoryFilePath(topic), String(content || ''), 'utf8');
+}
+// keyword-overlap score between the prompt and a note (deterministic recall)
+function memoryScore(promptText, topic, body) {
+  const words = String(promptText).toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/).filter(w => w.length >= 2);
+  if (!words.length) return 0;
+  const hay = (topic + '\n' + body).toLowerCase();
+  let score = 0;
+  const seen = {};
+  for (const w of words) {
+    if (seen[w]) continue;
+    seen[w] = true;
+    if (hay.indexOf(w) >= 0) score += (w.length >= 4 ? 2 : 1);
+  }
+  return score;
+}
+function recallMemory(promptText) {
+  const topics = listMemoryTopics();
+  if (!topics.length) return { note: '', topics: [] };
+  const scored = [];
+  for (const t of topics) {
+    const body = readMemoryFile(t);
+    if (body === null) continue;
+    const s = memoryScore(promptText, t, body);
+    if (s > 0) scored.push({ topic: t, body: body, score: s });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  let used = 0;
+  const picked = [];
+  for (const s of scored) {
+    const u = textUnits(s.body);
+    if (used + u > MEMORY_RECALL_UNITS && picked.length) break;
+    picked.push(s);
+    used += u;
+    if (picked.length >= 5) break;
+  }
+  let note = '';
+  if (picked.length) {
+    note = '\n\nRelevant long-term memory notes (from .7coder/memory/):\n' +
+      picked.map(p => '## ' + p.topic + '\n' + p.body.trim()).join('\n\n');
+    console.log('[MEMORY] recalled ' + picked.length + ' note(s): ' + picked.map(p => p.topic).join(', '));
+  }
+  return { note: note, topics: topics };
+}
+
 function buildTaskUserContent(rawPrompt) {
   const mdPath = path.join(launchDir, '7CODER.md');
   let content = rawPrompt;
@@ -3264,6 +3410,13 @@ function buildTaskUserContent(rawPrompt) {
     } catch (e) {
       console.error('Error reading 7CODER.md:', e);
     }
+  }
+  // GAP-9: keyword-recalled topic notes + the full topic index so the model
+  // knows what else exists (memory_tool list/read for the rest).
+  const mem = recallMemory(rawPrompt);
+  if (mem.note) content += mem.note;
+  if (mem.topics.length) {
+    content += `\n\nMemory topics on disk: ${mem.topics.join(', ')} (memory_tool with action=list shows contents; save new durable facts with action=save).`;
   }
   return content;
 }
