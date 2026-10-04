@@ -391,7 +391,12 @@ details.think .think-body {
     label.textContent = type === 'user' ? '你' : type === 'bot' ? '7coder' : '';
     var msg = document.createElement('div');
     msg.className = 'msg' + (type === 'err' ? ' err-msg' : type === 'sys' ? ' sys-msg' : '');
-    msg.innerHTML = html;
+    // A2-04: err/sys bubbles carry upstream/tool error text - render the body
+    // as plain text (textContent), never HTML, so a hostile message like
+    // '<img src=x onerror=...>' cannot execute. Only user/bot bubbles take
+    // the markdown render path.
+    if (type === 'user' || type === 'bot') { msg.innerHTML = html; }
+    else { msg.textContent = html; }
     if (type === 'sys') { row.appendChild(msg); }
     else { row.appendChild(label); row.appendChild(msg); }
     log.appendChild(row);

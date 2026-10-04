@@ -2236,5 +2236,85 @@ scenarios.push({
   }
 });
 
+// --- sec2: review batch 2 security/robustness fixes
+// A2-03 diagnostics_tool leaves the auto-safe list (default mode -> declined,
+//   bypass unchanged); A2-08 a failed dream must NOT overwrite 7CODER.md and
+//   must auto-create the missing .7coder lock dir; A2-09 an auto_debug spawn
+//   failure must surface as a tool result, not kill the server.
+scenarios.push({
+  name: 'sec2',
+  fn: async () => {
+    const tc = (id, name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: name, arguments: JSON.stringify(args) } }] });
+
+    // A2-03a: default mode, non-interactive -> the approval prompt auto-declines
+    const cwd1 = freshCwd('b-sec2diag');
+    const m1 = startMock([
+      tc('d1', 'diagnostics_tool', {}),
+      { role: 'assistant', content: 'SEC2-DIAG-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m1.port, args: ['--prompt', 't'], env: {}, cwd: cwd1, timeoutMs: 60000 }); // default mode
+    const d1 = tr(readLog(m1.log), 'd1');
+    record('sec2/a203: default mode declines diagnostics_tool (approval required)', d1 && d1.c.includes('User declined the tool action.'), d1 ? d1.c.substring(0, 120) : 'no result');
+    stopMock(m1);
+
+    // A2-03b: bypass mode unchanged - the tool still executes
+    const cwd1b = freshCwd('b-sec2diagb');
+    const m1b = startMock([
+      tc('d1b', 'diagnostics_tool', {}),
+      { role: 'assistant', content: 'SEC2-DIAGB-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m1b.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd1b, timeoutMs: 60000 });
+    const d1b = tr(readLog(m1b.log), 'd1b');
+    record('sec2/a203: bypass mode still executes diagnostics_tool', d1b && d1b.c.indexOf('User declined') < 0 && d1b.c.indexOf('BLOCKED') < 0 && d1b.c.indexOf('Auto-approval declined') < 0, d1b ? d1b.c.substring(0, 120) : 'no result');
+    stopMock(m1b);
+
+    // A2-08a: dream session fails (dead endpoint) -> 7CODER.md must survive verbatim
+    const cwd2 = freshCwd('b-sec2dream');
+    fs.writeFileSync(path.join(cwd2, '7CODER.md'), 'IMPORTANT-KEEP');
+    fs.mkdirSync(path.join(cwd2, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd2, '.7coder', 'last_interaction'), String(Date.now() - 6 * 3600 * 1000));
+    // port 1 = nothing listens there; MAX_RETRIES=1 keeps the wait short
+    const r2 = await runCli({ port: 1, args: ['--prompt', 't'], env: { DREAM_ALLOW: 'true', MAX_RETRIES: '1', PERMISSION_MODE: 'bypass' }, cwd: cwd2, timeoutMs: 60000 });
+    let md2 = '(unreadable)';
+    try { md2 = fs.readFileSync(path.join(cwd2, '7CODER.md'), 'utf8'); } catch (e) { md2 = '(gone: ' + e.code + ')'; }
+    record('sec2/a208: failed dream preserves 7CODER.md verbatim', md2 === 'IMPORTANT-KEEP', 'content=' + JSON.stringify(md2.substring(0, 100)) + ' tail=' + r2.out.substring(0, 100));
+    record('sec2/a208: no DREAM FALLBACK content written', md2.indexOf('DREAM FALLBACK') < 0, '');
+
+    // A2-08b: brand-new workspace with no .7coder/ - the lock write must not ENOENT-crash
+    const cwd2b = freshCwd('b-sec2dreamnew');
+    const r2b = await runCli({ port: 1, args: ['--prompt', 't'], env: { DREAM_ALLOW: 'true', MAX_RETRIES: '1', PERMISSION_MODE: 'bypass' }, cwd: cwd2b, timeoutMs: 60000 });
+    record('sec2/a208: dream on fresh workspace does not crash on missing .7coder (no ENOENT)', r2b.out.indexOf('[DREAM]') >= 0 && r2b.out.indexOf('ENOENT') < 0, 'out=' + r2b.out.substring(0, 200));
+    record('sec2/a208: lock dir created and lock cleaned up afterwards', !fs.existsSync(path.join(cwd2b, '.7coder', 'dream.lock')) && fs.existsSync(path.join(cwd2b, '.7coder', 'last_interaction')), 'lock exists=' + fs.existsSync(path.join(cwd2b, '.7coder', 'dream.lock')));
+
+    // A2-09: auto_debug spawn failure reaches the model as a tool result, server stays up
+    const cwd3 = freshCwd('b-sec2dbg');
+    const m3 = startMock([
+      tc('ad1', 'auto_debug_tool', { path: 'definitely-missing-sec2.exe', type: 'gui', duration_minutes: 1 }),
+      { role: 'assistant', content: 'SEC2-AD-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 470;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m3.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort), ENABLE_AUTO_DEBUG: 'true', PERMISSION_MODE: 'bypass' }),
+      cwd: cwd3, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      let chat = null, chatErr = null;
+      try { chat = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] }); } catch (e) { chatErr = e; }
+      record('sec2/a209: chat request completes (server survived the spawn failure)', !!chat && chat.status === 200, chat ? 'status=' + chat.status : 'request failed: ' + (chatErr && chatErr.message));
+      const ad1 = tr(readLog(m3.log), 'ad1');
+      record('sec2/a209: tool result reports the spawn failure', !!ad1 && (ad1.c.indexOf('spawn failed') >= 0 || ad1.c.indexOf('ENOENT') >= 0), ad1 ? ad1.c.substring(0, 140) : 'no result');
+      const alive = await httpReq(srvPort, 'GET', '/api/info', null).catch(e => ({ status: 0, body: String(e && e.message) }));
+      record('sec2/a209: server still responsive afterwards', alive.status === 200, 'status=' + alive.status);
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m3);
+    }
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);

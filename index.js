@@ -509,15 +509,13 @@ if (DANGER_MODE) {
 }
 
 // Auto-safe tools (no permission prompt ever). Deliberately excludes anything
-// that executes code (run_command, auto_debug_tool) or writes files.
+// that executes code (run_command, auto_debug_tool, A2-03: diagnostics_tool)
+// or writes files.
 const AUTO_SAFE_TOOLS = [
   'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'mcp_list_tools_tool', 'memory_tool', 'tool_search_tool',
   'prompt_from_file', 'snip_tool', 'cron_list_tool', 'process_list_tool', 'bickering_tool',
   'task_get_tool', 'task_list_tool', 'task_output_tool', 'skill_tool', 'synthetic_output_tool',
-  'git_status_tool', 'git_diff_tool',
-  // GAP-5: read-only diagnostics - executes ONLY binaries inside the workspace's
-  // own node_modules (never a global install, never a shell string).
-  'diagnostics_tool'
+  'git_status_tool', 'git_diff_tool'
 ];
 
 // ====================== TOOL DEFINITIONS ======================
@@ -566,7 +564,7 @@ const tools = [
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
   { type: "function", function: { name: "workflow_tool", description: "Run a sequence of tool calls from a JSON plan: steps=[{tool, args, optional}]. Steps execute in order through the normal permission system; a failing step stops the workflow unless optional=true. Max 50 steps; nested workflows are rejected.", parameters: { type: "object", properties: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" }, optional: { type: "boolean" } }, required: ["tool"] } }, description: { type: "string" } }, required: ["steps"] } } },
   { type: "function", function: { name: "run_tests_tool", description: "Run a test suite and parse the output into structured pass/fail counts. Supported: jest/mocha/karma (N passing, M failing), node:test (# pass N), generic. Auto-detects (npm test / node --test) when command omitted.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_seconds: { type: "number" } } } } },
-  { type: "function", function: { name: "diagnostics_tool", description: "Run project-local static diagnostics and list problems. Uses typescript (tsc --noEmit, whole project) if installed in node_modules, else eslint (--format json). Read-only; safe to run anytime.", parameters: { type: "object", properties: { path: { type: "string", description: "Optional target for eslint (file/folder); ignored by tsc which always checks the whole project" } } } } },
+  { type: "function", function: { name: "diagnostics_tool", description: "Run project-local static diagnostics and list problems. Uses typescript (tsc --noEmit, whole project) if installed in node_modules, else eslint (--format json). Runs project-local toolchain binaries (tsc/eslint) - these execute project-defined JavaScript, so approval is required.", parameters: { type: "object", properties: { path: { type: "string", description: "Optional target for eslint (file/folder); ignored by tsc which always checks the whole project" } } } } },
   { type: "function", function: { name: "git_status_tool", description: "Show the working tree status (branch, staged/untracked/modified files) and last commit. Safe/read-only.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "git_diff_tool", description: "Show unstaged (or staged with staged=true) diff for a file or the whole tree. Safe/read-only.", parameters: { type: "object", properties: { path: { type: "string" }, staged: { type: "boolean" } } } } },
   { type: "function", function: { name: "git_commit_tool", description: "Stage all changes and create a git commit. If message is omitted, one is generated from the session audit log. A pre-commit snapshot (git stash create) is recorded so /undo-style recovery is possible; nothing is pushed.", parameters: { type: "object", properties: { message: { type: "string" }, stage_all: { type: "boolean" } } } } },
@@ -1399,6 +1397,10 @@ async function triggerDreamIfNeeded() {
   if (fs.existsSync(lockPath)) return false;
 
   console.log(`[DREAM] 7coder is ${getRandomSpinner()} [DREAM MODE - 2.5h self-consolidation]`);
+  // A2-08: a brand-new workspace has no .7coder/ yet - create it before the
+  // lock write, otherwise the dream path dies with ENOENT (the write below is
+  // not otherwise guarded, and triggerDreamIfNeeded has no try/catch around it).
+  try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch (e) {}
   fs.writeFileSync(lockPath, new Date().toISOString());
   await runDreamSession();
   fs.unlinkSync(lockPath);
@@ -1438,8 +1440,9 @@ Rules (strict, no exceptions):
     await processWithTools(dreamMessages);
     console.log('[OK] Dream consolidation complete.');
   } catch (e) {
-    console.error('Dream error:', e.message);
-    fs.writeFileSync(mdPath, `# DREAM FALLBACK\n${new Date().toISOString()}\nConsolidation attempted but encountered an error.`, 'utf8');
+    // A2-08: a failed consolidation must NEVER overwrite 7CODER.md - the old
+    // fallback destroyed the user's whole memory file on a transient API error.
+    console.error('[DREAM] consolidation failed - original 7CODER.md preserved: ' + e.message);
   }
 }
 
@@ -1687,7 +1690,7 @@ const DETERMINISTIC_EXPLAIN = {
   run_tests_tool: (a) => `Run test suite: ${String(a.command || 'auto-detected').substring(0, 80)}`,
   git_status_tool: () => 'Show git working tree status (read-only)',
   git_diff_tool: (a) => `Show git diff${a.staged ? ' (staged)' : ''}${a.path ? ' for ' + a.path : ''} (read-only)`,
-  diagnostics_tool: (a) => `Run project-local static diagnostics (tsc/eslint from node_modules)${a.path ? ' on ' + a.path : ''} (read-only)`,
+  diagnostics_tool: (a) => `Run project-local static diagnostics (tsc/eslint from node_modules)${a.path ? ' on ' + a.path : ''} (executes project-defined JS - approval required)`,
   git_commit_tool: (a) => `Stage all and commit${a.message ? ': ' + String(a.message).substring(0, 60) : ' (auto message)'} (snapshot taken)`
 };
 
@@ -2719,8 +2722,9 @@ function formatDiagResult(toolLabel, problems) {
   if (name === 'diagnostics_tool') {
     // GAP-5: project-local toolchain diagnostics. Only binaries inside THIS
     // workspace's node_modules are ever executed (node <bin> via execFile -
-    // never a shell string, never a global install), so the tool is read-only
-    // and auto-safe.
+    // never a shell string, never a global install). A2-03: these binaries run
+    // project-defined JavaScript, so the tool is NOT auto-safe - it reaches
+    // here only after the permission gate approved it.
     try {
       const tscBin = path.join(launchDir, 'node_modules', 'typescript', 'bin', 'tsc');
       const eslintBin = path.join(launchDir, 'node_modules', 'eslint', 'bin', 'eslint.js');
@@ -2980,6 +2984,9 @@ Reply with ONLY valid JSON:
     while (true) {
       const cycle = await runDebugCycle(exePath, filePath, appType, fixRound === 0 ? duration : 1);
       finalLog = cycle.log + '\nSTDOUT:\n' + cycle.stdout + '\nSTDERR:\n' + cycle.stderr;
+      // A2-09: the app never launched - hand the spawn error back as the tool
+      // result instead of burning fix rounds (and LLM calls) on a ghost.
+      if (cycle.spawnFailed) break;
       if (!/error|exception|crash|failed/i.test(finalLog) || fixRound >= maxFix) break;
       fixRound++;
       console.log(`[LOOP] Auto-debug fix round ${fixRound}/${maxFix}...`);
@@ -3021,13 +3028,21 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
   let stdoutData = '';
   let stderrData = '';
   let processHandle = null;
+  let spawnFailed = false;
+  // A2-09: a missing binary emits an ASYNC 'error' event on the child. Without
+  // a listener that is an uncaught exception and kills the whole process
+  // (server mode: the request dies with ECONNRESET). Record it into the cycle
+  // log instead and null the handle so the observe/kill steps skip it.
+  const onSpawnError = e => { spawnFailed = true; log += '[ERROR] spawn failed: ' + e.message + '\n'; processHandle = null; };
 
   if (appType === 'gui') {
     processHandle = child_process.spawn(cmdToRun, cmdArgs, { detached: true, stdio: 'ignore', cwd: launchDir });
-    processHandle.unref();
+    processHandle.on('error', onSpawnError);
+    if (processHandle.pid) processHandle.unref();
     log += `[OK] GUI launched (PID ${processHandle.pid})\n`;
   } else {
     processHandle = child_process.spawn(cmdToRun, cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: launchDir });
+    processHandle.on('error', onSpawnError);
     log += `[OK] CLI launched (PID ${processHandle.pid})\n`;
     if (processHandle.stdout) {
       processHandle.stdout.setEncoding('utf8');
@@ -3041,6 +3056,7 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
 
   await new Promise(r => setTimeout(r, 2000)); // settle
   for (let i = 0; i < durationMinutes * 6; i++) { // ~10s intervals
+    if (!processHandle) break; // A2-09: spawn failed - nothing to observe, return immediately
     if (appType === 'gui' && ENABLE_COMPUTER_USE) {
       // Simulate normal user: random clicks, typing, etc.
       // (computer_use input actions are REAL injection on Windows - user32
@@ -3063,7 +3079,7 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
     } catch (e) {}
     log += '[OK] App closed after test\n';
   }
-  return { log, stdout: stdoutData, stderr: stderrData };
+  return { log, stdout: stdoutData, stderr: stderrData, spawnFailed: spawnFailed };
 }
 
 // AST-R2: reason of the most recent auto-approval decline, set inside
@@ -3182,7 +3198,10 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       run_command: 'HIGH', bash_tool: 'HIGH', powershell_tool: 'HIGH',
       task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH', run_tests_tool: 'HIGH',
       git_status_tool: 'LOW', git_diff_tool: 'LOW', git_commit_tool: 'HIGH',
-      diagnostics_tool: 'LOW'
+      // A2-03: tsc/eslint run project-defined JS (plugins/configs) - not read-only.
+      // MEDIUM keeps default mode on the approval path and auto mode on the
+      // light-model screen instead of waving the tool through.
+      diagnostics_tool: 'MEDIUM'
     };
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
 

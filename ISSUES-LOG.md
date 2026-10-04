@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-04 夜末，**v2.18.0** 已打包就绪）：单文件 index.js（~4660 行）；发布验证：B 215/215（Node 24）+ A 85/85（Node 13 包内 runtime）+ dom-sim；v2.17→v2.18 五轮：GAP-9 分层记忆、GAP-13 CJK 折算、AST-R1 非流式后台摘要、GAP-14 /fork + P2-1/12/13 + P1-7 尾巴清扫、P2-3 检索预算；离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、runtime 冒烟通过）；除暂缓决策项（OPT-3/6、AST-15、D3、C 系、P2-7）外**待办清零**
+> 规模快照（2026-10-04 深夜·批次一后，v2.18.0 之上待发）：单文件 index.js（~4660 行）；发布验证：B 215/215（Node 24）+ A 85/85（Node 13 包内 runtime）+ dom-sim；v2.17→v2.18 五轮：GAP-9 分层记忆、GAP-13 CJK 折算、AST-R1 非流式后台摘要、GAP-14 /fork + P2-1/12/13 + P1-7 尾巴清扫、P2-3 检索预算；离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、runtime 冒烟通过）；除暂缓决策项（OPT-3/6、AST-15、D3、C 系、P2-7）外**待办清零**
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 205 |
+| runner-b.js | 226 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **497** |
+| **合计** | **518** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -120,7 +120,9 @@
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
-| P1-1 | index.js:2674/2677/2678 | run_tests_tool 输出含游离单引号（`'
+| P1-1 | index.js run_tests_tool | 输出含游离单引号 | ✅ 真实关闭（批次一机械轮，OP2-3 关联）：三处 `'
+'` 改 `
+` + ts3 断言重写对准真实产物（无游离引号）；此前两次假关闭记录在案 |
 '` 三字符序列：引号+真换行+引号） | 🔶 **降级重开（2026-10-04 opus 审阅发现）**：真换行从来是对的（`
 ` 在双引号串里本就是换行），真正未修的是包裹换行的字面 `'` 字符×3 处；10-03 的回翻引用了 ts3 断言，但该断言查的是 4 字符 `'
 '`（带反斜杠），对准错了目标 = false-green。**并入 OP2-3 修复（连带修 ts3 断言）** |
@@ -153,7 +155,7 @@
 | P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ⬜ |
 | P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-10，README 已改为 syntax stays within what Node.js 13.14 supports |
 | P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
-| P2-10 | parseTestOutput | 正则嵌套量词 `(d+)+` | ❌ **假 ✅ 纠正（2026-10-04 opus 审阅发现，主会话对码证实）**：代码 index.js:2626-2628 仍是 `(d+)+`×3——原首版日志即标 ✅ 且 10-03 回翻审计未复核此行。实测 ReDoS：34 位连续数字 52.4 秒（每+4 位×16），run_tests_tool 原始输出直喂该正则 = --server 下整服冻结。**并入 OP2-1 修复** |
+| P2-10 | parseTestOutput | 正则嵌套量词 `(d+)+` | ✅ 真实关闭（3926e3f，OP2-1）：三处改 `(d+)` + 限长；证据 = sec1 计时/源码/形态三断言 + 本行 2026-10-04 假✅纠正记录 |
 | P2-11 | index.js:1742 | git_status 口径："M " 同时计入 staged 与 modified | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-4，XY 分列已实现且 git-integration 4/4 无需改断言 |
 | P2-12 | web 审批 | 120 秒超时自动拒绝无倒计时提示 | ✅ 2026-10-04 尾巴批：webui 审批条 120 秒倒计时（每秒递减、点击清除、到 0 显示超时并禁用按钮——不重复发拒绝，服务端桥本就 120s 自动 resolve(false)）；dom-sim 8/8 不受影响 |
 | P2-13 | index.js:1537 | 截图 PNG 落工作区根不清理；auto_debug 无进度输出 | ✅ 2026-10-04 尾巴批：截屏改写 .7coder/screenshots/（mkdir 包裹，无显示环境失败路径不变）；无测试引用旧路径，无需迁移 |
@@ -361,25 +363,25 @@
 
 | # | 位置 | 问题（核对结论） | 状态 |
 |---|------|------|------|
-| OP2-1 | index.js:2626-2628 | **parseTestOutput 指数级 ReDoS**：三处 `(d+)+` 经典 evil regex；实测 34 位连续数字 52.4 秒（每+4 位 ×16）。run_tests_tool 把原始输出直喂主线程同步正则——被测程序一行长数字即冻结 --server 整个服务。= P2-10 的真身 | ⬜ P0 级：改 `(d+)` 三处 + 入口限长 |
-| OP2-2 | index.js:3119 vs 2396/1270 | **cron 绕过超级危险命令硬防线**：isSuperDangerous 只接 run_command/bash/powershell/task_create 四工具，schedule_cron_tool/cron_create_tool 不在其列却用 exec 周期跑 shell——bypass 下 cron_create rm -rf / 每 30s 执行一次，README 的"even in bypass"承诺对 cron 不成立。= astra2 A2-17 同源（其另指出 run_tests/legacy npx 入口也不经该检查） | ⬜ P0 级：接线 + fire 时复查 |
+| OP2-1 | index.js:2626-2628 | **parseTestOutput 指数级 ReDoS**：三处 `(d+)+` 经典 evil regex；实测 34 位连续数字 52.4 秒（每+4 位 ×16）。run_tests_tool 把原始输出直喂主线程同步正则——被测程序一行长数字即冻结 --server 整个服务。= P2-10 的真身 | ✅ 3926e3f：三处 (d+)+ → (d+) + 64KB 尾部限长；计时断言 32 位 2ms + 源码无嵌套量词（剥注释）+ 摘要形态回归（sec1 3 断言） |
+| OP2-2 | index.js:3119 vs 2396/1270 | **cron 绕过超级危险命令硬防线**：isSuperDangerous 只接 run_command/bash/powershell/task_create 四工具，schedule_cron_tool/cron_create_tool 不在其列却用 exec 周期跑 shell——bypass 下 cron_create rm -rf / 每 30s 执行一次，README 的"even in bypass"承诺对 cron 不成立。= astra2 A2-17 同源（其另指出 run_tests/legacy npx 入口也不经该检查） | ✅ 3926e3f：cron/run_tests/npx-legacy 三入口接入硬防线 + cron 触发时复查（sec1 3 断言：bypass 下 BLOCK、非危险 npx 不误伤） |
 | OP2-3 | index.js:2674/2677/2678 | run_tests_tool 输出游离单引号 ×3（结构化输出脏串污染模型读到的测试结论）+ ts3 断言对准错目标（false-green）。= P1-1 真身 | ⬜ P2 级 |
 | OP2-4 | index.js:3927/3932/3940 | **设 HTTP_API_KEY 时三个读接口仍不鉴权**：/api/info（含 workspace 绝对路径+模型+用量）、/api/todos（任务清单）、/v1/models 无 401 门——用户专为 LAN 配了 key 却裸奔读接口。与 OPT-2 ⛔（未设 key 场景）是不同问题。= astra2 A2-10（todos 部分） | ⬜ P1 级：补 401 |
-| OP2-5 | README.md:113/128 | 两处过实表述：超级危险拦截实为子串小黑名单（rm -fr /、:(){ :|:& };: 等不拦）；protected 读在 bypass 下只 warn 不审批 | ⬜ P2 级：措辞按实际收口 |
+| OP2-5 | README.md:113/128 | 两处过实表述：超级危险拦截实为子串小黑名单（rm -fr /、:(){ :|:& };: 等不拦）；protected 读在 bypass 下只 warn 不审批 | ✅ 机械轮：README 两处措辞按实际收口（denylist not sandbox；bypass 只 warn 不审批） |
 
 ### A2 系列（astra2 审阅，22 项；与 OP2 重叠的已标注合并）
 
 | # | 位置 | 问题（核对/登记结论） | 状态 |
 |---|------|------|------|
-| A2-01 | index.js:2239-2275, 734-749 | **memory_tool 无真实路径校验 + 不吃 protected_extra**：memoryFilePath 直接拼接（junction 即越界读写）；isProtectedTarget 不处理该工具；AUTO_SAFE 加持下免审批。动态复现：junction → 读到外部 OUTSIDE-ONLY-FAKE-DATA、save 改写外部文件 | ⬜ P1（第一批） |
-| A2-02 | index.js:788-816 | **安装级 allow 吞掉工作区同名 deny**：loadPermRules 的 seen 去重键只有规则字符串不含 bucket，安装文件先读 → 工作区 deny 同串被当重复丢弃 → 实测 Written: blocked.txt。**GAP-11 的真缺陷**（同文件内 deny 先读所以单层测试通过） | ⬜ P1（第一批） |
-| A2-03 | index.js:513-520, 2693-2722 | **diagnostics 免审批执行项目代码**：node_modules 里的 tsc/eslint 是项目自己的 JS，eslint 还加载项目配置/插件；动态复现伪 tsc 写标记文件零审批。GAP-5 的 auto-safe 决策过信 | ⬜ P1（第一批）：移出 AUTO_SAFE |
-| A2-04 | webui.html:386-399, 543 | **错误消息 innerHTML 注入路径**：正常回复走 esc() 但 addMsg('err', '错误: '+e.message) 直进 innerHTML；DOM 模拟复现错误气泡原样含 <img onerror>。上游可控错误文案 = XSS 面 | ⬜ P1（第一批）：错误路径改 textContent/esc |
+| A2-01 | index.js:2239-2275, 734-749 | **memory_tool 无真实路径校验 + 不吃 protected_extra**：memoryFilePath 直接拼接（junction 即越界读写）；isProtectedTarget 不处理该工具；AUTO_SAFE 加持下免审批。动态复现：junction → 读到外部 OUTSIDE-ONLY-FAKE-DATA、save 改写外部文件 | ✅ 3926e3f：memoryPathGuard 双重真实路径校验（note-in-store + store-in-workspace——第一版守卫被自己的红测试抓出 junction 双外指漏洞后补全）+ protected_extra 拦截；junction 读/写断言外部文件逐字未动（sec1 3 断言） |
+| A2-02 | index.js:788-816 | **安装级 allow 吞掉工作区同名 deny**：loadPermRules 的 seen 去重键只有规则字符串不含 bucket，安装文件先读 → 工作区 deny 同串被当重复丢弃 → 实测 Written: blocked.txt。**GAP-11 的真缺陷**（同文件内 deny 先读所以单层测试通过） | ✅ 3926e3f：去重键含 bucket 前缀；临时安装级 permissions.json 端到端验证工作区 deny 胜出（sec1 1 断言） |
+| A2-03 | index.js:513-520, 2693-2722 | **diagnostics 免审批执行项目代码**：node_modules 里的 tsc/eslint 是项目自己的 JS，eslint 还加载项目配置/插件；动态复现伪 tsc 写标记文件零审批。GAP-5 的 auto-safe 决策过信 | ✅ 批次一机械轮（GLM+终检）：移出 AUTO_SAFE、LOW→MEDIUM、schema/提示语/注释三处 read-only 谎报一并纠正（default 拒绝 / bypass 照常，sec2 2 断言先红后绿） |
+| A2-04 | webui.html:386-399, 543 | **错误消息 innerHTML 注入路径**：正常回复走 esc() 但 addMsg('err', '错误: '+e.message) 直进 innerHTML；DOM 模拟复现错误气泡原样含 <img onerror>。上游可控错误文案 = XSS 面 | ✅ 机械轮：addMsg err/sys 分支改 textContent（user/bot 保留 markdown 路径）；12 处 innerHTML sink 全审计无第二处漏点；dom-sim 新增 a204 两项（payload 转义 + onerror 未触发），10/10 |
 | A2-05 | index.js:4677-4693 | **/fork 拆散工具配对**：保留 user+紧邻 assistant，若该 assistant 带 tool_calls 则孤儿化（配对非法+该轮最终答复丢失）；fork 测试只用纯文本回合故未覆盖。GAP-14 的真缺陷 | ⬜ P1（第二批） |
 | A2-06 | index.js:3139-3142 | **bypass 分支漏传 cancelled**（核 实：executeToolRaw(name,args,conversation,approvalBridge) 少第五参）+ 同族：子代理不继承取消、持久 shell 仅事后检查、axios 无活动取消、审批等待期断连不即时 dispose。AST-09 的取消缺口 | ⬜ P1（第二批） |
 | A2-07 | index.js:2666-2679, 3251 | **失败测试不停工作流**：run_tests_tool 非零退出仍返回 [TESTS] 前缀文本，TOOL_FAIL_RE 不识别 → 复现 [OK] Workflow complete 后接写入步骤。Fetch error/Tests error 等散落前缀也未纳入 | ⬜ P1（第二批） |
-| A2-08 | index.js:1377-1395, 1426-1432 | **dream 失败覆盖 7CODER.md**（catch 直接写 DREAM FALLBACK 单行，原文无备份丢失）+ 新工作区 DREAM_ALLOW=true 无 .7coder 目录时写锁 ENOENT 崩 | ⬜ P1（第一批） |
-| A2-09 | index.js:2999-3016 | **auto_debug spawn 无 error 监听**：不存在 exe → 未捕获 error 事件 → HTTP 服务 exit 1（实测复现）。两条 spawn 路径同病 | ⬜ P1（第一批） |
+| A2-08 | index.js:1377-1395, 1426-1432 | **dream 失败覆盖 7CODER.md**（catch 直接写 DREAM FALLBACK 单行，原文无备份丢失）+ 新工作区 DREAM_ALLOW=true 无 .7coder 目录时写锁 ENOENT 崩 | ✅ 机械轮：catch 不再写 DREAM FALLBACK（原文逐字保留，console.error 报错）+ 写锁前 mkdir（sec2 4 断言先红：HEAD 实测覆盖与 ENOENT 均复现）；dream 场景 6/6 回归 |
+| A2-09 | index.js:2999-3016 | **auto_debug spawn 无 error 监听**：不存在 exe → 未捕获 error 事件 → HTTP 服务 exit 1（实测复现）。两条 spawn 路径同病 | ✅ 机械轮：两条 spawn 挂 error 监听（spawnFailed 闭包 + 观察循环 break + 外层修复循环 break——防 3 轮空转）；sec2 3 断言先红（HEAD 实测 ECONNRESET 服务死）后绿（200 + spawn failed 文案 + 事后健康）；GLM 并纠规格两处旧参数名/默认值错误 |
 | A2-10 | index.js:3932 | 设 key 后 /api/todos 匿名可读 | ⬜ 并入 OP2-4 |
 | A2-11 | index.js:2708-2715 | tsc 全局错误（TS18003 无文件定位）被误报 [DIAG] clean | ⬜ P2 |
 | A2-12 | webui.html:409-422, 478-488 | **单标签会话切换/保存竞态**：A 回答中载 B → 回答串进 B；旧存档返回晚于新对话 → 旧文件名写回 → 新内容存进旧档（DOM 模拟双复现）。AST-06 首存修复未覆盖切换竞态 | ⬜ P2（第三批） |
@@ -388,7 +390,7 @@
 | A2-15 | index.js:1569-1576 | SSE 无 finish_reason 即 EOF → 默认 stop 当成功（残缺回答入库）；未覆盖首段后失败重试的前缀重复 | ⬜ P2 |
 | A2-16 | index.js:4424-4440 | writeWorkspaceEnv 重序列化全部键：多行 env 值 \"first
 second\" 保存后变 first（丢引号语义，实测）。P1-4 注释保留修复的姊妹缺陷 | ⬜ P2 |
-| A2-17 | index.js:3119 | 超级危险拦截入口不全（cron/run_tests/npx legacy）| ⬜ 并入 OP2-2 |
+| A2-17 | index.js:3119 | 超级危险拦截入口不全（cron/run_tests/npx legacy）| ✅ 并入 OP2-2（3926e3f） |
 | A2-18 | index.js:381-387, 3054-3066 | 审计 result 首行不脱敏：紧凑 models.json 读取把 apiKey 原样落日志（实测假键复现）。AST-04 只修了名单，日志复制面仍在 | ⬜ P2 |
 | A2-19 | index.js:248-252 | Windows 下 spawn('npx') ENOENT（双运行时实测）——README 的 MCP 示例在 Windows 直接起不来 | ⬜ P2 |
 | A2-20 | index.js:1121-1152, 1178-1228 | P2-3 预算未覆盖：模型正则同步运算无预算（探针 29 字节 (a+)+$ 超时）、glob maxEntries 计结果非扫描量、无 visited 集合（环链）、perFileCap 不停计算 | ⬜ P2 |

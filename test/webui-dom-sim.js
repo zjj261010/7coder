@@ -154,6 +154,20 @@ function check(name, ok, detail) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + n
   // rollback pops only the failed user turn ('again'); earlier turns survive
   check('ast07: failed user turn rolled back, earlier turns intact', hist2.length === 4 && !hist2.some(x => x.content === 'again') && hist2[3].content === 'PART-OK', JSON.stringify(hist2));
 
+  // --- A2-04: an error message carrying HTML must render as TEXT (no XSS) ---
+  // The err bubble used to go through innerHTML verbatim; a hostile upstream
+  // (or tool error) message like an <img onerror=...> would execute. After the
+  // fix err/sys bubbles are set via textContent, so the markup is escaped.
+  route('/v1/chat/completions', () => sseResponse([
+    'data: ' + JSON.stringify({ error: { message: '<img src=x onerror=window.__xss=1>' } })
+  ]));
+  documentStub.getElementById('ta').value = 'xss probe';
+  hook.send();
+  await sleep(120);
+  const xssRow = findDeep(byId['log'], e => String(e._html).indexOf('&lt;img') >= 0 && String(e.className).indexOf('err-msg') >= 0);
+  check('a204: error bubble renders the payload escaped (&lt;img, no raw <img tag)', !!xssRow && String(byId['log']._html).indexOf('<img') < 0, 'log html=' + logHtml());
+  check('a204: payload never executes (window.__xss stays unset)', sandbox.window.__xss === undefined, 'window.__xss=' + sandbox.window.__xss);
+
   console.log('\nwebui-dom-sim: ' + (failures ? failures + ' FAILED' : 'ALL PASSED'));
   process.exit(failures ? 1 : 0);
 })().catch(e => { console.error('harness crashed:', e); process.exit(1); });

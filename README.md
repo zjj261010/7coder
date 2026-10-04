@@ -110,7 +110,7 @@ but only simulated (teams, workflows, remote triggers, MCP auth) have been
 
 In **default** mode the AI asks for confirmation on risky actions.
 In **`--danger`** or **`--permission-mode=bypass`** it runs instantly.
-Even in bypass mode, super-dangerous commands (`rm -rf /`, `format`, `dd`, etc.) are still blocked.
+In bypass mode a best-effort blocklist still rejects a few known-destructive command shapes (rm -rf /, format, dd...); it is a denylist, not a sandbox.
 
 **Every tool action is risk-classified** by the light model (`LOW` / `MEDIUM` / `HIGH`).
 
@@ -125,7 +125,8 @@ Even in bypass mode, super-dangerous commands (`rm -rf /`, `format`, `dd`, etc.)
 
 Protected files (`.env`, `.gitconfig`, `.bashrc`, `.npmrc`, SSH keys, `credentials.json`, etc.)
 can **never** be edited by the AI in bypass/auto mode, and reading them always
-requires approval (never auto-safe). Path traversal and dangerous commands are
+requires approval in default/auto mode (in bypass they are only warned about,
+not approved). Path traversal and dangerous commands are
 blocked at every level; the HTTP endpoint is localhost-only by default.
 
 ### User Permission Rules
