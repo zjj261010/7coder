@@ -19,7 +19,7 @@
 | `README.md` | 项目简介与功能总览 |
 | `KNOWN-ISSUES.md` | 已知问题与待决策清单（透明记录） |
 | `LICENSE` | 许可证 |
-| `test\` | 自动化测试套件（10 个套件，334 项断言，可选运行） |
+| `test\` | 自动化测试套件（十二个套件；当前断言总数运行 `node scripts/count-assertions.js` 查看，可选运行） |
 
 ## 二、快速开始（三步）
 
@@ -91,7 +91,7 @@ DREAM_ALLOW=true           # 空闲 5 小时后自动整理 7CODER.md
 ENABLE_HTTP_SERVER=true    # 等效于 --server
 ```
 
-- 截屏：`computer_use` 工具 `action=screenshot`，PNG 落在工作区根目录。
+- 截屏：`computer_use` 工具 `action=screenshot`，PNG 落在 `.7coder\screenshots\`。
 - 鼠标/键盘：`mouse_move`/`click`/`type_text`/`press_key`（Windows 真实注入）。
 
 ## 六、常用 REPL 命令
@@ -100,6 +100,7 @@ ENABLE_HTTP_SERVER=true    # 等效于 --server
 |---|---|
 | `/execute-task-now` | 执行当前输入的任务 |
 | `/btw <备注>` | 不打断当前任务，追加一条备注（自动摘要注入下个任务） |
+| `/fork <N>` | 把会话回退到第 N 个用户轮之后，后续对话从那里继续 |
 | `/undo <文件>` | 把文件恢复到最近一次 AI 修改前（自动备份于 `.7coder\backups\`） |
 | `/clear` | 清空会话，重新开始 |
 | `/bye` | 退出（自动清理后台任务/定时器） |
@@ -115,7 +116,7 @@ set RUN_ONLY=cli-exit,oneshot
 runtime\node.exe test\runner.js
 ```
 
-十个测试套件（A–J，334 项断言）详见 `test\` 目录与 `README.md`。
+十二个测试套件（A–J 离线全量 + K/R 需真实端点，REAL_TEST=1）；当前断言总数运行 `node scripts/count-assertions.js` 查看。详见 `test\` 目录与 `README.md`。
 
 ## 八、常见问题
 

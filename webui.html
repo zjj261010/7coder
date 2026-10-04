@@ -596,13 +596,32 @@ details.think .think-body {
       var box = document.createElement('div');
       box.className = 'approval-box';
       box.innerHTML = '<div class="q">' + esc(req.question) + '</div>' +
+        '<span class="approval-cd">剩余 120 秒</span>' +
         '<div class="btns"><button class="approve">✓ 批准</button><button class="deny">✗ 拒绝</button></div>';
       bubble.appendChild(box);
       log.scrollTop = log.scrollHeight;
+      // P2-12: 服务端 120 秒无操作会自动拒绝 - 前端同拍倒计时提示
+      var cdLeft = 120;
+      var cdSpan = box.querySelector('.approval-cd');
+      var cdTimer = setInterval(function () {
+        cdLeft -= 1;
+        if (cdLeft <= 0) {
+          clearInterval(cdTimer);
+          cdSpan.textContent = '已超时自动拒绝';
+          var ab = box.querySelector('.approve'), db = box.querySelector('.deny');
+          if (ab) ab.disabled = true;
+          if (db) db.disabled = true;
+        } else {
+          cdSpan.textContent = '剩余 ' + cdLeft + ' 秒';
+        }
+      }, 1000);
+      var clearCd = function () { if (cdTimer) { clearInterval(cdTimer); cdTimer = null; } };
       box.querySelector('.approve').addEventListener('click', function () {
+        clearCd();
         respondApproval(req.id, true, box);
       });
       box.querySelector('.deny').addEventListener('click', function () {
+        clearCd();
         respondApproval(req.id, false, box);
       });
     }

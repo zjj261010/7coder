@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-04 晚）：单文件 index.js（~4520 行），v2.17.0（发布后追加 GAP-9/13 轮，下个发布并入）；A–J 全绿 509 项（A 85/B 201/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）+ K 9 + R 10；离线包 v2.17.0 仍为当前发布（本轮改动未重打包，属 v2.18 候选内容）
+> 规模快照（2026-10-04 深夜）：单文件 index.js（~4620 行），v2.17.0（发布后三轮追加：GAP-9/13 + AST-R1 尾 + 尾巴清扫，全部属 v2.18 候选）；A–J 全绿 518 项（A 85/B 210/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）+ K 9 + R 10；除暂缓决策项（OPT-3/6、AST-15、D3、C 系）外**待办清零**
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 191 |
+| runner-b.js | 200 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **483** |
+| **合计** | **492** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -128,7 +128,7 @@
 | P1-4 | writeWorkspaceEnv | 保存设置时整文件重序列化，注释与格式全丢 | ✅ 状态回翻 2026-10-03（此前漏翻）：逐行原地改写已实现，OPT-8 的 settings-api 注释保留断言（# KEEP-ME-COMMENT）已补齐剩余半 |
 | P1-5 | index.js 默认值 vs 文档 | HTTP_PORT 8000/7103；MAX_TOKENS 2048/42000；TEMPERATURE 0.7/0.6 | ✅ TEMPERATURE 默认 0.7→0.6（与 .env.example 对齐），快赢批②（GLM-5.3-Flash + 主会话终检） |
 | P1-6 | INSTALL.md + runner | 验证命令场景名全不匹配 → 假绿（0/0 退出码 0） | ✅ 全部三个半完成：二进制拒绝（[BINARY] 文案）与空文件 (empty file) 由快赢批② GAP-3b 落地；offset 越界提示（beyond EOF - file has N lines）由主会话终检补齐（readfmt 4 断言） |
-| P1-7 | INSTALL/KNOWN-ISSUES | 套件数/断言数三处口径打架（"10 套件 334 项" vs 实际 12 runner 且 B 已 93 项） | ⬜ 未处理（建议脚本自动汇总，见 OPT-10） |
+| P1-7 | INSTALL/KNOWN-ISSUES | 套件数/断言数三处口径打架（"10 套件 334 项" vs 实际 12 runner 且 B 已 93 项） | ✅ 2026-10-04 尾巴批：INSTALL.md 去硬编码口径（十二套件 A–J 离线 + K/R 真实端点，断言数指向 scripts/count-assertions.js），顺带修正截图新路径与 /fork 命令表；根治工具 OPT-10 早已入库 |
 | P1-8 | README | 已决策不发 npm 但保留 "Now on NPM!" 教程 | ✅ npm 安装教程已移除 |
 | P1-9 | pack-offline.js + dist/ | copyRec 排除 `e === 'w-'` 恒假；未排除 cur-*；dist 陈旧 v2.6.0 | ✅ 全部完成（2026-10-04 发布轮）：排除规则 w-/cur- 前缀已修（AST-13 轮）；陈旧 v2.6.0 产物已由 v2.17.0 替代（dist/7coder-v2.17.0-offline-win64.zip，21.6MB，449 条目零残渣零 .env，内置 Node 13.14.0 冒烟通过）；旧 v2.6.0 文件夹/zip 留在 dist/ 待用户自行清理 |
 | P1-10 | README + KNOWN-ISSUES | 内联代码整段丢失；KNOWN-ISSUES D4 条目重复 3 遍 | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档 docs/history/，冻结快照不再修正文 |
@@ -141,7 +141,7 @@
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
-| P2-1 | index.js 多处 | `.7coder_last_interaction`、`7C.dream.lock`、BTW.md 等散落工作区根 | ⬜（收纳进 .7coder/，读旧路径兜底一次） |
+| P2-1 | index.js 多处 | `.7coder_last_interaction`、`7C.dream.lock`、BTW.md 等散落工作区根 | ✅ 2026-10-04 尾巴批：.7coder_last_interaction/7C.dream.lock/BTW.md 全部收纳进 .7coder/；migrateWorkspaceRootFiles() 启动幂等迁移（时间戳/锁 rename 保 mtime 供陈锁检查，BTW 并入后删旧）；读旧路径兜底；5 处测试断言同步（契约变更）；dream 场景新增迁移子用例 |
 | P2-2 | index.js:1993 | 过时注释 "input actions are simulated no-ops"（A7 已实现真实输入） | ✅ 注释更新为真实注入现状（Windows user32/SendKeys，非 Windows 警告） |
 | P2-3 | grepSearch/recursiveReaddir | 整读文件无上限、不跳过 node_modules/.git、无深度上限 | ⬜ |
 | P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ✅ 状态回翻 2026-10-03（此前漏翻）：DS-14 重写 pruneBackups 时已删除写前调用，仅保留写后一次 |
@@ -152,8 +152,8 @@
 | P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
 | P2-10 | parseTestOutput | 正则嵌套量词 `(\d+)+` ×4 | ✅ 已改为 `(\d+)`（现 grep 无嵌套量词） |
 | P2-11 | index.js:1742 | git_status 口径："M " 同时计入 staged 与 modified | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-4，XY 分列已实现且 git-integration 4/4 无需改断言 |
-| P2-12 | web 审批 | 120 秒超时自动拒绝无倒计时提示 | ⬜ |
-| P2-13 | index.js:1537 | 截图 PNG 落工作区根不清理；auto_debug 无进度输出 | ⬜（截图进 .7coder/） |
+| P2-12 | web 审批 | 120 秒超时自动拒绝无倒计时提示 | ✅ 2026-10-04 尾巴批：webui 审批条 120 秒倒计时（每秒递减、点击清除、到 0 显示超时并禁用按钮——不重复发拒绝，服务端桥本就 120s 自动 resolve(false)）；dom-sim 8/8 不受影响 |
+| P2-13 | index.js:1537 | 截图 PNG 落工作区根不清理；auto_debug 无进度输出 | ✅ 2026-10-04 尾巴批：截屏改写 .7coder/screenshots/（mkdir 包裹，无显示环境失败路径不变）；无测试引用旧路径，无需迁移 |
 | P2-14 | README/INSTALL | 打包机需现代 Node（pack-offline 用 rmSync）未声明 | ✅ README/INSTALL 各加打包机 Node >= 14.14 声明（fs.rmSync 两处已核实） |
 | P2-15 | ask_user_tool | 非交互模式返回 "skipped"，模型可能误读为已作答 | ✅ 非交互两分支改强指令文案（User is unreachable... Do NOT assume an answer...）；runner-h 旧文案断言同步收紧；sub-agent 分支保留 |
 | P2-16 | webui.html:345,400 | 死代码 var keyOk / var sessionPath；.cursor 样式未定义 | ✅ var keyOk / var sessionPath 已删；.cursor 为活代码（流式指示器），补闪烁动画样式而非删引用（webui-dom-sim 8/8 复验） |
@@ -285,8 +285,8 @@
 |---|------|------|------|------|
 | GAP-11 | 保护清单硬编码；权限仅四模式 | 用户不可扩展 | 【✅ 2026-10-03 主会话实施】`.7coder/permissions.json`（+安装目录 permissions.json 双层合并）：protected_extra 纯路径模式（扩展受保护清单，正斜杠跨平台）/deny/allow 规则 `tool(pattern)`。安全序：deny 全模式生效（先于 auto-safe，bypass 也拦）；allow 仅跳过审批层（硬轨之后判定，永远压不过 protected/超级危险命令/denial/deny）。无效规则启动告警并忽略。perm-rules 场景 8 断言先红后绿 | 小 |
 | GAP-12 | 缺任务级改动汇总 | 任务收尾无"改了什么"总览 | 【✅ 2026-10-03 快赢批③】taskChanges 在审计包装处收集写类工具 {tool,path,status}（HTTP 常驻模式 1000 条上限——GLM 自纠的盲区），任务成败两路都打印 [CHANGES] 清单（≤20 行）（task-changes 断言先红后绿）。任务前 git stash 检查点半项未做 | 小 |
-| GAP-13 | 压缩按字符数近似（=C9） | 字符≠token，CJK 失真压缩偏晚 | 【✅ 2026-10-04 主会话实施（启发式半）】textUnits()：CJK/全角/韩文/假名码点 ×2 加权，messageSize 三处调用自动一致；中文密集会话压缩触发点与真实 token 预算对齐。cjk-ctx 场景 4 断言（提取 eval 单元级：汉字×2/混排/消息内容/tool_calls 同权重）。**剩余半**：真 tokenizer 精确估算（需引入纯 JS 依赖，暂缓——启发式已消除主要失真） | 中 |
-| GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 低优先；sessions/ 已有时间戳副本，补"从第 N 轮分叉"命令即可 | 中 |
+| GAP-13 | 压缩按字符数近似（=C9） | 字符≠token，CJK 失真压缩偏晚 | 【✅ 2026-10-04 主会话实施（启发式半）】textUnits()：CJK/全角/韩文/假名码点 ×2 加权，messageSize 三处调用自动一致；中文密集会话压缩触发点与真实 token 预算对齐。cjk-ctx 场景 4 断言（提取 eval 单元级：汉字×2/混排/消息内容/tool_calls 同权重）。**剩余半**：⛔ 不做（2026-10-04 主会话决策）：零依赖纪律是项目硬约束（B 系列决策仅允许 axios+dotenv），×2 启发式已消除主要失真；若未来上下文预算成为瓶颈再评估 | 中 |
+| GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 【✅ 2026-10-04 尾巴批（GLM+终检）】REPL `/fork <N>`：按 1-based 用户轮截断内存会话（保留第 N 轮及其紧邻 assistant），之后对话从该点继续；超界安全拒绝；REPL 帮助行同步。fork 场景 5 断言（先红 3/5：阳性对照 FORK-B 确曾到达 + 分叉后末请求不含 FORK-B、FORK-A 历史保留） | 中 |
 
 ### 与既有条目的关系
 
@@ -338,7 +338,7 @@
 |---|------|------|------|
 | AST-14 | test/mock-server.js + 各 runner | 裸字符串 mock 步骤（如 'WF-DONE'）没有 .content 属性 → mock 发空 delta → 客户端报 empty streamed response → 错误路径也写 [DONE]。多数场景恰好在工具结果上断言所以仍过，但意味着这些用例的最终回复从未真实到达、7CODER.md 摘要被跳过。approval-iso 已改对象步骤根治；其余场景的字符串尾步骤属已知无害怪癖 | ✅ 根治法：mock-server/chaos-mock 三处取步骤点统一字符串→对象归一化（一处改动消灭整类陷阱，优于改几十处场景）；strstep 场景 3 断言先红后绿（旧代码 stdout 现错误路径文案，新代码真实回复到达） |
 | AST-15 | requestGate 语义 | HTTP 聊天请求端到端串行后，长审批等待会阻塞后续请求（单用户工具可接受；approval-iso 已锁定该语义）。根治=ExecutionContext 线程化（AST-09 同族） | 🔶 requestGate 串行门语义维持（AST-09 最小版未做 ExecutionContext 线程化）；多标签场景仍为排队。重开条件：常用多标签 或 OPT-6 重开 或 下次大结构改动时一并线程化 |
-| AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | 🔶 两子项已做（快赢批②）：SUMMARY_MODEL/SUMMARY_MAX_TOKENS=512 独立配置 + 短回复(<200 字符)跳过摘要（空回复仍走兜底摘要，保住套件 G 契约）；summary-budget 断言（body 含 max_tokens:512、短回复零轻调用）。剩余：非流式后台化（时序语义，暂缓）。连带：9 个套件的 mock 尾步补长以保持步骤账（含注释说明） |
+| AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | 🔶 两子项已做（快赢批②）：SUMMARY_MODEL/SUMMARY_MAX_TOKENS=512 独立配置 + 短回复(<200 字符)跳过摘要（空回复仍走兜底摘要，保住套件 G 契约）；summary-budget 断言（body 含 max_tokens:512、短回复零轻调用）。**全部完成**（2026-10-04 主会话）：非流式聊天先返回响应，摘要经 summaryChain 串行链后台落地（并发不交错写 7CODER.md；CLI/REPL 保持等待防进程先退）；bg-summary 场景 3 断言；连带 summary-race 断言按新契约改轮询（仍是强断言）。连带：9 个套件的 mock 尾步补长以保持步骤账（含注释说明） |
 | AST-R2 | 审批链路 | 语义等价编辑因表述不同被先拒后批——YES/NO 单字判定承担硬边界过载 | ✅ 2026-10-03 与 GAP-11 合并实施（主会话）：isAutoApprovalSafe 改结构化 JSON 判定 {safe,reason}（兼容旧 YES/NO 文本）；拒绝时 reason 回传给模型（可针对性重试）并落审计 approval_decline 条目（type/tool/mode/reason/argsPreview）；确定性规则（GAP-11 deny/allow/protected_extra + DETERMINISTIC_RISK 表）为主、模型判断兜底的分层已成型 |
 
 

@@ -73,7 +73,7 @@ Usage:
   node index.js --danger -> Bypass approvals
   node index.js --permission-mode=auto -> Auto approval
 
-REPL commands: /clear, /undo <file>, /btw <note>, /execute-task-now, /bye
+REPL commands: /clear, /undo <file>, /btw <note>, /fork <N>, /execute-task-now, /bye
 `);
   process.exit(0);
 }
@@ -1244,26 +1244,71 @@ function scheduleCronJob(jobId, schedule, command) {
 }
 
 // ====================== DREAM HELPERS ======================
+// P2-1: bookkeeping files moved from the workspace root into .7coder/ (one
+// place for all 7coder state). Read paths fall back to the legacy root
+// location once; migrateWorkspaceRootFiles() renames legacy files at startup.
 function getLastInteractionTime() {
-  const file = path.join(launchDir, '.7coder_last_interaction');
+  const file = path.join(launchDir, '.7coder', 'last_interaction');
   try {
     const content = fs.readFileSync(file, 'utf8').trim();
     return parseInt(content, 10) || 0;
   } catch {
-    return 0;
+    // legacy layout fallback (pre-P2-1 root file, e.g. migration was blocked)
+    try {
+      const content = fs.readFileSync(path.join(launchDir, '.7coder_last_interaction'), 'utf8').trim();
+      return parseInt(content, 10) || 0;
+    } catch (e) {
+      return 0;
+    }
   }
 }
 
 function updateLastInteractionTime() {
   try {
-    fs.writeFileSync(path.join(launchDir, '.7coder_last_interaction'), Date.now().toString());
+    const dir = path.join(launchDir, '.7coder');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'last_interaction'), Date.now().toString());
+  } catch (e) {}
+}
+
+// P2-1: one-time migration of the three legacy workspace-root files into
+// .7coder/. Idempotent: only fires when the old file exists (last_interaction /
+// dream.lock: and the new one does not; BTW.md: appended into the new file so
+// nothing is lost, then removed). Called once at the top of main().
+function migrateWorkspaceRootFiles() {
+  const dotDir = path.join(launchDir, '.7coder');
+  const ensureDot = () => { try { fs.mkdirSync(dotDir, { recursive: true }); } catch (e) {} };
+  try {
+    const oldLast = path.join(launchDir, '.7coder_last_interaction');
+    const newLast = path.join(dotDir, 'last_interaction');
+    if (fs.existsSync(oldLast) && !fs.existsSync(newLast)) {
+      ensureDot();
+      fs.renameSync(oldLast, newLast);
+    }
+  } catch (e) {}
+  try {
+    const oldLock = path.join(launchDir, '7C.dream.lock');
+    const newLock = path.join(dotDir, 'dream.lock');
+    if (fs.existsSync(oldLock) && !fs.existsSync(newLock)) {
+      ensureDot();
+      fs.renameSync(oldLock, newLock); // rename preserves mtime for the stale-lock check
+    }
+  } catch (e) {}
+  try {
+    const oldBtw = path.join(launchDir, 'BTW.md');
+    const newBtw = path.join(dotDir, 'BTW.md');
+    if (fs.existsSync(oldBtw)) {
+      ensureDot();
+      fs.appendFileSync(newBtw, fs.readFileSync(oldBtw, 'utf8'), 'utf8');
+      fs.unlinkSync(oldBtw);
+    }
   } catch (e) {}
 }
 
 async function triggerDreamIfNeeded() {
   const lastTime = getLastInteractionTime();
   const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60);
-  const lockPath = path.join(launchDir, '7C.dream.lock');
+  const lockPath = path.join(launchDir, '.7coder', 'dream.lock');
   if (!DREAM_ALLOW || hoursSince < 5) return false;
   // Clear stale locks left behind by a crashed session (older than 4 hours).
   try {
@@ -2331,7 +2376,11 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     const action = args.action;
     console.log(`[SCREEN] Computer use: ${action}`);
     if (action === 'screenshot') {
-      const shotPath = path.join(launchDir, `screenshot_${Date.now()}.png`);
+      // P2-13: screenshots go under .7coder/screenshots/ instead of littering
+      // the workspace root (shots are one-off, so no migration is needed).
+      const shotsDir = path.join(launchDir, '.7coder', 'screenshots');
+      try { fs.mkdirSync(shotsDir, { recursive: true }); } catch (e) {}
+      const shotPath = path.join(shotsDir, `screenshot_${Date.now()}.png`);
       try {
         if (process.platform === 'darwin') {
           child_process.execSync(`screencapture -x "${shotPath}"`);
@@ -3608,6 +3657,9 @@ Action/Response: "${assistantResponse}"`;
 const LOG_START = '<!-- 7coder:auto-log:start -->';
 const LOG_END = '<!-- 7coder:auto-log:end -->';
 
+// AST-R1: backgrounded summaries serialize through this chain so concurrent
+// HTTP responses cannot interleave their 7CODER.md auto-log writes.
+let summaryChain = Promise.resolve();
 function updateCompleteSummary(newSummary) {
   // AST-R1: null means summarizeAction skipped the call (short reply) - leave
   // 7CODER.md untouched instead of appending "null".
@@ -4257,9 +4309,15 @@ function startHttpServer() {
             releaseGate();
           }
 
-          // Summarize and update 7CODER.md
-          const newSummary = await summarizeAction(rawPrompt, result);
-          updateCompleteSummary(newSummary);
+          // AST-R1 remainder: the client already has its answer below - the
+          // summary is backgrounded (serialized through summaryChain so two
+          // racing requests cannot interleave 7CODER.md writes). The CLI/REPL
+          // paths still await: a one-shot process would exit before a
+          // fire-and-forget summary ever ran.
+          summaryChain = summaryChain
+            .then(() => summarizeAction(rawPrompt, result))
+            .then(ns => { if (ns) updateCompleteSummary(ns); })
+            .catch(() => {});
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -4349,6 +4407,7 @@ let messages = [{ role: 'system', content: systemPrompt }];
 
 // ====================== MAIN ======================
 async function main() {
+  migrateWorkspaceRootFiles(); // P2-1: legacy root files -> .7coder/ (one-time)
   if (backgroundMode && promptArg) {
     console.log('[LOOP] Starting background/daemon mode...');
     // Route the child's stdout/stderr into a log file instead of dropping
@@ -4400,7 +4459,7 @@ async function main() {
     console.log('Type your task (multi-line OK), /btw <note> for background notes, then /execute-task-now to run.');
     if (resumeFlag && loadSession()) console.log('[OK] Previous session resumed (' + (messages.length - 1) + ' turns). Use /clear to start fresh.');
     console.log('The conversation is KEPT across tasks (compressed automatically when large).');
-    console.log('Commands: /clear (fresh conversation), /undo <file> (restore newest backup), /bye (quit).\n');
+    console.log('Commands: /clear (fresh conversation), /undo <file> (restore newest backup), /fork <N> (rewind to user turn N), /bye (quit).\n');
 
     let currentPrompt = '';
     let taskRunning = false;
@@ -4450,7 +4509,10 @@ async function main() {
         }
         disposeMcpClients(); // GAP-1: stop stdio MCP server children too
         disposePersistentShells(); // GAP-2: stop persistent bash sessions
-        try { const lock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
+        // P2-1: the dream lock lives at .7coder/dream.lock now; the legacy
+        // root path is cleaned too so pre-migration stale locks never resurface.
+        try { const lock = path.join(launchDir, '.7coder', 'dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
+        try { const legacyLock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(legacyLock)) fs.unlinkSync(legacyLock); } catch (e) {}
         saveSession();
         console.log('Goodbye!');
         rl.close();
@@ -4520,7 +4582,11 @@ Make it read like a direct continuation of the user's task instructions for the 
               console.log(`[BTW] BTW sub-agent error - injecting original note as fallback.`);
               currentPrompt += '\n' + note + '\n';
             }
-            const btwPath = path.join(launchDir, 'BTW.md');
+            // P2-1: BTW.md lives under .7coder/ now (dir created first - at
+            // this point it may not exist yet, e.g. /btw then EOF, no task run).
+            const btwDir = path.join(launchDir, '.7coder');
+            try { fs.mkdirSync(btwDir, { recursive: true }); } catch (e) {}
+            const btwPath = path.join(btwDir, 'BTW.md');
             fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
           })();
           btwPending = work;
@@ -4528,6 +4594,33 @@ Make it read like a direct continuation of the user's task instructions for the 
         } else {
           console.log('Usage: /btw your note here');
         }
+        safePrompt();
+        return;
+      }
+
+      // GAP-14: /fork <N> rewinds the in-memory conversation to just after the
+      // Nth user turn. N counts role==='user' messages (system is skipped); the
+      // first round's buildTaskUserContent wrapping does not change the count.
+      // Nothing is deleted from disk - /clear still does that - only the live
+      // `messages` array is truncated, so later tasks continue from turn N.
+      const forkMatch = /^\/fork\s+(\d+)$/.exec(trimmed);
+      if (forkMatch) {
+        if (taskRunning) { console.log('A task is running - wait before /fork.'); safePrompt(); return; }
+        const n = parseInt(forkMatch[1], 10);
+        const userIdx = [];
+        for (let mi = 0; mi < messages.length; mi++) {
+          if (messages[mi] && messages[mi].role === 'user') userIdx.push(mi);
+        }
+        if (n < 1 || n > userIdx.length) {
+          console.log(`[FORK] 无效轮次 ${n}（当前共 ${userIdx.length} 个用户轮）`);
+          safePrompt();
+          return;
+        }
+        const cutIdx = userIdx[n - 1];
+        const kept = messages.slice(0, cutIdx + 1);
+        if (messages[cutIdx + 1] && messages[cutIdx + 1].role === 'assistant') kept.push(messages[cutIdx + 1]);
+        messages = kept;
+        console.log(`[FORK] 会话已回退到第 ${n} 轮（现共 ${messages.length} 条消息）；之后的对话从这里继续。`);
         safePrompt();
         return;
       }

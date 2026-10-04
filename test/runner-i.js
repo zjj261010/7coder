@@ -312,7 +312,8 @@ scenarios.push({
   name: 'bye-dreamlock',
   fn: async () => {
     const cwd = freshCwd('i9b');
-    const lockPath = path.join(cwd, '7C.dream.lock');
+    const lockPath = path.join(cwd, '.7coder', 'dream.lock'); // P2-1: moved under .7coder/
+    fs.mkdirSync(path.join(cwd, '.7coder'), { recursive: true });
     fs.writeFileSync(lockPath, new Date().toISOString());
     const r = await runCli({
       port: 1, args: [], cwd, timeoutMs: 15000,

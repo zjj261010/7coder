@@ -131,7 +131,7 @@ scenarios.push({
       ]
     });
     const log = readLog(m.log);
-    const btwFile = path.join(cwd, 'BTW.md');
+    const btwFile = path.join(cwd, '.7coder', 'BTW.md'); // P2-1: moved under .7coder/
     const mains = log.filter(x => x.stream === true);
     record('session: /btw writes BTW.md', fs.existsSync(btwFile) && fs.readFileSync(btwFile, 'utf8').includes('mango'), '');
     record('session: /btw summary injected into next task', mains.length > 0 && mains[0].messages.some(x => x.role === 'user' && String(x.content).includes('MANGO SUMMARIZED')), mains.length ? mains[0].messages.map(x => x.role).join(',') : 'no req');
@@ -212,7 +212,12 @@ scenarios.push({
 scenarios.push({
   name: 'dream',
   fn: async () => {
-    const seedLast = (cwd, hoursAgo) => fs.writeFileSync(path.join(cwd, '.7coder_last_interaction'), String(Date.now() - hoursAgo * 3600 * 1000));
+    // P2-1: interaction timestamp lives at .7coder/last_interaction now
+    const seedLast = (cwd, hoursAgo) => {
+      const dir = path.join(cwd, '.7coder');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'last_interaction'), String(Date.now() - hoursAgo * 3600 * 1000));
+    };
 
     // dream triggers after >=5h idle
     let cwd = freshCwd('b-dream-on');
@@ -226,14 +231,14 @@ scenarios.push({
     let r = await runCli({ port: m.port, args: ['--prompt', 'do task'], env: { PERMISSION_MODE: 'bypass', DREAM_ALLOW: 'true' }, cwd });
     let log = readLog(m.log);
     record('dream: triggers after 6h idle (dream call first)', log.length > 0 && String((log[0].messages || [])[0] && log[0].messages[0].content || '').includes('DREAM MODE OVERRIDE'), log.length ? String(log[0].messages[0].content).substring(0, 60) : 'no req');
-    record('dream: lock file cleaned up after session', !fs.existsSync(path.join(cwd, '7C.dream.lock')), '');
+    record('dream: lock file cleaned up after session', !fs.existsSync(path.join(cwd, '.7coder', 'dream.lock')), '');
     record('dream: task still runs after dream', r.out.includes('TASK-AFTER-DREAM'), '');
     stopMock(m);
 
     // fresh lock -> dream skipped
     cwd = freshCwd('b-dream-lock');
     seedLast(cwd, 6);
-    fs.writeFileSync(path.join(cwd, '7C.dream.lock'), new Date().toISOString());
+    fs.writeFileSync(path.join(cwd, '.7coder', 'dream.lock'), new Date().toISOString());
     m = startMock([
       { role: 'assistant', content: 'DIRECT-TASK-REPLY' },
       { role: 'assistant', content: 'task summary line' }
@@ -255,6 +260,27 @@ scenarios.push({
     r = await runCli({ port: m.port, args: ['--prompt', 'do task'], env: { PERMISSION_MODE: 'bypass', DREAM_ALLOW: 'true' }, cwd });
     log = readLog(m.log);
     record('dream: recent interaction suppresses dream', log.length > 0 && !String(log[0].messages[0].content || '').includes('DREAM MODE OVERRIDE') && r.out.includes('RECENT-TASK-REPLY'), '');
+    stopMock(m);
+
+    // P2-1: the three legacy workspace-root files migrate into .7coder/ on the
+    // first run (rename for timestamps/lock - mtime matters for the stale-lock
+    // check; BTW.md is merged into the new file, then the root copy removed).
+    cwd = freshCwd('b-dream-migrate');
+    fs.writeFileSync(path.join(cwd, '.7coder_last_interaction'), String(Date.now() - 6 * 3600 * 1000));
+    fs.writeFileSync(path.join(cwd, '7C.dream.lock'), new Date().toISOString());
+    fs.writeFileSync(path.join(cwd, 'BTW.md'), 'LEGACY-BTW-CONTENT');
+    m = startMock([{ role: 'assistant', content: 'MIGRATE-TASK-OK' }]);
+    await new Promise(r => setTimeout(r, 600));
+    r = await runCli({ port: m.port, args: ['--prompt', 'do task'], env: { PERMISSION_MODE: 'bypass' }, cwd });
+    const migOk =
+      fs.existsSync(path.join(cwd, '.7coder', 'last_interaction')) &&
+      !fs.existsSync(path.join(cwd, '.7coder_last_interaction')) &&
+      fs.existsSync(path.join(cwd, '.7coder', 'dream.lock')) &&
+      !fs.existsSync(path.join(cwd, '7C.dream.lock')) &&
+      fs.existsSync(path.join(cwd, '.7coder', 'BTW.md')) &&
+      fs.readFileSync(path.join(cwd, '.7coder', 'BTW.md'), 'utf8').includes('LEGACY-BTW-CONTENT') &&
+      !fs.existsSync(path.join(cwd, 'BTW.md'));
+    record('dream: legacy root files migrate into .7coder/ (one-time)', migOk, '');
     stopMock(m);
   }
 });
@@ -1975,6 +2001,88 @@ scenarios.push({
     record('cjk: mixed string counts han x2 + ascii x1', tu('a配b置') === 6, 'got=' + tu('a配b置'));
     record('cjk: messageSize applies the weighting to message content', msz({ content: '配置'.repeat(10) }) === 40 && msz({ content: 'x'.repeat(20) }) === 20, 'cjk40=' + msz({ content: '配置'.repeat(10) }) + ' ascii20=' + msz({ content: 'x'.repeat(20) }));
     record('cjk: tool_calls measured with the same weighting', msz({ tool_calls: [{ function: { arguments: '{"p":"配"}' } }] }) === tu(JSON.stringify([{ function: { arguments: '{"p":"配"}' } }])), 'ok if equal');
+  }
+});
+
+// --- B38: AST-R1 remainder - non-stream chat responds BEFORE the summary ---
+scenarios.push({
+  name: 'bg-summary',
+  fn: async () => {
+    const cwd = freshCwd('b-bgsum');
+    const m = startMock([
+      { role: 'assistant', content: 'BGSUM-REPLY ' + 'background summary scenario reply padded past the summary floor for the budget skip rule. '.repeat(5) },
+      { role: 'assistant', content: 'bgs-summary-step' } // the summary light call's scripted reply
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 441;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'k', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', HEAVY_MODEL: 'bg-model', LIGHT_MODEL: 'bg-model', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd, stdio: 'ignore'
+    });
+    try {
+      await new Promise(r => setTimeout(r, 2500));
+      const t0 = Date.now();
+      const chat = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] });
+      const respMs = Date.now() - t0;
+      record('bgsum: non-stream response arrives with the reply', chat.status === 200 && chat.body.includes('BGSUM-REPLY'), 'status=' + chat.status + ' ms=' + respMs);
+      // the summary is fire-and-forget now - poll the mock log until the
+      // light call lands (proves the background path runs to completion)
+      let summarySeen = false;
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        const reqs = readLog(m.log);
+        if (reqs.some(x => (x.messages || []).length === 1 && (x.messages[0].content || '').indexOf('Create a short, concise summary') === 0)) { summarySeen = true; break; }
+        await new Promise(r => setTimeout(r, 150));
+      }
+      record('bgsum: background summary still lands after the response', summarySeen, summarySeen ? 'ok' : 'summary light call never arrived');
+      let mdOk = false;
+      for (let i = 0; i < 10 && !mdOk; i++) {
+        await new Promise(r => setTimeout(r, 300));
+        try { mdOk = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8').length > 0; } catch (e) {}
+      }
+      record('bgsum: 7CODER.md written by the background chain', mdOk, mdOk ? 'ok' : 'no 7CODER.md');
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m);
+    }
+  }
+});
+
+// --- B39: GAP-14 /fork - truncate the in-memory conversation back to turn N ---
+scenarios.push({
+  name: 'fork',
+  fn: async () => {
+    const cwd = freshCwd('b-fork');
+    // All three replies are short (<200 chars) so summarizeAction skips the
+    // light summary call entirely (index.js summary floor) - the mock script
+    // maps 1:1 onto the three main calls, no summary steps in between. This
+    // also keeps FORK-B out of 7CODER.md, so it cannot leak into a later
+    // request via the first-round buildTaskUserContent wrap.
+    const m = startMock([
+      { role: 'assistant', content: 'FORK-A-REPLY' },
+      { role: 'assistant', content: 'FORK-B-REPLY' },
+      { role: 'assistant', content: 'ONLY-FORK-A-SEEN' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({
+      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 40000,
+      stdinSteps: [
+        { t: '记住暗号FORK-A\n', d: 1500 }, { t: '/execute-task-now\n', d: 3500 },
+        { t: '记住暗号FORK-B\n', d: 300 }, { t: '/execute-task-now\n', d: 3500 },
+        { t: '/fork 1\n', d: 400 },
+        { t: '现在说出你记住的所有暗号\n', d: 300 }, { t: '/execute-task-now\n', d: 3500 },
+        { t: '/bye\n', d: 500 }
+      ]
+    });
+    const log = readLog(m.log);
+    const mains = log.filter(x => x.tools);
+    record('fork: stdout reports rollback to turn 1', r.out.includes('[FORK] 会话已回退到第 1 轮'), r.out.substring(0, 200));
+    record('fork: exactly three main calls happened', mains.length === 3, 'mains=' + mains.length);
+    record('fork: positive control - turn-2 request carried FORK-B', mains.length >= 2 && mains[1].messages.some(x => x.role === 'user' && String(x.content).includes('FORK-B')), '');
+    const lastUser = mains.length ? mains[mains.length - 1].messages.filter(x => x.role === 'user') : [];
+    record('fork: post-fork request user message drops FORK-B', lastUser.length > 0 && !lastUser.some(x => String(x.content).includes('FORK-B')), JSON.stringify(lastUser.map(x => String(x.content).substring(0, 60))).substring(0, 200));
+    record('fork: post-fork request still carries turn-1 history', mains.length >= 3 && mains[2].messages.some(x => x.role === 'user' && String(x.content).includes('FORK-A')), '');
+    stopMock(m);
   }
 });
 

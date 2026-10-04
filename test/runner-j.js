@@ -158,7 +158,7 @@ scenarios.push({
       port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 20000,
       stdinSteps: [{ t: '/btw note before quit\n', d: 1200 }]  // stdin ends while/before the light call resolves
     });
-    const btw = path.join(cwd, 'BTW.md');
+    const btw = path.join(cwd, '.7coder', 'BTW.md'); // P2-1: moved under .7coder/
     record('btw-eof: EOF after /btw exits cleanly with BTW.md written', r.code === 0 && fs.existsSync(btw) && fs.readFileSync(btw, 'utf8').includes('note before quit'), 'exit=' + r.code);
     stopMock(m);
   }

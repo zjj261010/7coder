@@ -296,7 +296,16 @@ scenarios.push({
         httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'a' }] }),
         httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'b' }] })
       ]);
-      const md = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8');
+      // AST-R1: responses now return BEFORE their summaries - the two writes
+      // land via the serialized background chain, so poll until both bullets
+      // are present (2 markers + 2 bullets) instead of reading immediately.
+      let md = '';
+      const deadline = Date.now() + 8000;
+      while (Date.now() < deadline) {
+        try { md = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8'); } catch (e) { md = ''; }
+        if (md.split('\n').filter(Boolean).length >= 4) break;
+        await new Promise(r => setTimeout(r, 200));
+      }
       const lines = md.split('\n').filter(Boolean);
       const validLog = lines.every(l => l.startsWith('<!-- 7coder:auto-log') || l.startsWith('- '));
       record('summary-race: concurrent writes leave a valid marker/bullet log', lines.length >= 4 && validLog, JSON.stringify(md.substring(0, 120)));
