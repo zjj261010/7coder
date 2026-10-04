@@ -530,8 +530,8 @@ const tools = [
   { type: "function", function: { name: "run_command", description: "Run a shell command via the system default shell (cmd.exe on Windows, /bin/sh elsewhere).", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell. persistent=true keeps ONE long-lived bash for the whole conversation so cwd/env survive across calls (cd, export, aliases); default is a fresh stateless shell per call.", parameters: { type: "object", properties: { command: { type: "string" }, persistent: { type: "boolean" }, timeout_ms: { type: "number", description: "persistent mode only: 1000-300000, default 120000" } }, required: ["command"] } } },
   { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (works on Win7 PowerShell 2.0+ via -EncodedCommand). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-  { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js).", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
-  { type: "function", function: { name: "grep_tool", description: "Search file contents.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
+  { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js). Budget: node_modules/.git/dist/.cache are skipped and depth/entry caps apply (a [truncated at N entries] marker ends the list when hit).", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
+  { type: "function", function: { name: "grep_tool", description: "Search file contents. Budget: node_modules/.git/dist/.cache, files over 2MB and binary files are skipped; caps apply (a truncation marker ends the results when hit).", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "list_dir", description: "List directory contents (name, type, size).", parameters: { type: "object", properties: { path: { type: "string" } } } } },
   { type: "function", function: { name: "download_tool", description: "Download a URL to a local file inside the workspace (streamed, 500 MB cap).", parameters: { type: "object", properties: { url: { type: "string" }, path: { type: "string" } }, required: ["url", "path"] } } },
   { type: "function", function: { name: "process_list_tool", description: "List running processes (tasklist on Windows, ps on Unix).", parameters: { type: "object", properties: {} } } },
@@ -1092,7 +1092,22 @@ function globToRegex(pattern) {
   return new RegExp('^' + out + '$', 'i');
 }
 
-function recursiveReaddir(dir = '', pattern = '') {
+// P2-3: heavy directories that model-side scans never descend into when the
+// budget is on. Internal callers (pruneBackups) pass no opts and keep the
+// verbatim unbounded walk.
+const SCAN_SKIP_DIRS = ['node_modules', '.git', 'dist', '.cache'];
+
+// P2-3: budget knobs are opt-in via opts; every knob defaults to "off", so a
+// no-opts call reproduces the legacy walk exactly (no skips, no caps) -
+// pruneBackups (.7coder/backups pruning) depends on that verbatim.
+//   skipHeavy  - never descend into SCAN_SKIP_DIRS
+//   maxDepth   - recursion depth cap (start dir = depth 0)
+//   maxEntries - stop collecting at N matched entries and append a
+//                '[truncated at N entries]' sentinel the caller surfaces as-is
+function recursiveReaddir(dir = '', pattern = '', opts = null) {
+  const skipHeavy = !!opts && !!opts.skipHeavy;
+  const maxDepth = opts && typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity;
+  const maxEntries = opts && typeof opts.maxEntries === 'number' ? opts.maxEntries : Infinity;
   const results = [];
   const startDir = dir ? path.join(launchDir, sanitizePath(dir)) : launchDir;
   let rx = null;
@@ -1103,17 +1118,21 @@ function recursiveReaddir(dir = '', pattern = '') {
   // separator or **). Plain patterns like *.js keep matching basenames at any
   // depth - the pre-existing behavior and the most common search intent.
   const pathAware = pattern && (pattern.indexOf('/') >= 0 || pattern.indexOf('\\') >= 0 || pattern.indexOf('**') >= 0);
-  function walk(current) {
+  function walk(current, depth) {
+    if (results.length >= maxEntries) return;
     let entries;
     try { entries = fs.readdirSync(current); } catch (e) { return; }
     for (const entry of entries) {
+      if (results.length >= maxEntries) return;
       const full = path.join(current, entry);
       // Do not traverse/read through links that leave the workspace.
       if (!linkStaysInside(full)) continue;
       let stat;
       try { stat = fs.statSync(full); } catch (e) { continue; }
       if (stat.isDirectory()) {
-        walk(full);
+        if (skipHeavy && SCAN_SKIP_DIRS.indexOf(entry) >= 0) continue;
+        if (depth >= maxDepth) continue;
+        walk(full, depth + 1);
       } else {
         const rel = path.relative(launchDir, full);
         let isMatch = false;
@@ -1130,15 +1149,29 @@ function recursiveReaddir(dir = '', pattern = '') {
         }
         if (isMatch) {
           results.push(rel);
+          if (results.length >= maxEntries) return;
         }
       }
     }
   }
-  walk(startDir);
+  walk(startDir, 0);
+  if (results.length >= maxEntries) results.push('[truncated at ' + maxEntries + ' entries]');
   return results;
 }
 
-function grepSearch(pattern, searchPath = '') {
+// P2-3: grep budgets are opt-in via opts. No opts -> legacy unbounded scan,
+// byte for byte. When an opts object is passed the caps apply:
+//   skipHeavy          - skip SCAN_SKIP_DIRS, files > 2MB and binary content
+//                        (first 4096 bytes containing NUL)
+//   maxFiles           - stop after N files actually scanned (default 5000),
+//                        appending '[truncated after N files scanned]'
+//   maxMatchesPerFile  - cap the matching lines counted per file at N
+//                        (default 50), adding '... (more matches in this file)'
+function grepSearch(pattern, searchPath = '', opts = null) {
+  const budgeted = !!opts;
+  const skipHeavy = budgeted && !!opts.skipHeavy;
+  const maxFiles = budgeted ? (opts && typeof opts.maxFiles === 'number' ? opts.maxFiles : 5000) : Infinity;
+  const perFileCap = budgeted ? (opts && typeof opts.maxMatchesPerFile === 'number' ? opts.maxMatchesPerFile : 50) : Infinity;
   const results = [];
   const startDir = searchPath ? path.join(launchDir, sanitizePath(searchPath)) : launchDir;
   let rx = null;
@@ -1147,30 +1180,66 @@ function grepSearch(pattern, searchPath = '') {
   } catch (e) {
     rx = null;
   }
+  let scanned = 0;
   function walk(current) {
+    if (scanned >= maxFiles) return;
     let entries;
     try { entries = fs.readdirSync(current); } catch (e) { return; }
     for (const entry of entries) {
+      if (scanned >= maxFiles) return;
       const full = path.join(current, entry);
       // Do not read through links that leave the workspace.
       if (!linkStaysInside(full)) continue;
       let stat;
       try { stat = fs.statSync(full); } catch (e) { continue; }
       if (stat.isDirectory()) {
+        if (skipHeavy && SCAN_SKIP_DIRS.indexOf(entry) >= 0) continue;
         walk(full);
       } else {
+        if (skipHeavy && stat.size > 2 * 1024 * 1024) continue;
+        // P2-3: read as Buffer and bail on binary content (NUL in the first
+        // 4096 bytes) instead of decoding megabytes as utf8.
         try {
-          const content = fs.readFileSync(full, 'utf8');
-          const matched = rx ? rx.test(content) : content.toLowerCase().includes(pattern.toLowerCase());
-          if (matched) {
+          const buf = fs.readFileSync(full);
+          if (skipHeavy) {
+            const probe = Math.min(buf.length, 4096);
+            let binary = false;
+            for (let i = 0; i < probe; i++) {
+              if (buf[i] === 0) { binary = true; break; }
+            }
+            if (binary) continue;
+          }
+          const content = buf.toString('utf8');
+          if (!budgeted) {
+            // Legacy semantics, verbatim: whole-content test, one line per
+            // matching file.
+            const matched = rx ? rx.test(content) : content.toLowerCase().includes(pattern.toLowerCase());
+            if (matched) {
+              const rel = path.relative(launchDir, full);
+              results.push(`${rel}: matches "${pattern}"`);
+            }
+            continue;
+          }
+          scanned++;
+          const lines = content.split(/\r?\n/);
+          let matchedLines = 0;
+          for (const line of lines) {
+            const hit = rx ? rx.test(line) : line.toLowerCase().includes(pattern.toLowerCase());
+            if (hit) matchedLines++;
+          }
+          if (matchedLines > 0) {
             const rel = path.relative(launchDir, full);
             results.push(`${rel}: matches "${pattern}"`);
+            if (matchedLines > perFileCap) {
+              results.push('... (more matches in this file)');
+            }
           }
-        } catch (e) {}
+        } catch (e) { continue; }
       }
     }
   }
   walk(startDir);
+  if (budgeted && scanned >= maxFiles) results.push(`[truncated after ${maxFiles} files scanned]`);
   return results.length ? results.join('\n') : `No matches for pattern: ${pattern}`;
 }
 
@@ -1839,11 +1908,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'glob_tool') {
-    const files = recursiveReaddir(args.directory, args.pattern);
+    // P2-3: budgeted walk - heavy dirs skipped, depth/entry caps keep huge
+    // workspaces from flooding the context (sentinel line marks truncation).
+    const files = recursiveReaddir(args.directory, args.pattern, { skipHeavy: true, maxDepth: 12, maxEntries: 1000 });
     return files.length ? files.join('\n') : 'No files matched';
   }
   if (name === 'grep_tool') {
-    return grepSearch(args.pattern, args.path);
+    return grepSearch(args.pattern, args.path, { skipHeavy: true });
   }
 
   if (name === 'list_dir') {
@@ -2028,7 +2099,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     try {
       const folderRel = sanitizePath(args.folder);
       const summaryPath = path.join(launchDir, '.7coder', 'summaries', folderRel + '.summary');
-      const files = recursiveReaddir(args.folder);
+      const files = recursiveReaddir(args.folder, '', { skipHeavy: true, maxDepth: 12, maxEntries: 1000 });
       const cap = 2000;
       let body = files.join('\n');
       if (files.length > cap) {

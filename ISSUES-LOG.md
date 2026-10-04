@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-04 深夜）：单文件 index.js（~4620 行），v2.17.0（发布后三轮追加：GAP-9/13 + AST-R1 尾 + 尾巴清扫，全部属 v2.18 候选）；A–J 全绿 518 项（A 85/B 210/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）+ K 9 + R 10；除暂缓决策项（OPT-3/6、AST-15、D3、C 系）外**待办清零**
+> 规模快照（2026-10-04 夜末）：单文件 index.js（~4660 行），v2.17.0（发布后四轮追加均属 v2.18 候选：GAP-9/13、AST-R1 尾、尾巴清扫、P2-3 检索预算）；A–J 全绿 523 项（A 85/B 215/C 35/D 32/E 22/F 23/G 29/H 32/I 34/J 16）+ K 9 + R 10；除暂缓决策项（OPT-3/6、AST-15、D3、C 系、P2-7）外**待办清零**
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 200 |
+| runner-b.js | 205 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **492** |
+| **合计** | **497** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -143,7 +143,7 @@
 |---|------|------|------|
 | P2-1 | index.js 多处 | `.7coder_last_interaction`、`7C.dream.lock`、BTW.md 等散落工作区根 | ✅ 2026-10-04 尾巴批：.7coder_last_interaction/7C.dream.lock/BTW.md 全部收纳进 .7coder/；migrateWorkspaceRootFiles() 启动幂等迁移（时间戳/锁 rename 保 mtime 供陈锁检查，BTW 并入后删旧）；读旧路径兜底；5 处测试断言同步（契约变更）；dream 场景新增迁移子用例 |
 | P2-2 | index.js:1993 | 过时注释 "input actions are simulated no-ops"（A7 已实现真实输入） | ✅ 注释更新为真实注入现状（Windows user32/SendKeys，非 Windows 警告） |
-| P2-3 | grepSearch/recursiveReaddir | 整读文件无上限、不跳过 node_modules/.git、无深度上限 | ⬜ |
+| P2-3 | grepSearch/recursiveReaddir | 整读文件无上限、不跳过 node_modules/.git、无深度上限 | ✅ 2026-10-04（GLM-5.3-Flash + 主会话终检）：预算走 opts 可选参数默认全关——pruneBackups 内部调用零语义变化（backup-cap 回归绿）。模型侧：glob/brief 传 {skipHeavy(跳 node_modules/.git/dist/.cache), maxDepth:12, maxEntries:1000+哨兵}；grep 传 {skipHeavy}（>2MB 跳过 + 前 4KB NUL 二进制检测 + 5000 文件扫描上限 + 每文件 50 匹配行上限）。schema 说明同步。scan-caps 5 断言先红 0/5（现行为确实返回 node_modules/大文件/二进制）后绿 |
 | P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ✅ 状态回翻 2026-10-03（此前漏翻）：DS-14 重写 pruneBackups 时已删除写前调用，仅保留写后一次 |
 | P2-5 | 审计日志 | argsPreview 原样落盘，可能记录密钥 | ✅ 状态回翻 2026-10-03（此前漏翻）：=OPT-1，sanitizeAuditArgs 已入库并有 audit-log 断言 |
 | P2-6 | index.js / webui.html | server.listen 无 error 处理（EADDRINUSE 直接崩）；UI 每请求同步读盘 | ✅ 两半齐：server.on(error) EADDRINUSE 友好提示 + flushExit(1)（eaddr 断言：退出码 1、含 HTTP_PORT 提示、无原生堆栈）；webui.html 启动读一次缓存 Buffer 复用；前端侧核查无每请求重读盘逻辑 |

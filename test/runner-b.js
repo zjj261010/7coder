@@ -2086,5 +2086,47 @@ scenarios.push({
   }
 });
 
+// --- B2x: scan budgets (P2-3) - model-side glob/grep carry caps + heavy-dir
+// skips via opts; internal callers (pruneBackups -> .7coder/backups) keep the
+// verbatim unbounded walk (covered by runner.js backup-cap staying green).
+scenarios.push({
+  name: 'scan-caps',
+  fn: async () => {
+    const cwd = freshCwd('b-scancaps');
+    fs.mkdirSync(path.join(cwd, 'node_modules', 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, 'node_modules', 'deep', 'x.js'), 'MARK-SCAN\n');
+    fs.writeFileSync(path.join(cwd, 'node_modules', 'z.js'), 'plain\n');
+    fs.writeFileSync(path.join(cwd, 'ok.js'), 'MARK-SCAN\n');
+    fs.writeFileSync(path.join(cwd, 'good.js'), 'plain js\n');
+    // 3MB file whose head says MARK-SCAN: must be skipped by the size budget.
+    const big = Buffer.alloc(3 * 1024 * 1024);
+    big.write('MARK-SCAN', 0, 'utf8');
+    fs.writeFileSync(path.join(cwd, 'big.bin'), big);
+    // Small file that still looks binary (NUL in the first 4096 bytes).
+    fs.writeFileSync(path.join(cwd, 'bin.dat'), 'MARK-SCAN' + String.fromCharCode(0) + 'x');
+    // 1005 matchable files to trip the glob maxEntries=1000 sentinel.
+    for (let i = 0; i < 1005; i++) fs.writeFileSync(path.join(cwd, 't' + i + '.txt'), 'filler-' + i + '\n');
+    const m = startMock([
+      { role: 'assistant', content: null, tool_calls: [{ id: 'sc1', type: 'function', function: { name: 'grep_tool', arguments: '{"pattern":"MARK-SCAN"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'sc2', type: 'function', function: { name: 'glob_tool', arguments: '{"pattern":"*.js"}' } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'sc3', type: 'function', function: { name: 'glob_tool', arguments: '{"pattern":"t*.txt"}' } }] },
+      { role: 'assistant', content: 'SCAN-CAPS-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 120000 });
+    const log = readLog(m.log);
+    const g1 = tr(log, 'sc1') ? tr(log, 'sc1').c : '';
+    const g2 = tr(log, 'sc2') ? tr(log, 'sc2').c : '';
+    const g3 = tr(log, 'sc3') ? tr(log, 'sc3').c : '';
+    record('scan-caps (a): grep finds ok.js but skips node_modules', g1.indexOf('ok.js') >= 0 && g1.indexOf('node_modules') < 0, g1.substring(0, 200));
+    record('scan-caps (b): grep skips files over 2MB (big.bin)', g1.indexOf('big.bin') < 0, g1.substring(0, 200));
+    record('scan-caps (c): grep skips binary content (bin.dat, NUL byte)', g1.indexOf('bin.dat') < 0, g1.substring(0, 200));
+    record('scan-caps (d): glob *.js finds good.js, skips node_modules (z.js/x.js)', g2.indexOf('good.js') >= 0 && g2.indexOf('z.js') < 0 && g2.indexOf('x.js') < 0, g2.substring(0, 200));
+    const lines3 = g3 === '' ? [] : g3.split('\n');
+    record('scan-caps (e): glob t*.txt truncated with sentinel at 1000 entries', g3.indexOf('[truncated at 1000 entries]') >= 0 && lines3.length <= 1001, 'lines=' + lines3.length + ' tail=' + JSON.stringify(lines3.slice(-2)));
+    stopMock(m);
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);
