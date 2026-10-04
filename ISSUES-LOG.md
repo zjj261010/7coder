@@ -120,7 +120,10 @@
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
-| P1-1 | index.js:1715 | run_tests_tool 输出含字面 `'\n'`（单引号嵌在双引号串里） | ✅ 状态回翻 2026-10-03（此前漏翻）：真换行早已修复，OPT-8 的 ts3 断言（含 '[TESTS] command finished'、真 
+| P1-1 | index.js:2674/2677/2678 | run_tests_tool 输出含游离单引号（`'
+'` 三字符序列：引号+真换行+引号） | 🔶 **降级重开（2026-10-04 opus 审阅发现）**：真换行从来是对的（`
+` 在双引号串里本就是换行），真正未修的是包裹换行的字面 `'` 字符×3 处；10-03 的回翻引用了 ts3 断言，但该断言查的是 4 字符 `'
+'`（带反斜杠），对准错了目标 = false-green。**并入 OP2-3 修复（连带修 ts3 断言）** |
 、无字面 '
 ' 文本）已锁定该行为 |
 | P1-2 | index.js /api/info | 未返回 version，Web UI 右上角恒显 "v?" | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-3，APP_VERSION 已注入 /api/info |
@@ -150,7 +153,7 @@
 | P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ⬜ |
 | P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-10，README 已改为 syntax stays within what Node.js 13.14 supports |
 | P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
-| P2-10 | parseTestOutput | 正则嵌套量词 `(\d+)+` ×4 | ✅ 已改为 `(\d+)`（现 grep 无嵌套量词） |
+| P2-10 | parseTestOutput | 正则嵌套量词 `(d+)+` | ❌ **假 ✅ 纠正（2026-10-04 opus 审阅发现，主会话对码证实）**：代码 index.js:2626-2628 仍是 `(d+)+`×3——原首版日志即标 ✅ 且 10-03 回翻审计未复核此行。实测 ReDoS：34 位连续数字 52.4 秒（每+4 位×16），run_tests_tool 原始输出直喂该正则 = --server 下整服冻结。**并入 OP2-1 修复** |
 | P2-11 | index.js:1742 | git_status 口径："M " 同时计入 staged 与 modified | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-4，XY 分列已实现且 git-integration 4/4 无需改断言 |
 | P2-12 | web 审批 | 120 秒超时自动拒绝无倒计时提示 | ✅ 2026-10-04 尾巴批：webui 审批条 120 秒倒计时（每秒递减、点击清除、到 0 显示超时并禁用按钮——不重复发拒绝，服务端桥本就 120s 自动 resolve(false)）；dom-sim 8/8 不受影响 |
 | P2-13 | index.js:1537 | 截图 PNG 落工作区根不清理；auto_debug 无进度输出 | ✅ 2026-10-04 尾巴批：截屏改写 .7coder/screenshots/（mkdir 包裹，无显示环境失败路径不变）；无测试引用旧路径，无需迁移 |
@@ -345,6 +348,78 @@
 - 5.3 Node 13 EOL 双轨构建：离线包已捆绑运行时并明确面向 Win7，现状覆盖主要诉求；LTS 双轨是新工程，不并入待办，重开 OPT-3 时参考。
 - 7.4 "机器可维护状态索引"：与 OPT-10 同方向，并入 OPT-10 备注（统一 ID/状态/提交/验收字段）。
 - 第十一节 11.6/11.7/11.8（端点对账、qwen3.8-flash 单次验证）为环境验证记录，非项目问题，不入表。
+
+---
+
+## 2026-10-04（晚）—— 双审阅核对（claude-opus4.8 + gpt-astra 二轮）
+
+> 输入：claude-opus4.8审阅.md（v2.18.0 基线，静态+定向动态验证，5 项新发现）+ gpt-astra审阅2.md（全项目复审，22 项：9 P1 + 13 P2，全部附复现证据与证据边界声明）。
+> 核对方式：主会话逐条对当前代码验证后写入。**两份报告本轮核对为零不实条目**（对照：deepseek 报告曾 5 条不实）——opus 的 F1-F5 与 astra2 抽验的 8 条（A2-01/02/04/05/06/08/09/16）全部属实；其余条目证据充分且与代码结构一致，按报告证据登记。
+> 重要：opus 发现两条**假 ✅**（P1-1、P2-10，已在上表纠正）——这是 DS-1 虚报事故后暴露的账实不符新形态，元教训见维护约定第 5 条。
+
+### OP2 系列（opus 审阅，5 项全部属实）
+
+| # | 位置 | 问题（核对结论） | 状态 |
+|---|------|------|------|
+| OP2-1 | index.js:2626-2628 | **parseTestOutput 指数级 ReDoS**：三处 `(d+)+` 经典 evil regex；实测 34 位连续数字 52.4 秒（每+4 位 ×16）。run_tests_tool 把原始输出直喂主线程同步正则——被测程序一行长数字即冻结 --server 整个服务。= P2-10 的真身 | ⬜ P0 级：改 `(d+)` 三处 + 入口限长 |
+| OP2-2 | index.js:3119 vs 2396/1270 | **cron 绕过超级危险命令硬防线**：isSuperDangerous 只接 run_command/bash/powershell/task_create 四工具，schedule_cron_tool/cron_create_tool 不在其列却用 exec 周期跑 shell——bypass 下 cron_create rm -rf / 每 30s 执行一次，README 的"even in bypass"承诺对 cron 不成立。= astra2 A2-17 同源（其另指出 run_tests/legacy npx 入口也不经该检查） | ⬜ P0 级：接线 + fire 时复查 |
+| OP2-3 | index.js:2674/2677/2678 | run_tests_tool 输出游离单引号 ×3（结构化输出脏串污染模型读到的测试结论）+ ts3 断言对准错目标（false-green）。= P1-1 真身 | ⬜ P2 级 |
+| OP2-4 | index.js:3927/3932/3940 | **设 HTTP_API_KEY 时三个读接口仍不鉴权**：/api/info（含 workspace 绝对路径+模型+用量）、/api/todos（任务清单）、/v1/models 无 401 门——用户专为 LAN 配了 key 却裸奔读接口。与 OPT-2 ⛔（未设 key 场景）是不同问题。= astra2 A2-10（todos 部分） | ⬜ P1 级：补 401 |
+| OP2-5 | README.md:113/128 | 两处过实表述：超级危险拦截实为子串小黑名单（rm -fr /、:(){ :|:& };: 等不拦）；protected 读在 bypass 下只 warn 不审批 | ⬜ P2 级：措辞按实际收口 |
+
+### A2 系列（astra2 审阅，22 项；与 OP2 重叠的已标注合并）
+
+| # | 位置 | 问题（核对/登记结论） | 状态 |
+|---|------|------|------|
+| A2-01 | index.js:2239-2275, 734-749 | **memory_tool 无真实路径校验 + 不吃 protected_extra**：memoryFilePath 直接拼接（junction 即越界读写）；isProtectedTarget 不处理该工具；AUTO_SAFE 加持下免审批。动态复现：junction → 读到外部 OUTSIDE-ONLY-FAKE-DATA、save 改写外部文件 | ⬜ P1（第一批） |
+| A2-02 | index.js:788-816 | **安装级 allow 吞掉工作区同名 deny**：loadPermRules 的 seen 去重键只有规则字符串不含 bucket，安装文件先读 → 工作区 deny 同串被当重复丢弃 → 实测 Written: blocked.txt。**GAP-11 的真缺陷**（同文件内 deny 先读所以单层测试通过） | ⬜ P1（第一批） |
+| A2-03 | index.js:513-520, 2693-2722 | **diagnostics 免审批执行项目代码**：node_modules 里的 tsc/eslint 是项目自己的 JS，eslint 还加载项目配置/插件；动态复现伪 tsc 写标记文件零审批。GAP-5 的 auto-safe 决策过信 | ⬜ P1（第一批）：移出 AUTO_SAFE |
+| A2-04 | webui.html:386-399, 543 | **错误消息 innerHTML 注入路径**：正常回复走 esc() 但 addMsg('err', '错误: '+e.message) 直进 innerHTML；DOM 模拟复现错误气泡原样含 <img onerror>。上游可控错误文案 = XSS 面 | ⬜ P1（第一批）：错误路径改 textContent/esc |
+| A2-05 | index.js:4677-4693 | **/fork 拆散工具配对**：保留 user+紧邻 assistant，若该 assistant 带 tool_calls 则孤儿化（配对非法+该轮最终答复丢失）；fork 测试只用纯文本回合故未覆盖。GAP-14 的真缺陷 | ⬜ P1（第二批） |
+| A2-06 | index.js:3139-3142 | **bypass 分支漏传 cancelled**（核 实：executeToolRaw(name,args,conversation,approvalBridge) 少第五参）+ 同族：子代理不继承取消、持久 shell 仅事后检查、axios 无活动取消、审批等待期断连不即时 dispose。AST-09 的取消缺口 | ⬜ P1（第二批） |
+| A2-07 | index.js:2666-2679, 3251 | **失败测试不停工作流**：run_tests_tool 非零退出仍返回 [TESTS] 前缀文本，TOOL_FAIL_RE 不识别 → 复现 [OK] Workflow complete 后接写入步骤。Fetch error/Tests error 等散落前缀也未纳入 | ⬜ P1（第二批） |
+| A2-08 | index.js:1377-1395, 1426-1432 | **dream 失败覆盖 7CODER.md**（catch 直接写 DREAM FALLBACK 单行，原文无备份丢失）+ 新工作区 DREAM_ALLOW=true 无 .7coder 目录时写锁 ENOENT 崩 | ⬜ P1（第一批） |
+| A2-09 | index.js:2999-3016 | **auto_debug spawn 无 error 监听**：不存在 exe → 未捕获 error 事件 → HTTP 服务 exit 1（实测复现）。两条 spawn 路径同病 | ⬜ P1（第一批） |
+| A2-10 | index.js:3932 | 设 key 后 /api/todos 匿名可读 | ⬜ 并入 OP2-4 |
+| A2-11 | index.js:2708-2715 | tsc 全局错误（TS18003 无文件定位）被误报 [DIAG] clean | ⬜ P2 |
+| A2-12 | webui.html:409-422, 478-488 | **单标签会话切换/保存竞态**：A 回答中载 B → 回答串进 B；旧存档返回晚于新对话 → 旧文件名写回 → 新内容存进旧档（DOM 模拟双复现）。AST-06 首存修复未覆盖切换竞态 | ⬜ P2（第三批） |
+| A2-13 | index.js:3505-3515 | 记忆召回首条可无限超额（picked.length 条件），实测预算 100 却召回 16075 字符；MAX_FILES=20 只是读取截断非保存上限 | ⬜ P2 |
+| A2-14 | index.js:964-969, 4605 | /clear 不清持久 shell（实测 export 状态跨"新会话"残留）；agent-1/wf-1 键跨实例复用 | ⬜ P2 |
+| A2-15 | index.js:1569-1576 | SSE 无 finish_reason 即 EOF → 默认 stop 当成功（残缺回答入库）；未覆盖首段后失败重试的前缀重复 | ⬜ P2 |
+| A2-16 | index.js:4424-4440 | writeWorkspaceEnv 重序列化全部键：多行 env 值 \"first
+second\" 保存后变 first（丢引号语义，实测）。P1-4 注释保留修复的姊妹缺陷 | ⬜ P2 |
+| A2-17 | index.js:3119 | 超级危险拦截入口不全（cron/run_tests/npx legacy）| ⬜ 并入 OP2-2 |
+| A2-18 | index.js:381-387, 3054-3066 | 审计 result 首行不脱敏：紧凑 models.json 读取把 apiKey 原样落日志（实测假键复现）。AST-04 只修了名单，日志复制面仍在 | ⬜ P2 |
+| A2-19 | index.js:248-252 | Windows 下 spawn('npx') ENOENT（双运行时实测）——README 的 MCP 示例在 Windows 直接起不来 | ⬜ P2 |
+| A2-20 | index.js:1121-1152, 1178-1228 | P2-3 预算未覆盖：模型正则同步运算无预算（探针 29 字节 (a+)+$ 超时）、glob maxEntries 计结果非扫描量、无 visited 集合（环链）、perFileCap 不停计算 | ⬜ P2 |
+| A2-21 | scripts/pack-offline.js:40, 74-84 | rmrf 失败后 300ms 定时器异步重试 → 可能删掉已重建的新目录（静态） | ⬜ P2 |
+| A2-22 | INSTALL/README/pack | 6 处误导：env 行尾注释示例违反自家 dotenv 8 规则、scripts/ 不打包但 INSTALL 让跑、KNOWN-ISSUES.md 路径过时、dotenv 实为 8.6.0 非 8.2.0、README 仍标 v2.16.0、备份说明 100 vs 实际 5/200 | ⬜ P2 |
+
+### astra2 报告的其余内容（采纳/记录）
+
+- **测试洞因分析（8.1 节）采纳**：fork 只测纯文本、memory 只测普通目录、permissions 未测双层相反 bucket、diagnostics shim 不测副作用、DOM 把"丢弃保存"当通过条件、MCP echo 不覆盖 Windows npm shim、workflow 未接退出码契约——**新功能只测理想路径**是 B 215/215 仍漏掉这批问题的根因；修复时应随各项补反例（先红后绿）。
+- **工程改造建议（8.2 节）登记为方向项**：①工具声明元数据表收口（执行性/读写资源/可取消性/可并行集中声明）②统一 ToolResult 结构化状态（先 run_tests/diagnostics/workflow 三工具）③统一文件访问门（内建状态路径也要真实路径校验——A2-01 的根治）④统一取消契约（上下文对象替代位置参数——A2-06 的根治）⑤会话 generation/id（A2-12 根治）⑥测试总入口（npm test 只跑 A）⑦少量真实浏览器测试。均为渐进式，不要求破依赖约束。→ 登记 OPT-12~17 见下。
+- **受保护文件硬链接别名**（第六节）：动态复现但需预植链接，登记不修（文件名保护的固有局限，威胁模型内可接受）；`.env.` 尾点探针**未**绕过（阴性对照，记录防再查）。
+- **/v1/models 与 /api/info 模型清单不一致**（profile 模型缺失）：小修，并入 OP2-4 轮。
+- **cron 重叠执行**（上次未结束又启动、child 句柄单值）：并入 OP2-2 修复轮测试面。
+- **受限环境 5 个断言失败**（astra2 环境的进程枚举/采样权限问题）：不归因为产品缺陷，也不宣布排除——正常权限机器复测后定论。
+
+### OPT 新增（来自 astra2 8.2，渐进式登记）
+
+| # | 方向 | 状态 |
+|---|------|------|
+| OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ⬜ |
+| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | ⬜ |
+| OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ⬜（A2-01 根治） |
+| OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
+| OPT-16 | 会话 generation/id（异步回调只改所属会话） | ⬜（A2-12 根治） |
+| OPT-17 | 测试总入口 + 少量真实浏览器测试 | ⬜ |
+
+### 建议修复批次（两报告一致的收敛）
+
+1. **第一批（授权与数据止损）**：OP2-1 ReDoS + OP2-2/A2-17 cron 硬防线 + A2-01 memory 边界 + A2-02 deny 吞没 + A2-03 diagnostics 审批 + A2-04 错误 XSS + A2-08 dream 覆盖 + A2-09 spawn 崩溃
+2. **第二批（任务执行闭环）**：A2-05 fork 配对 + A2-06 取消贯穿 + A2-07 失败测试停工作流 + A2-11 clean 误报 + A2-15 SSE 中断 + OP2-4 读接口鉴权
+3. **第三批（会话/资源/分发）**：A2-12/13/14/16/18/19/20/21/22 + OP2-3/5
 
 ---
 
