@@ -2,7 +2,7 @@
 
 **Clean-room Claude Code-style assistant** for Windows 7 / Node.js 13+.
 
-**v2.16.0** - In-UI model settings: configure endpoint / API key / main model and per-model profiles (models.json) directly from the web UI - takes effect immediately and persists (workspace .env + models.json). Also fixes the reasoning-block collapse (separate containers).
+**v2.18.0** - Highlights include in-UI model settings: configure endpoint / API key / main model and per-model profiles (models.json) directly from the web UI - takes effect immediately and persists (workspace .env + models.json). Also fixes the reasoning-block collapse (separate containers).
 
 ## System Requirements
 
@@ -170,9 +170,11 @@ a Windows-only warning instead of being injected.
 ## Session Continuity & Context Safety
 
 - The REPL **keeps the conversation across tasks** — the first task seeds it
-- The conversation is **auto-saved** after every task (to ) - start the REPL with  (or type ) to continue a previous session across restarts.  starts fresh.
   (with the 7CODER.md summary), later tasks are appended, so iterative
   "now fix the tests too" workflows work. `/clear` starts fresh.
+- The conversation is **auto-saved** after every task (to `.7coder/session.json`) -
+  start the REPL with `--resume` (or type `/resume`) to continue a previous
+  session across restarts.
 - When the conversation grows past `CONTEXT_CHARS` (default 120k chars), the
   oldest turns are **automatically summarized** by the light model and replaced
   with a compact digest; the newest ~60% of the budget stays verbatim.
@@ -182,7 +184,8 @@ a Windows-only warning instead of being injected.
 ## Edit Safety Net
 
 - `write_file` / `edit_file` / `notebook_edit_tool` **automatically back up the
-  previous file** to `.7coder/backups/` before writing (max 100 backups kept).
+  previous file** to `.7coder/backups/` before writing (newest 5 per source
+  file, 200 total kept).
 - In default permission mode, file edits are approved against a **real diff
   preview** (`-` removed / `+` added lines), not an LLM paraphrase.
 - `/undo <file>` restores the newest backup of a file.

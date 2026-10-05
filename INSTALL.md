@@ -12,12 +12,11 @@
 |---|---|
 | `index.js` | 主程序（唯一入口，零编译） |
 | `runtime\node.exe` | 内置 Node.js 13.14.0 运行时（Win7 可用，MIT 许可，可再分发） |
-| `node_modules\` | 预装的生产依赖（axios 1.20.0、dotenv 8.2.0） |
+| `node_modules\` | 预装的生产依赖（axios 1.20.0、dotenv 8.6.0） |
 | `.env.example` | 配置模板（复制为 `.env` 后填写） |
 | `7coder.bat` | 便捷启动脚本（自动使用内置运行时） |
 | `INSTALL.md` | 本说明 |
 | `README.md` | 项目简介与功能总览 |
-| `KNOWN-ISSUES.md` | 已知问题与待决策清单（透明记录） |
 | `LICENSE` | 许可证 |
 | `test\` | 自动化测试套件（十二个套件；当前断言总数运行 `node scripts/count-assertions.js` 查看，可选运行） |
 
@@ -26,7 +25,8 @@
 1. **解压** 本 zip 到任意目录（路径建议不含空格，例如 `D:\tools\7coder`）。
 2. **配置**：复制 `.env.example` 为 `.env`，用任意文本编辑器填写：
    ```ini
-   OPENAI_API_KEY=sk-你的密钥     # 云端必填；本地 LMStudio/Ollama/vLLM 可留空
+   # 云端必填；本地 LMStudio/Ollama/vLLM 可留空
+   OPENAI_API_KEY=sk-你的密钥
    OPENAI_ENDPOINT=https://api.openai.com/v1
    ```
    - 兼容任何 OpenAI 协议端点（Groq、本地 Ollama 等），改 `OPENAI_ENDPOINT` 即可。
@@ -85,10 +85,14 @@ Base URL 设为 `http://127.0.0.1:7103/v1` 即可。局域网访问需设 `HTTP_
 ## 五、特色功能开关（.env）
 
 ```ini
-ENABLE_COMPUTER_USE=true   # 真实截屏 + 真实鼠标键盘注入（Windows）
-ENABLE_RALPH_MODE=true     # 自迭代循环（RALPH_ITERATIONS 控制轮数）
-DREAM_ALLOW=true           # 空闲 5 小时后自动整理 7CODER.md
-ENABLE_HTTP_SERVER=true    # 等效于 --server
+# 真实截屏 + 真实鼠标键盘注入（Windows）
+ENABLE_COMPUTER_USE=true
+# 自迭代循环（RALPH_ITERATIONS 控制轮数）
+ENABLE_RALPH_MODE=true
+# 空闲 5 小时后自动整理 7CODER.md
+DREAM_ALLOW=true
+# 等效于 --server
+ENABLE_HTTP_SERVER=true
 ```
 
 - 截屏：`computer_use` 工具 `action=screenshot`，PNG 落在 `.7coder\screenshots\`。
@@ -125,4 +129,4 @@ runtime\node.exe test\runner.js
 - **GLM/本地模型**：任何 OpenAI 协议端点均可；`OPENAI_ENDPOINT` 留空则默认 OpenAI 官方。
 - **7CODER.md**：AI 自动维护的工作日志；`<!-- 7coder:auto-log -->` 标记节之外的内容（如 dream 整理结果）不会被覆盖。
 - **升级**：备份 `.env` 与 `.7coder\` 目录，解压新包覆盖即可。
-- **已知限制**：见 `KNOWN-ISSUES.md`（A 节为未修复缺陷，均不影响核心功能）。
+- **已知限制**：历史已知问题清单已归档至源码仓库 `docs/history/KNOWN-ISSUES.md`（离线包不含；A 节为未修复缺陷，均不影响核心功能）。

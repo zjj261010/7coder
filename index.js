@@ -245,11 +245,36 @@ function mcpContentToText(result) {
   }
   return parts.join('\n');
 }
+// A2-19: Windows CreateProcess does no PATHEXT resolution, so spawning a bare
+// 'npx' fails with ENOENT even when npx.cmd is sitting on PATH (only *.exe
+// files are found). resolveCommandOnWindows() answers "is this bare command
+// name present on PATH as a .cmd/.bat/.exe?" (same PATH-scan shape findBash
+// uses). When true, createMcpStdioClient spawns through cmd.exe (shell:true)
+// with the ORIGINAL command - cmd.exe does its own PATH+PATHEXT lookup and
+// that is the only reliable way to start .cmd shims like npx. The quoting
+// hazards of shell:true are accepted by design: .7coder/mcp.json is
+// user-authored config, the same trust boundary as the run_command tool.
+// Non-Windows platforms and explicit paths are untouched (returns false).
+function resolveCommandOnWindows(command) {
+  if (process.platform !== 'win32') return false;
+  const cmd = String(command || '').trim();
+  if (!cmd || /[\\\/]/.test(cmd)) return false; // explicit path: CreateProcess handles it as-is
+  const bare = cmd.toLowerCase();
+  if (bare === 'node' || bare + '.exe' === path.basename(process.execPath).toLowerCase()) return false;
+  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
+    if (!dir) continue;
+    for (const ext of ['.cmd', '.bat', '.exe']) {
+      try { if (fs.existsSync(path.join(dir, cmd + ext))) return true; } catch (e) {}
+    }
+  }
+  return false;
+}
 function createMcpStdioClient(name, cfg) {
   const child = child_process.spawn(cfg.command, Array.isArray(cfg.args) ? cfg.args : [], {
     cwd: cfg.cwd || launchDir,
     env: Object.assign({}, process.env, cfg.env || {}),
-    stdio: ['pipe', 'pipe', 'pipe']
+    stdio: ['pipe', 'pipe', 'pipe'],
+    shell: resolveCommandOnWindows(cfg.command)
   });
   const client = {
     child: child,
@@ -376,6 +401,16 @@ function sanitizeAuditArgs(args) {
     else out[k] = String(args[k]).replace(/Bearer\s+[A-Za-z0-9._~+\/=\-]+/gi, 'Bearer ***').replace(/sk-[A-Za-z0-9]{8,}/g, 'sk-***');
   }
   return out;
+}
+
+// A2-18: the same scrubbing for the audit log's result preview. Tool OUTPUT
+// is data the tool happened to read - a compact models.json or any file with
+// a token would otherwise land its first line verbatim in audit.jsonl
+// (AST-04 fixed the args side only, the copy-on-read surface stayed open).
+function sanitizeAuditLine(text) {
+  return String(text)
+    .replace(/Bearer\s+\S+/gi, 'Bearer ***')
+    .replace(/sk-[A-Za-z0-9]{8,}/g, 'sk-***');
 }
 
 function audit(entry) {
@@ -3168,7 +3203,9 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   if (CHANGE_TOOLS[func.name] && taskChanges.length < 1000) {
     taskChanges.push({ tool: func.name, path: argsPreview.path || argsPreview.url || '', status: status });
   }
-  audit({ ts: new Date().toISOString(), type: 'tool', tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: first.substring(0, 160) });
+  // A2-18: scrub BEFORE truncating, so a token cut by the 160-char limit can
+  // never survive as a recognizable prefix either.
+  audit({ ts: new Date().toISOString(), type: 'tool', tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: sanitizeAuditLine(first).substring(0, 160) });
   return res;
 }
 
@@ -3384,19 +3421,28 @@ function capToolResult(result) {
 // Weighting CJK code points (and fullwidth/Hangul/Kana neighbors) x2 brings
 // the char-based estimate much closer to the tokenizer's account without
 // any dependency (a real tokenizer is GAP-13's deferred half).
+function charUnits(c) {
+  return ((c >= 0x2E80 && c <= 0x9FFF) ||   // CJK radicals..Yi (incl. han)
+      (c >= 0xF900 && c <= 0xFAFF) ||    // CJK compat ideographs
+      (c >= 0xFF00 && c <= 0xFF60) ||    // fullwidth forms
+      (c >= 0x3040 && c <= 0x30FF) ||    // Kana
+      (c >= 0xAC00 && c <= 0xD7FF)) ? 2 : 1; // Hangul syllables
+}
 function textUnits(s) {
   let n = 0;
-  for (let i = 0; i < s.length; i++) {
-    const c = s.charCodeAt(i);
-    if ((c >= 0x2E80 && c <= 0x9FFF) ||   // CJK radicals..Yi (incl. han)
-        (c >= 0xF900 && c <= 0xFAFF) ||    // CJK compat ideographs
-        (c >= 0xFF00 && c <= 0xFF60) ||    // fullwidth forms
-        (c >= 0x3040 && c <= 0x30FF) ||    // Kana
-        (c >= 0xAC00 && c <= 0xD7FF)) {    // Hangul syllables
-      n += 2;
-    } else n++;
-  }
+  for (let i = 0; i < s.length; i++) n += charUnits(s.charCodeAt(i));
   return n;
+}
+// A2-13: slice a string to at most maxUnits weighted units (the exact
+// accounting textUnits() uses) so recall can truncate an oversized note into
+// the remaining budget instead of admitting it whole.
+function textUnitsSlice(s, maxUnits) {
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    n += charUnits(s.charCodeAt(i));
+    if (n > maxUnits) return s.substring(0, i);
+  }
+  return s;
 }
 function messageSize(m) {
   let n = 0;
@@ -3648,7 +3694,19 @@ function recallMemory(promptText) {
   const picked = [];
   for (const s of scored) {
     const u = textUnits(s.body);
-    if (used + u > MEMORY_RECALL_UNITS && picked.length) break;
+    // A2-13: a note bigger than the whole budget used to be admitted whole
+    // (the old picked.length gate only stopped the SECOND note from
+    // overflowing), so one 16k note blew a 100-unit budget. Truncate such a
+    // note into what is left of the budget, mark it, and stop - the note on
+    // disk stays whole.
+    if (u > MEMORY_RECALL_UNITS) {
+      const room = MEMORY_RECALL_UNITS - used;
+      if (room <= 0) break;
+      s.body = textUnitsSlice(s.body, room) + '\n... [note truncated at recall budget]';
+      picked.push(s);
+      break; // the budget is now fully spent
+    }
+    if (used + u > MEMORY_RECALL_UNITS) break;
     picked.push(s);
     used += u;
     if (picked.length >= 5) break;
@@ -4774,6 +4832,8 @@ async function main() {
         messages = [{ role: 'system', content: systemPrompt }];
         try { if (fs.existsSync(sessionPath)) fs.unlinkSync(sessionPath); } catch (e) {}
         currentPrompt = ''; // a half-typed draft should not survive a fresh conversation
+        disposePersistentShells(); // A2-14: a fresh conversation must not inherit the old bash env/cwd
+        console.log('[SHELL] persistent shell sessions cleared with /clear');
         console.log('[OK] Conversation cleared.');
         safePrompt();
         return;

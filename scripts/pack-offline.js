@@ -33,11 +33,25 @@ const stage = path.join(REPO, 'dist', `7coder-v${version}-offline`);
 
 const COPY_FILES = [
   'index.js', 'package.json', 'package-lock.json', 'README.md', 'INSTALL.md',
-  'LICENSE', '.env.example', '7coder.bat', 'webui.html'
+  'LICENSE', '.env.example', '7coder.bat', 'webui.html',
+  // A2-22: INSTALL.md tells offline users to run this (it is dependency-free
+  // and reads the bundled test/), so ship it and keep the scripts/ layout.
+  'scripts/count-assertions.js'
 ];
 const COPY_DIRS = ['node_modules', 'test'];
 
-function rmrf(p) { try { fs.rmSync(p, { recursive: true, force: true }); } catch (e) { /* retry below */ setTimeout(() => { try { fs.rmSync(p, { recursive: true, force: true }); } catch (e2) {} }, 300); } }
+// A2-21: the old retry fired 300ms later on a timer - i.e. AFTER the main flow
+// had already re-created the directory, deleting fresh files (race). Retry
+// synchronously instead: a lingering handle from a previous run is usually
+// released by the time the caller checks, and if the path is still undeletable
+// we THROW so the pack fails loudly - a silently incomplete stage must never
+// be zipped into a release.
+function rmrf(p) {
+  for (let i = 0; i < 3; i++) {
+    try { fs.rmSync(p, { recursive: true, force: true }); return; } catch (e) { /* retry immediately */ }
+  }
+  throw new Error('pack-offline: rmrf failed for ' + p + ' - close whatever holds it and retry');
+}
 
 function copyRec(src, dest) {
   const st = fs.statSync(src);
@@ -78,7 +92,11 @@ function download(url, dest) {
 
   for (const f of COPY_FILES) {
     const src = path.join(REPO, f);
-    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(stage, f));
+    if (fs.existsSync(src)) {
+      const dest = path.join(stage, f);
+      fs.mkdirSync(path.dirname(dest), { recursive: true }); // nested entries keep their layout
+      fs.copyFileSync(src, dest);
+    }
   }
   for (const d of COPY_DIRS) {
     const src = path.join(REPO, d);

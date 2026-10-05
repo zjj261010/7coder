@@ -1986,19 +1986,24 @@ scenarios.push({
   fn: async () => {
     // Behavioral wiring is swamped by the system prompt (it alone exceeds any
     // small CONTEXT_CHARS), so pin the weighting at the unit it changes:
-    // extract textUnits + messageSize from index.js and eval them (the
-    // runner-i white-box pattern; both are plain functions with no closure
-    // state beyond each other).
+    // extract the weighting functions from index.js and eval them (the
+    // runner-i white-box pattern; charUnits, textUnits and messageSize are
+    // plain functions with no closure state beyond each other - A2-13
+    // factored the per-code-point weighting into the charUnits helper that
+    // textUnitsSlice shares, so it must come along into the eval scope).
     const src = fs.readFileSync(IDX, 'utf8');
     const fnSrc = (name) => {
       const s = src.indexOf('function ' + name);
+      if (s < 0) return ''; // a missing function must trip the guard below, not eval garbage
       const e = src.indexOf('\n}', s);
       return src.substring(s, e + 2);
     };
-    if (!fnSrc('textUnits') || !fnSrc('messageSize')) { record('cjk: textUnits/messageSize present', false, 'extraction failed'); return; }
-    const tu = eval('(' + fnSrc('textUnits') + ')');
-    // messageSize closes over textUnits - eval them in one shared scope
-    const msz = eval('(function(){ ' + fnSrc('textUnits') + '\n' + fnSrc('messageSize') + '\n return messageSize; })()');
+    if (!fnSrc('charUnits') || !fnSrc('textUnits') || !fnSrc('messageSize')) { record('cjk: textUnits/messageSize present', false, 'extraction failed'); return; }
+    // textUnits closes over charUnits, messageSize over textUnits - eval them
+    // in one shared scope
+    const shared = fnSrc('charUnits') + '\n' + fnSrc('textUnits') + '\n';
+    const tu = eval('(function(){ ' + shared + '\n return textUnits; })()');
+    const msz = eval('(function(){ ' + shared + '\n' + fnSrc('messageSize') + '\n return messageSize; })()');
     record('cjk: textUnits weights a han char x2', tu('汉字') === 4 && tu('ab') === 2 && tu('ｆｕｌｌ') === 8, 'tu(汉字)=' + tu('汉字') + ' tu(ab)=' + tu('ab'));
     record('cjk: mixed string counts han x2 + ascii x1', tu('a配b置') === 6, 'got=' + tu('a配b置'));
     record('cjk: messageSize applies the weighting to message content', msz({ content: '配置'.repeat(10) }) === 40 && msz({ content: 'x'.repeat(20) }) === 20, 'cjk40=' + msz({ content: '配置'.repeat(10) }) + ' ascii20=' + msz({ content: 'x'.repeat(20) }));
@@ -2528,6 +2533,136 @@ scenarios.push({
       try { srv.kill(); } catch (e) {}
       stopMock(m2);
     }
+  }
+});
+
+// --- sec6: review batch 3 follow-ups (A2-13 / A2-14 / A2-18 / A2-19 / A2-21 / A2-22) ---
+scenarios.push({
+  name: 'sec6',
+  fn: async () => {
+    const tc = (id, name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: name, arguments: JSON.stringify(args) } }] });
+
+    // A2-13: a single memory note bigger than the recall budget must be
+    // truncated (with a marker), not admitted whole. HEAD admitted the first
+    // note whatever its size (picked.length gate), so a 16k note blew a
+    // 100-unit budget. Note body is ASCII, so units == chars here.
+    const cwd13 = freshCwd('b-sec6-mem');
+    fs.mkdirSync(path.join(cwd13, '.7coder', 'memory'), { recursive: true });
+    const noteBody = 'fibonacci secret note head - ' + 'filler padding for the recall budget probe '.repeat(90) + 'ENDTAIL-NEVERSEEN';
+    fs.writeFileSync(path.join(cwd13, '.7coder', 'memory', 'fibnote.md'), noteBody);
+    const m13 = startMock([{ role: 'assistant', content: 'SEC6-MEM-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m13.port, args: ['--prompt', 'tell me about fibonacci'], env: { PERMISSION_MODE: 'bypass', MEMORY_RECALL_CHARS: '100' }, cwd: cwd13, timeoutMs: 60000 });
+    const userMsgs = [];
+    for (const r of readLog(m13.log)) for (const m of (r.messages || [])) if (m.role === 'user') userMsgs.push(String(m.content));
+    const withNote = userMsgs.find(c => c.indexOf('Relevant long-term memory notes') >= 0) || '';
+    const noteSection = withNote.substring(withNote.indexOf('Relevant long-term memory notes'));
+    record('sec6/a213: oversized first note truncated at budget (marker present, prefix kept, tail gone)',
+      withNote.length > 0 && noteSection.includes('... [note truncated at recall budget]') && noteSection.includes('fibonacci secret note head') && !noteSection.includes('ENDTAIL-NEVERSEEN'),
+      'len=' + noteSection.length + ' ' + noteSection.substring(0, 100));
+    record('sec6/a213: injected note section stays under 500 chars', withNote.length > 0 && noteSection.length < 500, 'len=' + noteSection.length);
+    stopMock(m13);
+
+    // A2-14: /clear must dispose the persistent bash sessions - a "fresh
+    // conversation" that still exports SEC6V is not fresh.
+    const cwd14 = freshCwd('b-sec6-clear');
+    const m14 = startMock([
+      tc('ps1', 'bash_tool', { command: 'export SEC6V=alive', persistent: true }),
+      { role: 'assistant', content: 'SEC6-T1-DONE' },
+      tc('ps2', 'bash_tool', { command: 'echo SEC6VAL=$SEC6V', persistent: true }),
+      { role: 'assistant', content: 'SEC6-T2-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const r14 = await runCli({
+      port: m14.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd14, timeoutMs: 120000,
+      stdinSteps: [
+        { t: 'task one\n', d: 100 }, { t: '/execute-task-now\n', d: 5000 },
+        { t: '/clear\n', d: 1000 },
+        { t: 'task two\n', d: 100 }, { t: '/execute-task-now\n', d: 5000 },
+        { t: '/bye\n', d: 500 }
+      ]
+    });
+    const ps2 = tr(readLog(m14.log), 'ps2');
+    record('sec6/a214: /clear reports the persistent shell disposal', r14.out.includes('persistent shell sessions cleared'), r14.out.substring(0, 200));
+    record('sec6/a214: env exported before /clear is gone in the new shell', ps2 && ps2.c.includes('SEC6VAL=') && ps2.c.indexOf('SEC6VAL=alive') === -1, ps2 ? ps2.c.substring(0, 120) : 'no result');
+    stopMock(m14);
+
+    // A2-18: the audit log's result preview must be scrubbed like args are -
+    // reading a file that contains an sk- key must not leak it verbatim.
+    const cwd18 = freshCwd('b-sec6-audit');
+    fs.writeFileSync(path.join(cwd18, 'secret.txt'), '{"apiKey":"sk-audit12345678"}');
+    const m18 = startMock([tc('rd1', 'read_file', { path: 'secret.txt' }), { role: 'assistant', content: 'SEC6-AUDIT-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m18.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd18, timeoutMs: 60000 });
+    const auditPath = path.join(cwd18, '.7coder', 'audit.jsonl');
+    const auditEntries = fs.existsSync(auditPath)
+      ? fs.readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean)
+      : [];
+    const rd1 = auditEntries.find(e => e.tool === 'read_file');
+    record('sec6/a218: audit result line masks sk- keys',
+      rd1 && String(rd1.result).includes('sk-***') && String(rd1.result).indexOf('sk-audit12345678') === -1,
+      rd1 ? JSON.stringify(rd1.result).substring(0, 160) : 'no read_file audit entry');
+    stopMock(m18);
+
+    // A2-19: spawn('npx') on Windows must reach the npx.cmd shim on PATH
+    // (CreateProcess does no PATHEXT lookup). A fake npx.cmd - prepended to
+    // PATH - wraps a minimal MCP stdio JSON-RPC shim, so a successful launch
+    // shows up as a working tools/list (MCP-NPX-SHIM-RAN). HEAD died with
+    // 'MCP server "echo" is not running (spawn npx ENOENT)'.
+    const cwd19 = freshCwd('b-sec6-npx');
+    const shimDir = path.join(cwd19, 'shim-bin');
+    fs.mkdirSync(shimDir, { recursive: true });
+    fs.writeFileSync(path.join(shimDir, 'npx.cmd'), '@echo off\r\nnode "%~dp0sec6-mcp-shim.js"\r\n');
+    fs.writeFileSync(path.join(shimDir, 'sec6-mcp-shim.js'), [
+      "// Minimal MCP stdio server for sec6 (A2-19): JSON-RPC 2.0 line framing.",
+      "let buf = '';",
+      "process.stdin.on('data', d => {",
+      '  buf += d.toString();',
+      '  let nl;',
+      "  while ((nl = buf.indexOf('\\n')) >= 0) {",
+      "    const line = buf.substring(0, nl).trim();",
+      '    buf = buf.substring(nl + 1);',
+      '    if (!line) continue;',
+      '    let msg;',
+      '    try { msg = JSON.parse(line); } catch (e) { continue; }',
+      '    if (msg.id === undefined) continue; // notification - no reply',
+      '    let result = {};',
+      "    if (msg.method === 'initialize') result = { protocolVersion: '2024-11-05', capabilities: {}, serverInfo: { name: 'sec6-shim', version: '1.0.0' } };",
+      "    else if (msg.method === 'tools/list') result = { tools: [{ name: 'shim_echo', description: 'MCP-NPX-SHIM-RAN', inputSchema: { type: 'object', properties: {} } }] };",
+      "    process.stdout.write(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: result }) + '\\n');",
+      '  }',
+      '});',
+      'process.stdin.resume();'
+    ].join('\n'));
+    fs.mkdirSync(path.join(cwd19, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd19, '.7coder', 'mcp.json'), JSON.stringify({ servers: { echo: { command: 'npx', args: ['--version'] } } }));
+    const m19 = startMock([tc('mcp1', 'mcp_list_tools_tool', {}), { role: 'assistant', content: 'SEC6-MCP-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({
+      port: m19.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', PATH: shimDir + path.delimiter + (process.env.PATH || '') }, cwd: cwd19, timeoutMs: 60000
+    });
+    const mcp1 = tr(readLog(m19.log), 'mcp1');
+    record('sec6/a219: bare npx resolves the PATH .cmd shim (tools/list answers, no ENOENT)',
+      mcp1 && mcp1.c.includes('MCP-NPX-SHIM-RAN') && mcp1.c.indexOf('ENOENT') === -1,
+      mcp1 ? mcp1.c.substring(0, 200) : 'no result');
+    stopMock(m19);
+
+    // A2-21 (static): pack rmrf must not retry on a 300ms setTimeout - that
+    // timer can delete a directory the main flow has already re-created.
+    const packSrc = fs.readFileSync(path.join(ROOT, '..', 'scripts', 'pack-offline.js'), 'utf8');
+    record('sec6/a221: pack-offline.js has no async setTimeout retry left', packSrc.indexOf('setTimeout') === -1, 'setTimeout hits=' + (packSrc.match(/setTimeout/g) || []).length);
+
+    // A2-22 (static): doc consistency - INSTALL/README vs reality.
+    const installSrc = fs.readFileSync(path.join(ROOT, '..', 'INSTALL.md'), 'utf8');
+    const readmeSrc = fs.readFileSync(path.join(ROOT, '..', 'README.md'), 'utf8');
+    const lockSrc = fs.readFileSync(path.join(ROOT, '..', 'package-lock.json'), 'utf8');
+    const inlineEnv = installSrc.split('\n').filter(l => /^[A-Z][A-Z0-9_]*=.*#/.test(l));
+    record('sec6/a222: INSTALL .env examples keep comments on their own lines', inlineEnv.length === 0, JSON.stringify(inlineEnv).substring(0, 200));
+    record('sec6/a222: dotenv version matches the lockfile (8.6.0)',
+      installSrc.includes('dotenv 8.6.0') && lockSrc.indexOf('"version": "8.6.0"') >= 0 && installSrc.indexOf('8.2.0') === -1, '');
+    record('sec6/a222: README no longer shows the stale v2.16 banner', readmeSrc.indexOf('v2.16') === -1, '');
+    record('sec6/a222: README session bullets have their inline code restored (no "to )" placeholder)',
+      readmeSrc.indexOf('to )') === -1 && readmeSrc.indexOf('or type )') === -1, '');
   }
 });
 

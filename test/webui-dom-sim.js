@@ -49,11 +49,14 @@ function makeEl(tag) {
   e.querySelector = function () { return makeEl('div'); };
   e.querySelectorAll = function () { return []; };
   e.focus = function () {};
+  e.setAttribute = function (k, v) { e[k] = String(v); };
+  e.getAttribute = function (k) { return e[k] || null; };
   e.classList = { toggle() {}, add() {}, remove() {} };
   return e;
 }
 const byId = {};
 const documentStub = {
+  body: makeEl('body'),
   getElementById: id => (byId[id] = byId[id] || makeEl('div')),
   createElement: tag => makeEl(tag),
   addEventListener() {}
@@ -79,7 +82,7 @@ function fetchStub(url, opts) {
 let hook = null;
 const sandbox = {
   document: documentStub,
-  window: { addEventListener() {} },
+  window: { addEventListener() {}, matchMedia() { return { matches: false, addEventListener() {} }; } },
   localStorage: localStorageStub,
   navigator: { clipboard: { writeText() {} } },
   fetch: fetchStub,

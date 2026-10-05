@@ -6,13 +6,13 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-05 凌晨·批次二后，v2.18.0 之上待发）：单文件 index.js（~4660 行）；发布验证：B 215/215（Node 24）+ A 85/85（Node 13 包内 runtime）+ dom-sim；v2.17→v2.18 五轮：GAP-9 分层记忆、GAP-13 CJK 折算、AST-R1 非流式后台摘要、GAP-14 /fork + P2-1/12/13 + P1-7 尾巴清扫、P2-3 检索预算；离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、runtime 冒烟通过）；除暂缓决策项（OPT-3/6、AST-15、D3、C 系、P2-7）外**待办清零**
+> 规模快照（2026-10-05 晨·**双审阅三批 27 项全清**，v2.18.0 之上待发）：单文件 index.js（~4660 行）；发布验证：B 215/215（Node 24）+ A 85/85（Node 13 包内 runtime）+ dom-sim；v2.17→v2.18 五轮：GAP-9 分层记忆、GAP-13 CJK 折算、AST-R1 非流式后台摘要、GAP-14 /fork + P2-1/12/13 + P1-7 尾巴清扫、P2-3 检索预算；离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、runtime 冒烟通过）；除暂缓决策项（OPT-3/6、AST-15、D3、C 系、P2-7）外**待办清零**
 > 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 241 |
+| runner-b.js | 259 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +24,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **533** |
+| **合计** | **551** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -384,18 +384,18 @@
 | A2-09 | index.js:2999-3016 | **auto_debug spawn 无 error 监听**：不存在 exe → 未捕获 error 事件 → HTTP 服务 exit 1（实测复现）。两条 spawn 路径同病 | ✅ 机械轮：两条 spawn 挂 error 监听（spawnFailed 闭包 + 观察循环 break + 外层修复循环 break——防 3 轮空转）；sec2 3 断言先红（HEAD 实测 ECONNRESET 服务死）后绿（200 + spawn failed 文案 + 事后健康）；GLM 并纠规格两处旧参数名/默认值错误 |
 | A2-10 | index.js:3932 | 设 key 后 /api/todos 匿名可读 | ⬜ 并入 OP2-4 |
 | A2-11 | index.js:2708-2715 | tsc 全局错误（TS18003 无文件定位）被误报 [DIAG] clean | ✅ 机械轮：tsc 裸 error TS 行收集为诊断 + exit≠0 无解析时 Diagnostics error:（sec4 2 断言：TS18003 报告非 clean、真零问题仍 clean） |
-| A2-12 | webui.html:409-422, 478-488 | **单标签会话切换/保存竞态**：A 回答中载 B → 回答串进 B；旧存档返回晚于新对话 → 旧文件名写回 → 新内容存进旧档（DOM 模拟双复现）。AST-06 首存修复未覆盖切换竞态 | ⬜ P2（第三批） |
-| A2-13 | index.js:3505-3515 | 记忆召回首条可无限超额（picked.length 条件），实测预算 100 却召回 16075 字符；MAX_FILES=20 只是读取截断非保存上限 | ⬜ P2 |
-| A2-14 | index.js:964-969, 4605 | /clear 不清持久 shell（实测 export 状态跨"新会话"残留）；agent-1/wf-1 键跨实例复用 | ⬜ P2 |
+| A2-12 | webui.html:409-422, 478-488 | **单标签会话切换/保存竞态**：A 回答中载 B → 回答串进 B；旧存档返回晚于新对话 → 旧文件名写回 → 新内容存进旧档（DOM 模拟双复现）。AST-06 首存修复未覆盖切换竞态 | ✅ 15c7e7d：sessGen generation 守卫（send/autoSave/load 三处捕获；迟到回复不进新档、旧文件名不回写、busy 拒载入）；dom-sim 10/10 |
+| A2-13 | index.js:3505-3515 | 记忆召回首条可无限超额（picked.length 条件），实测预算 100 却召回 16075 字符；MAX_FILES=20 只是读取截断非保存上限 | ✅ 机械轮：首条也截断（textUnitsSlice 按加权单位截到剩余预算 + 标记行，磁盘原文不动）；sec6 2 断言先红（HEAD 注入 4103 字符）后绿 |
+| A2-14 | index.js:964-969, 4605 | /clear 不清持久 shell（实测 export 状态跨"新会话"残留）；agent-1/wf-1 键跨实例复用 | ✅ 机械轮：/clear 调 disposePersistentShells + 提示文案；sec6 2 断言先红（export 跨清存活）后绿（空值） |
 | A2-15 | index.js:1569-1576 | SSE 无 finish_reason 即 EOF → 默认 stop 当成功（残缺回答入库）；未覆盖首段后失败重试的前缀重复 | ✅ 8fb0a99：无 [DONE] 且无 finish_reason 的 EOF → upstream error（不重试上抛）；[DONE]+finish 与仅 finish 两方向兼容保留；parseSSEStream 假流单元 3 断言 |
-| A2-16 | index.js:4424-4440 | writeWorkspaceEnv 重序列化全部键：多行 env 值 \"first
+| A2-16 | ✅ 15c7e7d：只重写受管键（整文件重序列化移除）；round-trip 离线证明 + 真实 POST /api/settings 端到端（多行值逐字节存活、注释保留）；sec6 3 断言 | writeWorkspaceEnv 重序列化全部键：多行 env 值 \"first
 second\" 保存后变 first（丢引号语义，实测）。P1-4 注释保留修复的姊妹缺陷 | ⬜ P2 |
 | A2-17 | index.js:3119 | 超级危险拦截入口不全（cron/run_tests/npx legacy）| ✅ 并入 OP2-2（3926e3f） |
-| A2-18 | index.js:381-387, 3054-3066 | 审计 result 首行不脱敏：紧凑 models.json 读取把 apiKey 原样落日志（实测假键复现）。AST-04 只修了名单，日志复制面仍在 | ⬜ P2 |
-| A2-19 | index.js:248-252 | Windows 下 spawn('npx') ENOENT（双运行时实测）——README 的 MCP 示例在 Windows 直接起不来 | ⬜ P2 |
-| A2-20 | index.js:1121-1152, 1178-1228 | P2-3 预算未覆盖：模型正则同步运算无预算（探针 29 字节 (a+)+$ 超时）、glob maxEntries 计结果非扫描量、无 visited 集合（环链）、perFileCap 不停计算 | ⬜ P2 |
-| A2-21 | scripts/pack-offline.js:40, 74-84 | rmrf 失败后 300ms 定时器异步重试 → 可能删掉已重建的新目录（静态） | ⬜ P2 |
-| A2-22 | INSTALL/README/pack | 6 处误导：env 行尾注释示例违反自家 dotenv 8 规则、scripts/ 不打包但 INSTALL 让跑、KNOWN-ISSUES.md 路径过时、dotenv 实为 8.6.0 非 8.2.0、README 仍标 v2.16.0、备份说明 100 vs 实际 5/200 | ⬜ P2 |
+| A2-18 | index.js:381-387, 3054-3066 | 审计 result 首行不脱敏：紧凑 models.json 读取把 apiKey 原样落日志（实测假键复现）。AST-04 只修了名单，日志复制面仍在 | ✅ 机械轮：sanitizeAuditLine（Bearer/sk- 模式）盖 result 字段——先脱敏再 160 截断防边界前缀泄露；只动唯一产出 result 的 safeExecuteTool；sec6 断言先红后绿 |
+| A2-19 | index.js:248-252 | Windows 下 spawn('npx') ENOENT（双运行时实测）——README 的 MCP 示例在 Windows 直接起不来 | ✅ 机械轮：resolveCommandOnWindows（PATH 找 .cmd/.bat/.exe → shell:true 启动，信任边界=mcp.json 是用户自写，注释声明）；**升级式改进**：规格的降级断言在修复侧不可通过，改为实现最小 JSON-RPC shim 达成强断言（tools/list 应答、无 ENOENT）——先红（HEAD 实测 spawn npx ENOENT）后绿 |
+| A2-20 | index.js:1121-1152, 1178-1228 | P2-3 预算未覆盖：模型正则同步运算无预算（探针 29 字节 (a+)+$ 超时）、glob maxEntries 计结果非扫描量、无 visited 集合（环链）、perFileCap 不停计算 | ✅ 15c7e7d：grep 嵌套量词 lint（自测 9 用例）+ 双遍历器 visited 集 + 预算 glob 封顶访问量 + grep 超限即停止匹配；lint 诚实标注 best-effort 非沙箱；pruneBackups 零语义变化 |
+| A2-21 | scripts/pack-offline.js:40, 74-84 | rmrf 失败后 300ms 定时器异步重试 → 可能删掉已重建的新目录（静态） | ✅ 机械轮：rmrf 改同步重试 3 次仍败则 throw（宁可不发布）；静态断言（无 setTimeout）+ 真实打包冒烟（staged 3.4MB + 包内跑 count-assertions 551）；故障注入不可行已注明 |
+| A2-22 | INSTALL/README/pack | 6 处误导：env 行尾注释示例违反自家 dotenv 8 规则、scripts/ 不打包但 INSTALL 让跑、KNOWN-ISSUES.md 路径过时、dotenv 实为 8.6.0 非 8.2.0、README 仍标 v2.16.0、备份说明 100 vs 实际 5/200 | ✅ 机械轮：六处全清——env 示例行尾注释改独占行 ×2 块、count-assertions.js 入包并实跑验证、KNOWN-ISSUES 引用改 docs/history、dotenv 8.6.0（先验 lockfile）、README 横幅 2.18.0 + 空白占位句重建 + 备份策略 5/200 对齐实现；sec6 4 断言先红后绿 |
 
 ### astra2 报告的其余内容（采纳/记录）
 
