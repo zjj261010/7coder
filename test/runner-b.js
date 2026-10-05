@@ -2478,5 +2478,58 @@ scenarios.push({
   }
 });
 
+// --- B42: review batch 3 core (A2-12 session generation / A2-16 env rewrite / A2-20 scan compute budgets) ---
+scenarios.push({
+  name: 'sec5',
+  fn: async () => {
+    // A2-20: grep evil-pattern lint (unit-level on the shape grepSearch rejects)
+    const src = fs.readFileSync(IDX, 'utf8');
+    const lint = /\([^()]*[+*][^()]*\)[+*]/;
+    record('sec5/a220: lint catches classic nested quantifiers', lint.test('(a+)+') && lint.test('(\\d+)+') && lint.test('([a-z]+)*'), '');
+    record('sec5/a220: lint passes benign patterns', !lint.test('[a-z]+') && !lint.test('(foo|bar)') && !lint.test('(\\w+)-ts') && !lint.test('a.*b'), '');
+
+    // A2-20: end-to-end - grep with an evil pattern is refused, benign still works
+    const cwd1 = freshCwd('b-sec5a');
+    fs.writeFileSync(path.join(cwd1, 'ok.txt'), 'NEEDLE-HERE\n');
+    const tc = (id, name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: name, arguments: JSON.stringify(args) } }] });
+    const m1 = startMock([
+      tc('g1', 'grep_tool', { pattern: '(a+)+$' }),
+      tc('g2', 'grep_tool', { pattern: 'NEEDLE' }),
+      { role: 'assistant', content: 'SEC5-DONE ' + 'sec5 reply padded past the summary floor for the budget skip rule. '.repeat(5) }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m1.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd1, timeoutMs: 60000 });
+    const l1 = readLog(m1.log);
+    const g1 = tr(l1, 'g1'), g2 = tr(l1, 'g2');
+    record('sec5/a220: grep_tool refuses the nested-quantifier pattern', g1 && g1.c.indexOf('Tool error: grep pattern contains nested quantifiers') === 0, g1 ? g1.c.substring(0, 80) : 'no result');
+    record('sec5/a220: benign grep still matches', g2 && g2.c.includes('ok.txt'), g2 ? g2.c.substring(0, 60) : 'no result');
+    stopMock(m1);
+
+    // A2-16: multiline env value survives a settings save byte-for-byte
+    const cwd2 = freshCwd('b-sec5b');
+    fs.writeFileSync(path.join(cwd2, '.env'), 'CUSTOM="first\\nsecond"\nHEAVY_MODEL=old-model\n# KEEP-COMMENT\n');
+    const m2 = startMock([{ role: 'assistant', content: 'SET-OK ' + 'settings save reply padded past the summary floor for budget skip. '.repeat(5) }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 451;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'k', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', HEAVY_MODEL: 'set-model', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      cwd: cwd2, stdio: 'ignore'
+    });
+    try {
+      await new Promise(r => setTimeout(r, 2500));
+      const saved = await httpReq(srvPort, 'POST', '/api/settings', { model: 'new-model' });
+      const envAfter = fs.readFileSync(path.join(cwd2, '.env'), 'utf8');
+      const dotenv = require('dotenv');
+      const parsed = dotenv.parse(envAfter);
+      record('sec5/a216: multiline CUSTOM survives the save byte-for-byte', parsed.CUSTOM === 'first\nsecond', JSON.stringify(parsed.CUSTOM));
+      record('sec5/a216: managed HEAVY_MODEL updated', parsed.HEAVY_MODEL === 'new-model', parsed.HEAVY_MODEL);
+      record('sec5/a216: comment line untouched', envAfter.includes('# KEEP-COMMENT'), envAfter.replace(/\n/g, ' | '));
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m2);
+    }
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);

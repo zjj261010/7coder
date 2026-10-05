@@ -1112,6 +1112,13 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
   const skipHeavy = !!opts && !!opts.skipHeavy;
   const maxDepth = opts && typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity;
   const maxEntries = opts && typeof opts.maxEntries === 'number' ? opts.maxEntries : Infinity;
+  // A2-20: budgeted walks also cap how many entries they VISIT (maxEntries
+  // alone counted matches - a no-match walk could still scan the whole tree)
+  // and keep a real-path visited set so junction cycles cannot loop the walk.
+  const maxVisited = opts && typeof opts.maxEntries === 'number' ? opts.maxEntries * 4 : Infinity;
+  const budgeted = !!opts;
+  const visited = new Set();
+  let visitedCount = 0;
   const results = [];
   const startDir = dir ? path.join(launchDir, sanitizePath(dir)) : launchDir;
   let rx = null;
@@ -1124,6 +1131,13 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
   const pathAware = pattern && (pattern.indexOf('/') >= 0 || pattern.indexOf('\\') >= 0 || pattern.indexOf('**') >= 0);
   function walk(current, depth) {
     if (results.length >= maxEntries) return;
+    if (budgeted) {
+      let realCur;
+      try { realCur = fs.realpathSync(current); } catch (e) { return; }
+      if (visited.has(realCur)) return;
+      visited.add(realCur);
+      if (++visitedCount > maxVisited) return;
+    }
     let entries;
     try { entries = fs.readdirSync(current); } catch (e) { return; }
     for (const entry of entries) {
@@ -1178,6 +1192,15 @@ function grepSearch(pattern, searchPath = '', opts = null) {
   const perFileCap = budgeted ? (opts && typeof opts.maxMatchesPerFile === 'number' ? opts.maxMatchesPerFile : 50) : Infinity;
   const results = [];
   const startDir = searchPath ? path.join(launchDir, sanitizePath(searchPath)) : launchDir;
+  // A2-20: an evil pattern (a quantified group that itself contains a
+  // quantifier - (a+)+, (\d+)+, ([a-z]+)*) turns line matching into a
+  // catastrophic-backtracking CPU bomb on the main thread. Reject the
+  // classic shapes outright; cap pattern length too. Best-effort lint, not
+  // a sandbox (deeply nested groups can still slip past).
+  if (String(pattern).length > 200) return 'Tool error: grep pattern too long (max 200 chars)';
+  if (/\([^()]*[+*][^()]*\)[+*]/.test(String(pattern))) {
+    return 'Tool error: grep pattern contains nested quantifiers (catastrophic backtracking risk) - simplify it';
+  }
   let rx = null;
   try {
     rx = new RegExp(pattern, 'i');
@@ -1185,8 +1208,13 @@ function grepSearch(pattern, searchPath = '', opts = null) {
     rx = null;
   }
   let scanned = 0;
+  const visited = new Set(); // A2-20: junction cycles must not loop the walk
   function walk(current) {
     if (scanned >= maxFiles) return;
+    let realCur;
+    try { realCur = fs.realpathSync(current); } catch (e) { return; }
+    if (visited.has(realCur)) return;
+    visited.add(realCur);
     let entries;
     try { entries = fs.readdirSync(current); } catch (e) { return; }
     for (const entry of entries) {
@@ -1228,6 +1256,7 @@ function grepSearch(pattern, searchPath = '', opts = null) {
           const lines = content.split(/\r?\n/);
           let matchedLines = 0;
           for (const line of lines) {
+            if (matchedLines > perFileCap) break; // A2-20: stop MATCHING once over the cap, not just truncate the report
             const hit = rx ? rx.test(line) : line.toLowerCase().includes(pattern.toLowerCase());
             if (hit) matchedLines++;
           }
@@ -4557,20 +4586,24 @@ function startHttpServer() {
 
     function writeWorkspaceEnv(updates) {
       const wsEnv = path.join(launchDir, ".env");
-      let existing = {};
-      try { if (fs.existsSync(wsEnv)) existing = require("dotenv").parse(fs.readFileSync(wsEnv)); } catch (e) {}
-      for (const k of Object.keys(updates)) existing[k] = updates[k];
-      // 保留注释和未知行：逐行匹配受管键原地替换，未匹配的行原样保留
+      // A2-16: ONLY the managed keys being updated are rewritten. The old code
+      // dotenv.parsed the WHOLE file and re-serialized every key - a multiline
+      // value like CUSTOM="first\nsecond" lost its quoting and got split into
+      // two broken lines. Unknown KEY= lines now pass through verbatim.
+      // (Managed values are endpoint/key/model - the settings route already
+      // rejects CR/LF/NUL in them, so no quoting is needed on write.)
+      const managed = {};
+      for (const k of Object.keys(updates)) managed[k] = updates[k];
       const outLines = [];
       const written = new Set();
       if (fs.existsSync(wsEnv)) {
         for (const line of fs.readFileSync(wsEnv, "utf8").split(/\r?\n/)) {
           const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
-          if (m && existing[m[1]] !== undefined) { outLines.push(m[1] + "=" + existing[m[1]]); written.add(m[1]); }
-          else outLines.push(line);
+          if (m && managed[m[1]] !== undefined) { outLines.push(m[1] + "=" + managed[m[1]]); written.add(m[1]); }
+          else outLines.push(line); // comments, blank lines, MULTILINE continuations, unknown keys - untouched
         }
       }
-      for (const k of Object.keys(existing)) { if (!written.has(k)) outLines.push(k + "=" + existing[k]); }
+      for (const k of Object.keys(managed)) { if (!written.has(k)) outLines.push(k + "=" + managed[k]); }
       fs.writeFileSync(wsEnv, outLines.join("\n") + "\n", "utf8");
     }
 
