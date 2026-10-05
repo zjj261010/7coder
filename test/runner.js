@@ -435,8 +435,11 @@ scenarios.push({
     });
     await new Promise(r => setTimeout(r, 2500));
     try {
-      const models = await httpReq(srvPort, 'GET', '/v1/models', null);
-      record('http: GET /v1/models 200 with list', models.status === 200 && models.body.includes('gpt-4o-mini'), models.body.substring(0, 80));
+      // OP2-4: /v1/models is now behind the HTTP_API_KEY gate like its
+      // siblings - no key 401s, the right Bearer gets the list.
+      const modelsNoKey = await httpReq(srvPort, 'GET', '/v1/models', null);
+      const models = await httpReq(srvPort, 'GET', '/v1/models', null, { Authorization: 'Bearer k9' });
+      record('http: GET /v1/models 401 without key / 200 with list when keyed', modelsNoKey.status === 401 && models.status === 200 && models.body.includes('gpt-4o-mini'), modelsNoKey.status + '/' + models.body.substring(0, 60));
       const unauth = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'hi' }] });
       record('http: no key -> 401', unauth.status === 401, 'status=' + unauth.status);
       const wrong = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'hi' }] }, { Authorization: 'Bearer nope' });

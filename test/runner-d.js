@@ -202,8 +202,10 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 2500));
     try {
       const auth = { Authorization: 'Bearer kM' };
-      const models = await httpReq(srvPort, 'GET', '/v1/models', null);
-      record('matrix: GET /v1/models 200', models.status === 200, '');
+      // OP2-4: keyed server - without Bearer 401, with Bearer 200.
+      const modelsNoKey = await httpReq(srvPort, 'GET', '/v1/models', null);
+      const models = await httpReq(srvPort, 'GET', '/v1/models', null, auth);
+      record('matrix: GET /v1/models 401 without key / 200 with Bearer', modelsNoKey.status === 401 && models.status === 200, modelsNoKey.status + '/' + models.status);
       const head = await httpReq(srvPort, 'HEAD', '/v1/models', null);
       record('matrix: HEAD /v1/models does not crash (404 or 200 both acceptable)', head.status === 200 || head.status === 404, 'status=' + head.status);
       const put = await httpReq(srvPort, 'PUT', '/v1/chat/completions', { messages: [] }, auth);

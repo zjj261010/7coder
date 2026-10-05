@@ -2708,8 +2708,15 @@ function parseTestOutput(text) {
       exitStatus = (typeof cmdR.error.code === 'number') ? cmdR.error.code : (cmdR.error.status !== undefined ? cmdR.error.status : 1);
     }
     const r = parseTestOutput(out);
-    if (!r.parsed) return "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.'\n'Output tail:'\n'" + out.substring(out.length - 2000);
-    let res = "[TESTS] exit=" + exitStatus + " " + (r.passed || 0) + " passed, " + (r.failed || 0) + " failed, " + (r.skipped || 0) + " skipped (of " + r.total + ").";
+    // A2-07: a non-zero exit is a FAILURE - the result must carry a prefix the
+    // workflow's TOOL_FAIL_RE recognizes so a failed test step stops the
+    // workflow instead of the next steps marching on. Exit 0 with no
+    // recognizable summary stays informational ('[TESTS]').
+    if (!r.parsed) {
+      if (exitStatus !== 0) return "Tests error: command finished with exit " + exitStatus + " but no recognizable summary.'\n'Output tail:'\n'" + out.substring(out.length - 2000);
+      return "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.'\n'Output tail:'\n'" + out.substring(out.length - 2000);
+    }
+    let res = (exitStatus !== 0 ? "Tests error:" : "[TESTS]") + " exit=" + exitStatus + " " + (r.passed || 0) + " passed, " + (r.failed || 0) + " failed, " + (r.skipped || 0) + " skipped (of " + r.total + ").";
     res += '\n';
     res += (r.failures.length ? "Failures:'\n'" + r.failures.join('\n') : "All green.");
     res += "'\n''\n'Raw tail:'\n'" + out.substring(out.length - 1500);
@@ -2749,6 +2756,25 @@ function formatDiagResult(toolLabel, problems) {
         }
         if (!problems.length && r.error && !String(r.stdout || '').trim() && !String(r.stderr || '').trim()) {
           return 'Diagnostics error: tsc failed: ' + (r.error.message || 'exit ' + r.error.code);
+        }
+        // A2-11: global tsc errors (e.g. "error TS18003: No inputs were found.")
+        // carry no file(line,col) shape, so the loop above misses them and a
+        // failing tsc was reported as '[DIAG] clean (0 problems)'. With no
+        // line-level problems, surface bare 'error TS' lines (truncated to 160
+        // chars each) whenever tsc exited non-zero or the output carries them;
+        // only an empty set with exit 0 stays clean.
+        if (!problems.length) {
+          const tscOut = String(r.stdout || '') + '\n' + String(r.stderr || '');
+          const tscFailed = !!(r.error && typeof r.error.code === 'number' && r.error.code !== 0);
+          const additional = tscOut.split('\n')
+            .filter(l => /error TS\d+/.test(l))
+            .map(l => l.trim().substring(0, 160));
+          if (additional.length) {
+            return '[DIAG] tsc: ' + additional.length + ' 个问题\n' + additional.map(l => '  ' + l).join('\n');
+          }
+          if (tscFailed) {
+            return 'Diagnostics error: tsc failed: exit ' + r.error.code + (String(r.stderr || '').trim() ? (' | ' + String(r.stderr).trim().substring(0, 200)) : '');
+          }
         }
         return formatDiagResult('tsc', problems);
       }
@@ -3307,7 +3333,7 @@ async function askApproval(question, approvalBridge) {
 // step-stop check and the audit status mapping both consume this regex, so
 // they can never drift apart again (they once disagreed: 'List error' and
 // declined steps let workflows continue and audit logged denials as 'ok').
-const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined|Search error|Diagnostics error|[SHELL] timeout)/;
+const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Tests error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined|Search error|Diagnostics error|[SHELL] timeout)/;
 function toolFailed(res) { return TOOL_FAIL_RE.test(String(res)); }
 
 // Central choke point for every model call: caps tool result size and
@@ -4014,6 +4040,13 @@ function startHttpServer() {
     return;
   }
   if (req.method === 'GET' && req.url === '/api/info') {
+    // OP2-4: same gate as /api/sessions - when HTTP_API_KEY is set, every
+    // read route answers 401 without the matching Bearer key.
+    if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(), usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
     return;
@@ -4022,11 +4055,23 @@ function startHttpServer() {
     // GAP-6: the structured task list for the webui sidebar. Auth style matches
     // /api/info; the store is re-read per request so changes made by a CLI
     // session in the same workspace show up immediately.
+    // OP2-4: same gate as /api/sessions.
+    if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+      return;
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ todos: loadTodos() }));
     return;
   }
     if (req.method === 'GET' && req.url === '/v1/models') {
+      // OP2-4: same gate as /api/sessions.
+      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+        return;
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         object: 'list',

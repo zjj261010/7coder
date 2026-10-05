@@ -872,7 +872,9 @@ scenarios.push({
     const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 120000 });
     const log = readLog(m.log);
     const ts1 = tr(log, 'ts1');
-    record('tests: explicit command parsed (3 passed / 1 failed / failure lines)', ts1 && ts1.c.includes('3 passed, 1 failed') && ts1.c.includes('FAIL sum.test.js') && ts1.c.includes('not ok 1'), ts1 ? ts1.c.substring(0, 150) : 'no result');
+    // A2-07 contract change: non-zero test exit now prefixes 'Tests error:'
+    // (TOOL_FAIL_RE-visible) instead of '[TESTS]' - fake-runner exits 1 here.
+    record('tests: explicit command parsed (Tests error prefix, 3 passed / 1 failed / failure lines)', ts1 && ts1.c.indexOf('Tests error:') === 0 && ts1.c.includes('3 passed, 1 failed') && ts1.c.includes('FAIL sum.test.js') && ts1.c.includes('not ok 1'), ts1 ? ts1.c.substring(0, 150) : 'no result');
     const ts2 = tr(log, 'ts2');
     record('tests: auto-detect via package.json scripts.test', ts2 && ts2.c.includes('3 passed, 1 failed'), ts2 ? ts2.c.substring(0, 120) : 'no result');
     const ts3 = tr(log, 'ts3');
@@ -2395,6 +2397,84 @@ scenarios.push({
     }
     record('sec3/a205: fork banner printed', r.out.indexOf('[FORK] 会话已回退到第 1 轮') >= 0, r.out.substring(r.out.indexOf('[FORK]') >= 0 ? r.out.indexOf('[FORK]') : 0, 80));
     stopMock(m);
+  }
+});
+
+// --- sec4: review batch 2 follow-ups (A2-07 / A2-11 / OP2-4) ---
+scenarios.push({
+  name: 'sec4',
+  fn: async () => {
+    const tc = (id, name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: name, arguments: JSON.stringify(args) } }] });
+
+    // A2-07: a run_tests step that exits non-zero must stop the workflow.
+    // Before the fix the '[TESTS]' result was not recognized by TOOL_FAIL_RE,
+    // so step 2 still ran and the workflow reported '[OK] Workflow complete'.
+    const cwd = freshCwd('b-sec4');
+    const m = startMock([
+      tc('wf1', 'workflow_tool', { steps: [
+        { tool: 'run_tests_tool', args: { command: 'node -e "process.exit(3)"' } }, // no recognizable summary, exit 3
+        { tool: 'write_file', args: { path: 'after-failed-tests.txt', content: 'SHOULD-NOT-EXIST' } }
+      ] }),
+      { role: 'assistant', content: 'SEC4-DONE' }
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const wf1 = tr(readLog(m.log), 'wf1');
+    record('sec4/a207: workflow stops on non-zero test exit (STOPPED + stopped-after-failed-step)',
+      wf1 && wf1.c.includes('[STOPPED]') && wf1.c.includes('stopped after failed step 1'), wf1 ? wf1.c.substring(0, 200) : 'no result');
+    record('sec4/a207: write step after the failed test step never ran', !fs.existsSync(path.join(cwd, 'after-failed-tests.txt')), wf1 ? wf1.c.substring(0, 120) : '');
+    record('sec4/a207: failing run_tests result carries the Tests error prefix', wf1 && wf1.c.includes('Tests error:'), wf1 ? wf1.c.substring(0, 120) : 'no result');
+    stopMock(m);
+
+    // A2-11: global tsc errors ("error TS18003: No inputs were found.") have no
+    // file(line,col) shape - before the fix they were swallowed and a failing
+    // tsc was reported as '[DIAG] clean (0 problems)'.
+    const cwd2 = freshCwd('b-sec4-diag');
+    fs.mkdirSync(path.join(cwd2, 'node_modules', 'typescript', 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(cwd2, 'node_modules', 'typescript', 'bin', 'tsc'), [
+      'console.log("error TS18003: No inputs were found.");',
+      'process.exit(2);'
+    ].join('\n'));
+    const m2 = startMock([tc('dg1', 'diagnostics_tool', {}), { role: 'assistant', content: 'SEC4-DIAG-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd2, timeoutMs: 60000 });
+    const dg1 = tr(readLog(m2.log), 'dg1');
+    record('sec4/a211: global tsc error (bare error TS line) is reported, not clean',
+      dg1 && dg1.c.includes('TS18003') && !dg1.c.includes('clean (0 problems)'), dg1 ? dg1.c : 'no result');
+    stopMock(m2);
+
+    const cwd3 = freshCwd('b-sec4-diag0');
+    fs.mkdirSync(path.join(cwd3, 'node_modules', 'typescript', 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(cwd3, 'node_modules', 'typescript', 'bin', 'tsc'), 'process.exit(0);');
+    const m3 = startMock([tc('dg2', 'diagnostics_tool', {}), { role: 'assistant', content: 'SEC4-DIAG2-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    await runCli({ port: m3.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd3, timeoutMs: 60000 });
+    const dg2 = tr(readLog(m3.log), 'dg2');
+    record('sec4/a211: zero-problem tsc (exit 0, no output) still reports clean',
+      dg2 && dg2.c.includes('[DIAG] clean'), dg2 ? dg2.c : 'no result');
+    stopMock(m3);
+
+    // OP2-4: when HTTP_API_KEY is set, GET /api/info, /api/todos and /v1/models
+    // must 401 without the key (they were the last read routes without a gate).
+    const cwd4 = freshCwd('b-sec4-http');
+    const m4 = startMock([{ role: 'assistant', content: 'SEC4-HTTP-DONE' }]);
+    await new Promise(r => setTimeout(r, 600));
+    const srvPort = port + 420;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m4.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort), HTTP_API_KEY: 'test-key' }),
+      cwd: cwd4, stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      for (const p of ['/api/info', '/api/todos', '/v1/models']) {
+        const no = await httpReq(srvPort, 'GET', p, null);
+        const yes = await httpReq(srvPort, 'GET', p, null, { Authorization: 'Bearer test-key' });
+        record('sec4/op24: GET ' + p + ' -> 401 without key / 200 with key', no.status === 401 && yes.status === 200, 'no=' + no.status + ' yes=' + yes.status + (yes.status !== 200 ? ' ' + yes.body.substring(0, 80) : ''));
+      }
+    } finally {
+      try { srv.kill(); } catch (e) {}
+      stopMock(m4);
+    }
   }
 });
 
