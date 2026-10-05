@@ -457,7 +457,7 @@ function effectivePermissionMode() {
 
 // Runs a sub-agent: a FRESH conversation with full tool access. Never touches
 // the caller's message array (keeps assistant(tool_calls) -> tool pairing valid).
-async function runSubAgent(agentName, task) {
+async function runSubAgent(agentName, task, cancelled) {
   if (agentDepth > 0) {
     return 'Nested sub-agents are not allowed (a sub-agent cannot spawn further sub-agents).';
   }
@@ -475,7 +475,9 @@ You are currently running as a SUB-AGENT named "${agentName}".
     { role: 'user', content: String(task || '') }
   ];
   try {
-    const answer = await processWithTools(agentMessages);
+    // A2-06: inherit the parent request's cancellation token so a client
+    // disconnect also stops a running sub-agent's model calls and tools.
+    const answer = await processWithTools(agentMessages, { cancel: cancelled });
     console.log(`[AGENT] Sub-agent "${agentName}" finished`);
     return `Sub-agent "${agentName}" result:\n${answer || '(no output)'}`;
   } catch (e) {
@@ -1511,6 +1513,8 @@ function parseSSEStream(stream, onDelta, onReasoning) {
     let finishReason = null;
     let usage = null; // GAP-8: usage chunk (OpenAI sends it on the final chunk) - last one wins
     let sawAnything = false;
+    let sawDone = false; // A2-15: an upstream that ends WITHOUT [DONE] and
+    // WITHOUT finish_reason did not complete - treat as an error, not success.
     let upstreamErrorSeen = false;
     let sawReasoning = false;
     let buffer = '';
@@ -1527,7 +1531,8 @@ function parseSSEStream(stream, onDelta, onReasoning) {
         }
         if (!line.startsWith('data:')) continue;
         const payload = line.substring(5).trim();
-        if (!payload || payload === '[DONE]') continue;
+        if (!payload) continue;
+        if (payload === '[DONE]') { sawDone = true; continue; } // A2-15
         let parsed;
 
         try { parsed = JSON.parse(payload); } catch (e) {
@@ -1585,6 +1590,9 @@ const ch = parsed.choices && parsed.choices[0];
       if (merged.length) message.tool_calls = merged;
       if (!message.content && !merged.length && sawReasoning) message.reasoning_only = true;
       if (!sawAnything) return resolve(null);
+      if (!sawDone && !finishReason) {
+        return reject(new Error('upstream error: stream ended without completion (no [DONE], no finish_reason) - partial reply discarded'));
+      }
       const out = { message, finish_reason: finishReason || 'stop' };
       if (usage) out.usage = usage; // GAP-8: attach upstream usage for callOpenAI to record
       resolve(out);
@@ -1862,7 +1870,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     const agentName = String(args.name || 'agent').substring(0, 60);
     const task = String(args.task || '').trim();
     if (!task) return 'Agent error: task is required';
-    return await runSubAgent(agentName, task);
+    return await runSubAgent(agentName, task, cancelled);
   }
 
   if (name === 'run_command') {
@@ -3184,7 +3192,9 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
 
     if (mode === 'bypass' || DANGER_MODE) {
       console.log(`[TOOL] [DANGER MODE] Executing tool: ${name}`);
-      return await executeToolRaw(name, args, conversation, approvalBridge);
+      // A2-06: bypass used to drop the cancellation token - a client that
+      // hit Stop mid-command still ran it to completion in bypass/danger.
+      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
     }
 
     // Deterministic risk classes (A8): the common tools need no light-model
@@ -4766,10 +4776,13 @@ Make it read like a direct continuation of the user's task instructions for the 
           safePrompt();
           return;
         }
-        const cutIdx = userIdx[n - 1];
-        const kept = messages.slice(0, cutIdx + 1);
-        if (messages[cutIdx + 1] && messages[cutIdx + 1].role === 'assistant') kept.push(messages[cutIdx + 1]);
-        messages = kept;
+        // A2-05: the turn boundary is the START of the (N+1)-th user message -
+        // everything before it (the complete assistant(tool_calls) + tool
+        // results + final assistant chain of turn N) stays, so pairing is
+        // never split. The old "user + one adjacent assistant" cut orphaned
+        // tool_calls when the turn began with a tool call.
+        const cutIdx = (n < userIdx.length) ? userIdx[n] : messages.length;
+        messages = messages.slice(0, cutIdx);
         console.log(`[FORK] 会话已回退到第 ${n} 轮（现共 ${messages.length} 条消息）；之后的对话从这里继续。`);
         safePrompt();
         return;

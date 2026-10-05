@@ -2316,5 +2316,87 @@ scenarios.push({
   }
 });
 
+// --- B41: review batch 2 core (A2-05 fork pairing / A2-06 cancel wiring / A2-15 SSE completion) ---
+scenarios.push({
+  name: 'sec3',
+  fn: async () => {
+    const src = fs.readFileSync(IDX, 'utf8');
+
+    // A2-06 (wiring assertions - behavioral cancel is timing-sensitive offline):
+    const bypassIdx = src.indexOf('[DANGER MODE] Executing tool');
+    const bypassCall = src.substring(bypassIdx, src.indexOf('}', src.indexOf('return await executeToolRaw', bypassIdx)));
+    record('sec3/a206: bypass branch passes the cancellation token', /executeToolRaw\(name, args, conversation, approvalBridge, cancelled\)/.test(bypassCall), bypassCall.trim().substring(0, 120));
+    record('sec3/a206: sub-agent processWithTools inherits cancel', /processWithTools\(agentMessages, \{ cancel: cancelled \}\)/.test(src), '');
+
+    // A2-15 (unit-level on parseSSEStream with a fake stream):
+    const fnSrc = (() => { const a = src.indexOf('function parseSSEStream'); const b = src.indexOf('\n}', src.indexOf('stream.on(\'error\'', a)); return src.substring(a, b + 2); })();
+    const parseSSEStream = eval('(' + fnSrc + ')');
+    const EventEmitter = require('events');
+    function fakeStream(lines) {
+      const em = new EventEmitter();
+      em.setEncoding = () => {};
+      process.nextTick(() => { for (const l of lines) em.emit('data', l); em.emit('end'); });
+      return em;
+    }
+    const delta = JSON.stringify({ choices: [{ delta: { content: 'partial-answer' } }] });
+    let rejected = null;
+    try { await parseSSEStream(fakeStream(['data: ' + delta + '\n\n']), () => {}, () => {}); } catch (e) { rejected = e.message; }
+    record('sec3/a215: EOF without [DONE] and without finish_reason is an error', rejected && rejected.indexOf('without completion') >= 0, 'rejected=' + JSON.stringify(rejected));
+    const doneDelta = JSON.stringify({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] });
+    let okChoice = null;
+    try { okChoice = await parseSSEStream(fakeStream(['data: ' + doneDelta + '\n\n', 'data: [DONE]\n\n']), () => {}, () => {}); } catch (e) { okChoice = null; }
+    record('sec3/a215: proper [DONE] + finish_reason still resolves', okChoice && okChoice.message.content === 'ok' && okChoice.finish_reason === 'stop', JSON.stringify(okChoice && okChoice.finish_reason));
+    const noDoneButFinish = JSON.stringify({ choices: [{ delta: { content: 'x' }, finish_reason: 'stop' }] });
+    let alt = 'err';
+    try { alt = await parseSSEStream(fakeStream(['data: ' + noDoneButFinish + '\n\n']), () => {}, () => {}); } catch (e) { alt = 'err: ' + e.message; }
+    record('sec3/a215: finish_reason without [DONE] accepted (compat)', typeof alt === 'object' && alt.finish_reason === 'stop', String(alt).substring(0, 60));
+
+    // A2-05 (end-to-end): turn 1 = tool_calls -> tool result -> final(FINAL1-MARK),
+    // turn 2 = plain(FORK-B-MARK); /fork 1 then a new task whose final reply R3.
+    const cwd = freshCwd('b-sec3');
+    const tc = (id, name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: name, arguments: JSON.stringify(args) } }] });
+    const script = [
+      tc('f1', 'write_file', { path: 'a.txt', content: 'A' }),        // task1 main1
+      { role: 'assistant', content: 'FINAL1-MARK done writing ' + 'x'.repeat(240) }, // task1 final (>200: summary step follows)
+      { role: 'assistant', content: 's1-summary' },                    // task1 summary light
+      { role: 'assistant', content: 'TURN2-PLAIN ' + 'y'.repeat(240) },// task2 main
+      { role: 'assistant', content: 's2-summary' }                     // task2 summary
+    ];
+    // stdin: task1 prompt, /execute-task-now, task2 prompt FORK-B-MARK, /execute-task-now,
+    //        /fork 1, task3 prompt, /execute-task-now, /bye
+    const stdinSteps = [
+      { t: 'first task about writing\n', d: 300 },
+      { t: '/execute-task-now\n', d: 8000 },
+      { t: 'second task FORK-B-MARK\n', d: 300 },
+      { t: '/execute-task-now\n', d: 8000 },
+      { t: '/fork 1\n', d: 400 },
+      { t: 'third task recall\n', d: 300 },
+      { t: '/execute-task-now\n', d: 8000 },
+      { t: '/bye\n', d: 300 }
+    ];
+    const m = startMock(script);
+    await new Promise(r => setTimeout(r, 600));
+    const r = await runCli({ port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, stdinSteps, timeoutMs: 90000 });
+    const reqs = readLog(m.log).filter(x => (x.messages || []).some(mm => mm.role === 'user' && String(mm.content).indexOf('third task') >= 0));
+    const lastUser = reqs.length ? reqs[reqs.length - 1].messages : null;
+    record('sec3/a205: third task reached upstream', !!lastUser, reqs.length + ' matching requests');
+    if (lastUser) {
+      const flat = JSON.stringify(lastUser);
+      record('sec3/a205: post-fork request keeps turn-1 final, drops turn-2', flat.indexOf('FINAL1-MARK') >= 0 && flat.indexOf('FORK-B-MARK') < 0, flat.substring(0, 120));
+      // pairing validity: every tool message must follow an assistant carrying tool_calls
+      let orphans = 0;
+      for (let k = 0; k < lastUser.length; k++) {
+        if (lastUser[k].role === 'tool') {
+          const prev = lastUser[k - 1];
+          if (!prev || prev.role !== 'assistant' || !prev.tool_calls || !prev.tool_calls.length) orphans++;
+        }
+      }
+      record('sec3/a205: no orphan tool results after fork (pairing intact)', orphans === 0, 'orphans=' + orphans + ' roles=' + lastUser.map(x => x.role).join(','));
+    }
+    record('sec3/a205: fork banner printed', r.out.indexOf('[FORK] 会话已回退到第 1 轮') >= 0, r.out.substring(r.out.indexOf('[FORK]') >= 0 ? r.out.indexOf('[FORK]') : 0, 80));
+    stopMock(m);
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);
