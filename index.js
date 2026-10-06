@@ -3533,6 +3533,7 @@ async function processWithTools(currentMessages, opts = {}) {
   const onDelta = opts.onDelta || null;
   const onReasoning = opts.onReasoning || null;
   const onToolCall = opts.onToolCall || null;
+  const onToolResult = opts.onToolResult || null;
   const reqModel = opts.model || HEAVY_MODEL;
   // Cancellation token (A5): an HTTP client that disconnects mid-stream can
   // stop the run at the next step/tool boundary instead of running to
@@ -3566,6 +3567,11 @@ async function processWithTools(currentMessages, opts = {}) {
         if (cancelled()) return '[aborted: client disconnected]';
         const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled).catch(e => 'Tool error: ' + e.message)));
         for (let i = 0; i < calls.length; i++) {
+          if (onToolResult) {
+            let preview = {};
+            try { preview = JSON.parse(calls[i].function.arguments || '{}'); } catch (e) {}
+            onToolResult(calls[i].function.name, preview, results[i]);
+          }
           currentMessages.push({ role: 'tool', tool_call_id: calls[i].id, content: capToolResult(results[i]) });
         }
         continue;
@@ -3573,6 +3579,11 @@ async function processWithTools(currentMessages, opts = {}) {
       for (const tc of calls) {
         if (cancelled()) return '[aborted: client disconnected]';
         const result = await safeExecuteTool(tc, currentMessages, approvalBridge, cancelled);
+        if (onToolResult) {
+          let preview = {};
+          try { preview = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
+          onToolResult(tc.function.name, preview, result);
+        }
         currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(result) });
       }
       continue;
@@ -4209,7 +4220,7 @@ function startHttpServer() {
             .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
             .map(m => ({ role: m.role, content: m.content }));
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ messages: msgs, savedAt: j.savedAt || "?" }));
+          res.end(JSON.stringify({ messages: msgs, activities: Array.isArray(j.activities) ? j.activities : [], savedAt: j.savedAt || "?" }));
         } catch (e) {
           res.writeHead(400, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { message: e.message } }));
@@ -4271,18 +4282,25 @@ function startHttpServer() {
       }
       readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
         try {
-          const msgs = JSON.parse(body).messages;
+          const parsed = JSON.parse(body);
+          const msgs = parsed.messages;
           if (!Array.isArray(msgs)) throw new Error("messages must be an array");
           const clean = msgs
             .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
             .map(m => ({ role: m.role, content: m.content }));
           const sdir = path.join(launchDir, '.7coder', 'sessions');
           fs.mkdirSync(sdir, { recursive: true });
+          const activities = Array.isArray(parsed.activities) ? parsed.activities.filter(a => a && typeof a.type === 'string')
+            .slice(0, 200).map(a => ({ type: a.type, name: a.name ? String(a.name).substring(0, 80) : undefined,
+              status: a.status ? String(a.status).substring(0, 24) : undefined,
+              text: a.text ? String(a.text).substring(0, 12000) : undefined,
+              args: a.args && typeof a.args === 'object' ? sanitizeAuditArgs(a.args) : undefined,
+              result: a.result ? sanitizeAuditLine(String(a.result)).substring(0, 12000) : undefined })) : [];
           // 客户端可携带 file 名原地覆盖同一会话记录；否则生成新记录
           const wanted = String(JSON.parse(body).file || "");
           let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
           if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && fs.existsSync(path.join(sdir, wanted))) name = wanted;
-          fs.writeFileSync(path.join(sdir, name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean }), "utf8");
+          fs.writeFileSync(path.join(sdir, name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), "utf8");
           audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
@@ -4575,7 +4593,18 @@ function startHttpServer() {
             // cleaned in one finally - an exception mid-stream used to leak the
             // interval (keep-alive writes on a dead response) and the approvals.
             try {
-              const result = await processWithTools(tempMessages, { onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel, onReasoning: t => writeChunk({ reasoning: t }, null), onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: args } }, null), approvalBridge: approvalBridge });
+              const result = await processWithTools(tempMessages, {
+                onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel,
+                onReasoning: t => writeChunk({ reasoning: t }, null),
+                onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: sanitizeAuditArgs(args) } }, null),
+                onToolResult: (name, args, output) => {
+                  const resultText = sanitizeAuditLine(String(output == null ? '' : output)).substring(0, 12000);
+                  const status = (/^BLOCKED/.test(resultText) || /^Permission mode = denial/.test(resultText)) ? 'blocked'
+                    : /declined/i.test(resultText) ? 'declined' : toolFailed(resultText) ? 'error' : 'completed';
+                  writeChunk({ tool_result: { name: name, args: sanitizeAuditArgs(args), result: resultText, status: status } }, null);
+                },
+                approvalBridge: approvalBridge
+              });
               // Give the socket-close event a moment to land when the client
               // aborted at the very end of the run - then skip the summary.
               await new Promise(r => setTimeout(r, clientGone ? 0 : 150));

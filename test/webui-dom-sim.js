@@ -28,7 +28,8 @@ src = src.trimEnd().replace(/\}\)\(\);$/, `
     getSessFile: function () { return sessFile; },
     autoSaveSession: autoSaveSession,
     forgetSessFile: forgetSessFile,
-    send: send
+    send: send,
+    render: render
   });
 })();`);
 
@@ -102,6 +103,11 @@ function check(name, ok, detail) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + n
 
 (async () => {
   await sleep(30); // let the load-time fetches settle
+
+  // --- display parsing: language labels, CRLF and unfinished fences ---
+  const mixed = hook.render('before\r\n```c++\r\nint x = 1;\r\n```\r\nafter\n```c#\nvar y = 2;');
+  check('display: mixed C++ / C# fences render as separate code blocks', (mixed.match(/<pre/g) || []).length === 2 && mixed.indexOf('data-language="c++"') >= 0 && mixed.indexOf('data-language="c#"') >= 0, mixed);
+  check('display: unfinished streaming fence remains a code block', hook.render('```powershell\nGet-ChildItem').indexOf('<pre data-language="powershell">') >= 0, hook.render('```powershell\nGet-ChildItem'));
 
   // --- AST-06: first save has no `file`, response file is remembered ---
   hook.setHistory([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }]);
