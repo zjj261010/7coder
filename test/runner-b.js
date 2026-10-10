@@ -382,10 +382,12 @@ scenarios.push({
     stopMock(m);
 
     // legacy MAX_ATTEMPT_RETRIES alias still honored
+    // Isolate the alias probe from an install .env or parent process defining
+    // MAX_RETRIES: that primary key intentionally takes precedence otherwise.
     cwd = freshCwd('b-aliasretry');
     m = startChaos('500');
     await new Promise(r => setTimeout(r, 600));
-    r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { MAX_ATTEMPT_RETRIES: '1', PERMISSION_MODE: 'bypass' }, cwd });
+    r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { MAX_RETRIES: '', MAX_ATTEMPT_RETRIES: '1', PERMISSION_MODE: 'bypass' }, cwd });
     record('config: legacy MAX_ATTEMPT_RETRIES alias works', r.out.includes('attempt 1/1'), r.out.substring(0, 120));
     stopMock(m);
   }
@@ -861,11 +863,15 @@ scenarios.push({
       'console.log("not ok 1 adds numbers");',
       'process.exit(1);'
     ].join('\n'));
+    fs.writeFileSync(path.join(cwd, 'passing-runner.js'), 'console.log("Tests: 2 passed, 2 total");');
+    fs.writeFileSync(path.join(cwd, 'no-summary-fail.js'), 'console.log("no-summary-failure"); process.exit(2);');
     fs.writeFileSync(path.join(cwd, 'package.json'), JSON.stringify({ name: 't', scripts: { test: 'node fake-runner.js' } }));
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'ts1', type: 'function', function: { name: 'run_tests_tool', arguments: JSON.stringify({ command: 'node fake-runner.js' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'ts2', type: 'function', function: { name: 'run_tests_tool', arguments: '{}' } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'ts3', type: 'function', function: { name: 'run_tests_tool', arguments: JSON.stringify({ command: 'echo no-summary-output' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ts4', type: 'function', function: { name: 'run_tests_tool', arguments: JSON.stringify({ command: 'node passing-runner.js' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'ts5', type: 'function', function: { name: 'run_tests_tool', arguments: JSON.stringify({ command: 'node no-summary-fail.js' }) } }] },
       { role: 'assistant', content: 'TS-DONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
@@ -878,7 +884,12 @@ scenarios.push({
     const ts2 = tr(log, 'ts2');
     record('tests: auto-detect via package.json scripts.test', ts2 && ts2.c.includes('3 passed, 1 failed'), ts2 ? ts2.c.substring(0, 120) : 'no result');
     const ts3 = tr(log, 'ts3');
-    record('tests: no-summary output uses real newlines (no literal backslash-n text)', ts3 && ts3.c.includes('[TESTS] command finished') && ts3.c.includes('\n') && !ts3.c.includes("'\\n'"), ts3 ? JSON.stringify(ts3.c.substring(0, 140)) : 'no result');
+    record('tests: successful no-summary output has clean header and real newlines', ts3 && ts3.c.startsWith('[TESTS] command finished (exit=0) but no recognizable summary.\nOutput tail:\n') && ts3.c.includes('no-summary-output'), ts3 ? JSON.stringify(ts3.c) : 'no result');
+    record('tests: failed summary has clean Failures and Raw tail separators', ts1 && ts1.c.includes('.\nFailures:\nFAIL sum.test.js\nnot ok 1 adds numbers\n\nRaw tail:\n'), ts1 ? JSON.stringify(ts1.c) : 'no result');
+    const ts4 = tr(log, 'ts4');
+    record('tests: successful summary has clean All green and Raw tail separators', ts4 && ts4.c.startsWith('[TESTS] exit=0 2 passed, 0 failed, 0 skipped (of 2).\nAll green.\n\nRaw tail:\n'), ts4 ? JSON.stringify(ts4.c) : 'no result');
+    const ts5 = tr(log, 'ts5');
+    record('tests: failed no-summary output preserves exit and clean separators', ts5 && ts5.c.startsWith('Tests error: command finished with exit 2 but no recognizable summary.\nOutput tail:\n') && ts5.c.includes('no-summary-failure'), ts5 ? JSON.stringify(ts5.c) : 'no result');
     stopMock(m);
   }
 });
@@ -2462,11 +2473,16 @@ scenarios.push({
     // OP2-4: when HTTP_API_KEY is set, GET /api/info, /api/todos and /v1/models
     // must 401 without the key (they were the last read routes without a gate).
     const cwd4 = freshCwd('b-sec4-http');
+    fs.mkdirSync(path.join(cwd4, '.7coder'), { recursive: true });
+    fs.writeFileSync(path.join(cwd4, '.7coder', 'models.json'), JSON.stringify({
+      'profile-only': { endpoint: 'http://127.0.0.1:1/v1' },
+      'shared-model': {}
+    }));
     const m4 = startMock([{ role: 'assistant', content: 'SEC4-HTTP-DONE' }]);
     await new Promise(r => setTimeout(r, 600));
     const srvPort = port + 420;
     const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m4.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort), HTTP_API_KEY: 'test-key' }),
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m4.port + '/v1', HEAVY_MODEL: 'shared-model', LIGHT_MODEL: 'SHARED-MODEL', MAX_RETRIES: '1', HTTP_PORT: String(srvPort), HTTP_API_KEY: 'test-key' }),
       cwd: cwd4, stdio: 'ignore'
     });
     await new Promise(r => setTimeout(r, 2500));
@@ -2476,6 +2492,12 @@ scenarios.push({
         const yes = await httpReq(srvPort, 'GET', p, null, { Authorization: 'Bearer test-key' });
         record('sec4/op24: GET ' + p + ' -> 401 without key / 200 with key', no.status === 401 && yes.status === 200, 'no=' + no.status + ' yes=' + yes.status + (yes.status !== 200 ? ' ' + yes.body.substring(0, 80) : ''));
       }
+      const auth = { Authorization: 'Bearer test-key' };
+      const info = JSON.parse((await httpReq(srvPort, 'GET', '/api/info', null, auth)).body);
+      const models = JSON.parse((await httpReq(srvPort, 'GET', '/v1/models', null, auth)).body);
+      const ids = models.data.map(m => m.id);
+      record('models: both APIs list the same models including profiles', ids.includes('profile-only') && JSON.stringify(ids) === JSON.stringify(info.models), JSON.stringify(ids));
+      record('models: shared heavy/light/profile model listed once regardless of case', ids.filter(id => id.toLowerCase() === 'shared-model').length === 1, JSON.stringify(ids));
     } finally {
       try { srv.kill(); } catch (e) {}
       stopMock(m4);
@@ -2663,6 +2685,66 @@ scenarios.push({
     record('sec6/a222: README no longer shows the stale v2.16 banner', readmeSrc.indexOf('v2.16') === -1, '');
     record('sec6/a222: README session bullets have their inline code restored (no "to )" placeholder)',
       readmeSrc.indexOf('to )') === -1 && readmeSrc.indexOf('or type )') === -1, '');
+  }
+});
+
+// NEW-2: advance a fake scheduler while exec callbacks remain pending. This
+// reproduces commands lasting multiple periods without wall-clock races.
+scenarios.push({
+  name: 'cron-overlap',
+  fn: async () => {
+    const src = fs.readFileSync(IDX, 'utf8');
+    const start = src.indexOf('function parseSchedule(schedule) {');
+    const end = src.indexOf('// ====================== DREAM HELPERS', start);
+    if (start < 0 || end < 0) throw new Error('cron scheduler block not found');
+    const jobs = new Map();
+    const calls = [];
+    let now = 0;
+    let throwNext = false;
+    class ClockDate extends Date { static now() { return now; } }
+    const ctx = {
+      Date: ClockDate, cronJobs: jobs, launchDir: freshCwd('b-cron-overlap'),
+      isSuperDangerous: () => false,
+      setTimeout: (fn, delay) => ({ fn, delay, unref() {} }),
+      child_process: { exec: (command, opts, done) => {
+        if (throwNext) { throwNext = false; throw new Error('spawn probe failed'); }
+        const child = { pid: calls.length + 1 };
+        calls.push({ command, done, child });
+        return child;
+      } }
+    };
+    require('vm').runInNewContext(src.slice(start, end), ctx);
+    const tick = job => { const timer = job.timer; now += timer.delay; timer.fn(); };
+    ctx.scheduleCronJob('slow', '1s', 'slow-probe');
+    const job = jobs.get('slow');
+    tick(job);
+    const first = job.child;
+    tick(job); tick(job);
+    record('cron: a command lasting three periods starts only once and retains its child', calls.length === 1 && job.runs === 1 && job.child === first, 'calls=' + calls.length + ' runs=' + job.runs);
+    // Other jobs must continue to execute while this job is busy.
+    ctx.scheduleCronJob('other', '1s', 'other-probe');
+    tick(jobs.get('other'));
+    record('cron: busy job does not block an independent job', calls.length === 2 && calls[1].command === 'other-probe', 'calls=' + calls.length);
+    calls[0].done(null);
+    const beforeResume = calls.length;
+    tick(job);
+    record('cron: next scheduled tick starts a new run after completion', calls.length === beforeResume + 1 && job.runs === 2 && job.child === calls[calls.length - 1].child, 'calls=' + calls.length + ' runs=' + job.runs);
+    calls[calls.length - 1].done(new Error('command probe failed'));
+    const beforeFailure = calls.length;
+    tick(job);
+    record('cron: failed commands release the slot for the next run', calls.length === beforeFailure + 1 && job.child === calls[calls.length - 1].child && job.lastError === 'command probe failed', 'calls=' + calls.length);
+    calls[calls.length - 1].done(null);
+    throwNext = true;
+    let thrown = false;
+    try { tick(job); } catch (e) { thrown = true; }
+    const beforeRetry = calls.length;
+    if (!thrown) tick(job);
+    record('cron: synchronous launch failure is recorded and scheduling recovers', !thrown && job.lastError === 'spawn probe failed' && calls.length === beforeRetry + 1, 'thrown=' + thrown + ' calls=' + calls.length);
+    calls[calls.length - 1].done(null);
+    job.stopped = true;
+    const beforeStop = calls.length;
+    tick(job);
+    record('cron: stopped job does not launch another command', calls.length === beforeStop, 'calls=' + calls.length);
   }
 });
 

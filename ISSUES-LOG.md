@@ -6,13 +6,14 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 规模快照（2026-10-05 晨·**双审阅三批 27 项全清**，v2.18.0 之上待发）：单文件 index.js（~4660 行）；发布验证：B 215/215（Node 24）+ A 85/85（Node 13 包内 runtime）+ dom-sim；v2.17→v2.18 五轮：GAP-9 分层记忆、GAP-13 CJK 折算、AST-R1 非流式后台摘要、GAP-14 /fork + P2-1/12/13 + P1-7 尾巴清扫、P2-3 检索预算；离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、runtime 冒烟通过）；除暂缓决策项（OPT-3/6、AST-15、D3、C 系、P2-7）外**待办清零**
-> 其余套件规模 C35/D32/E22/F23/G29/H32/J16 + K/R 真实端点 9+10 项，末次全绿见 git 历史。
+> 当前状态（2026-10-11）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-12~17、P2-7、GAP-8/12 的剩余增量及暂缓项仍保留，不能称全部待办清零。详见文末清账与修复记录。
+> 历史发布快照（v2.18.0，`1f52a8a`）：离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、内置 Node 13.14.0 冒烟通过）。该产物早于后续 OP2/A2 修复，不能据此宣称包含修复；本轮未重新打包。
+> 本轮回归（2026-10-11，Node 24.19.0，固定测试基线配置）：A–J **588/588**（A85/B280/C35/D32/E22/F23/G29/H32/I34/J16）；UI 模拟 42/42 + DOM 模拟 12/12。Node 13.14.0 定向回归 22/22。静态断言口径见下表（本轮新增 11 点，551→562）。历史 add7f51 声称 579/579，但其套件分项合计为 577，本轮不沿用该汇总数字。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 259 |
+| runner-b.js | 270 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,7 +25,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **551** |
+| **合计** | **562** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -76,7 +77,7 @@
 | C6 | 超长 cron（>24.8 天分段续期） | ⬜ |
 | C7 | >6 并发 HTTP | ⬜ 6 并发已验证 |
 | C8 | 内存泄漏（数小时级 soak） | 🔶 短会话 24 任务 RSS 已验证（Suite H）；小时级未测 |
-| C9 | 压缩按字符数近似 token | ⬜ 设计取舍 |
+| C9 | 压缩按字符数近似 token | ⛔ 精确 tokenizer 不做（2026-10-04 决策，见 GAP-13）；CJK 加权启发式已完成（fe360b9），不再作为未处理缺陷 |
 
 ### D 系列：功能路线
 
@@ -111,7 +112,7 @@
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
-| P0-1 | test/runner*.js ×10 | `rmrf` 自递归（调自身而非 fs.rmSync），工作区清理静默无效 | ✅ 22d2845 全部改为 fs.rmSync（保留 Node 13 回退）；"目录确实被删"专项断言未加 → 断言部分并入 OPT-11 |
+| P0-1 | test/runner*.js ×10 | `rmrf` 自递归（调自身而非 fs.rmSync），工作区清理静默无效 | ✅ 22d2845 全部改为 fs.rmSync（保留 Node 13 回退）；"目录确实被删"专项断言未加 → 断言部分已随 OPT-8 的 rmrf-check 落地 |
 | P0-2 | index.js:665 | cron `every 0h` → ms=0 → armNext 同步无限递归崩溃 | ✅ 状态回翻 2026-10-03（此前漏翻）：代码 h<=0 返回 null 已修，OPT-8 的 a23 断言（every 0h → Unsupported schedule）已补齐剩余半 |
 | P0-3 | index.js:2181-2199, 3060-3098 | HTTP 审批桥为模块级单例：并发流式客户端互相覆盖/摘除，审批丢失或串线 | ✅ 主会话实施（2026-10-01 深夜）：桥改为按请求局部对象，经 processWithTools opts.approvalBridge → safeExecuteTool → safeExecuteToolInner → askApproval 全链透传（workflow 内层经 executeToolRaw 第 4 参）；审批 id 带 6 位随机连接前缀防跨连接抢答；请求结束 dispose 清理未决审批；子代理/REPL/非流式路径行为不变；新增 approval-iso 并发场景 6 项断言（双流各得审批、id 前缀互异、批准 A 仅完成 A、B 保持挂起、批 B 后完成、写入真实落地） |
 | P0-4 | index.js（GET /api/settings） | 明文下发 apiKey（未设 HTTP_API_KEY 时本机任意进程可读） | ⛔ 用户决策（2026-09-30）：不修，与使用场景无关 |
@@ -120,14 +121,7 @@
 
 | # | 位置 | 问题 | 状态 |
 |---|------|------|------|
-| P1-1 | index.js run_tests_tool | 输出含游离单引号 | ✅ 真实关闭（批次一机械轮，OP2-3 关联）：三处 `'
-'` 改 `
-` + ts3 断言重写对准真实产物（无游离引号）；此前两次假关闭记录在案 |
-'` 三字符序列：引号+真换行+引号） | 🔶 **降级重开（2026-10-04 opus 审阅发现）**：真换行从来是对的（`
-` 在双引号串里本就是换行），真正未修的是包裹换行的字面 `'` 字符×3 处；10-03 的回翻引用了 ts3 断言，但该断言查的是 4 字符 `'
-'`（带反斜杠），对准错了目标 = false-green。**并入 OP2-3 修复（连带修 ts3 断言）** |
-、无字面 '
-' 文本）已锁定该行为 |
+| P1-1 | index.js run_tests_tool | 输出含游离单引号 | ✅ 2026-10-11 修复（index.js run_tests_tool）：移除成功/失败、有摘要/无摘要四条路径中包裹换行的单引号；tests-runner 用完整分隔文案替换 ts3 错目标断言，并补另外三条路径，先红后绿。此前两次假关闭及 1beb939 的“真实关闭”声明仍保留为历史事故，见清账记录 |
 | P1-2 | index.js /api/info | 未返回 version，Web UI 右上角恒显 "v?" | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-3，APP_VERSION 已注入 /api/info |
 | P1-3 | webui.html | 模型选择只读不写 localStorage；模式下拉不回显 | ✅ setItem + `modeSel.value = info.mode`（webui.html:612,614） |
 | P1-4 | writeWorkspaceEnv | 保存设置时整文件重序列化，注释与格式全丢 | ✅ 状态回翻 2026-10-03（此前漏翻）：逐行原地改写已实现，OPT-8 的 settings-api 注释保留断言（# KEEP-ME-COMMENT）已补齐剩余半 |
@@ -152,7 +146,7 @@
 | P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ✅ 状态回翻 2026-10-03（此前漏翻）：DS-14 重写 pruneBackups 时已删除写前调用，仅保留写后一次 |
 | P2-5 | 审计日志 | argsPreview 原样落盘，可能记录密钥 | ✅ 状态回翻 2026-10-03（此前漏翻）：=OPT-1，sanitizeAuditArgs 已入库并有 audit-log 断言 |
 | P2-6 | index.js / webui.html | server.listen 无 error 处理（EADDRINUSE 直接崩）；UI 每请求同步读盘 | ✅ 两半齐：server.on(error) EADDRINUSE 友好提示 + flushExit(1)（eaddr 断言：退出码 1、含 HTTP_PORT 提示、无原生堆栈）；webui.html 启动读一次缓存 Buffer 复用；前端侧核查无每请求重读盘逻辑 |
-| P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ⬜ |
+| P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | 🔶 mock 日志路径已随 DS-8 改为 path.join；仍剩 test/_shared.js:58 的 ping 延时及 runner.js/runner-b.js/runner-c.js 中的 Windows ping 命令，跨平台测试工装未完成 |
 | P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-10，README 已改为 syntax stays within what Node.js 13.14 supports |
 | P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
 | P2-10 | parseTestOutput | 正则嵌套量词 `(d+)+` | ✅ 真实关闭（3926e3f，OP2-1）：三处改 `(d+)` + 限长；证据 = sec1 计时/源码/形态三断言 + 本行 2026-10-04 假✅纠正记录 |
@@ -170,12 +164,12 @@
 |---|------|------|------|
 | OPT-1 | 安全 | 审计日志参数脱敏（=P2-5） | ✅ sanitizeAuditArgs：敏感键名→***，其余值清洗 Bearer/sk- 令牌；audit-log 场景断言明文不落盘 |
 | OPT-2 | 安全 | 未设 HTTP_API_KEY 时对写操作类 /api/* 默认拒绝或一次性确认 | ⛔ 用户决策（2026-10-01）：维持现状不修——本机个人工具，loopback 默认 + 文档已有 LAN 警告；如未来需 LAN 长期暴露再重开（含 .env 重写劫持上游的升级说明，见 DS 系列核对表）。2026-10-02 补充证据（gpt-astra 探针）：无 key 时任意 Origin/Host 的 POST /api/mode 可切 bypass——重开时按 Origin/Host 校验 + CSRF token + 非 loopback 启动强制确认的低摩擦清单执行 |
-| OPT-3 | 结构 | index.js（现 ~3420 行）按职责拆分模块；DS-13（audit 加 runId）随此一并 | ⬜ 用户决策暂缓（2026-10-02）：等功能需求触发或专项多轮安排；10-01 两起拼接事故说明迁移本身即高风险 |
+| OPT-3 | 结构 | index.js 按职责拆分模块（发现时约 3420 行，2026-10-11 约 5030 行）；DS-13（audit 加 runId）随此一并 | ⬜ 用户决策暂缓（2026-10-02）：等功能需求触发或专项多轮安排；10-01 两起拼接事故说明迁移本身即高风险 |
 | OPT-4 | 测试 | 12 个 runner 公共件抽 test/_shared.js | ✅ 2026-10-02 用户批准实施：主会话设计 _shared.js 并试点迁移 A/B（11e9a29），GLM-5.3-Flash 照配方迁移 C–J（8 文件 -892 行/+55 行，场景代码零改动）；rmrf/record/freshCwd/runCli/httpReq/汇总块收敛为单份实现；A–J 409 项全绿与迁移前一致。k/r 为真实端点套件结构不同，按设计不迁移。静态断言计数刷新为 382（每套件 -1，崩溃场景记录移入 _shared） |
 | OPT-5 | 测试 | test/ 残渣清理 | ✅ 2026-10-02 存量清零（102 cur-script + 100 mock-log + 170 w-* + 4 杂项，14MB→~0）；增量由 OPT-11 自清理兜底 |
 | OPT-6 | 并发 | 多客户端会话保存语义（审批隔离 P0-3 已就绪） | ⬜ 用户决策挂起（2026-10-02）：常用多标签时再做，需先定分桶语义 |
 | OPT-7 | 测试 | RUN_ONLY 空匹配时非零退出 | ✅ 随 DS-9 关闭（10 个 runner exit 1） |
-| OPT-8 | 测试 | 四条补断言（cron 0h / run_tests 真换行 / .env 注释保留 / rmrf 真删） | ✅ 全部落地于 adv-tools(a23)、tests-runner(ts3)、settings-api、rmrf-check 场景 |
+| OPT-8 | 测试 | 四条补断言（cron 0h / run_tests 真换行 / .env 注释保留 / rmrf 真删） | ✅ 原四条已落地；2026-10-11 随 P1-1/OP2-3 修正 ts3 为实际输出分隔断言，覆盖真实换行与游离单引号，先红后绿（代码位置：index.js run_tests_tool；test/runner-b.js tests-runner） |
 | OPT-9 | 文档 | 冻结的历史文档移入 docs/history/ | ✅ 三份（含 deepseek 审阅原文）已归档并提交 |
 | OPT-10 | 文档 | scripts/count-assertions.js 自动统计（--write 回填标记段） | ✅ 已入库并在 Node 13 运行时验证；静态口径 392 与实测 403 并列标注互不混淆 |
 | OPT-11 | 测试 | runner 退出前自清理本次产物（ownArtifacts/ownWorkdirs 追踪） | ✅ 10 个 runner（k/r 用 tmpdir 无需）；验证：连续三套运行残渣零新增 |
@@ -227,15 +221,15 @@
 | "本工作区没有 .git（只有 .gitignore）" | **不实**：本仓库 git 正常（当日多次提交推送）；其"残渣已提交进仓库"的推断已由报告自行标注未证实 |
 | 第七节前言 "git-integration 4 条与 tests-runner 2 条现在应当全部失败" | **报告内部残留矛盾**：与同报告实测 93/93 直接冲突，系撤回 P0-1 前的旧文本未清理 |
 | P0-2 明文密钥（GET /api/settings 与 /api/models-config） | 行为属实，但**用户已决策 ⛔（2026-09-30，与使用场景无关）**；models-config GET 同类，维持 ⛔ 一并记录 |
-| P0-4 无 key 时管理接口裸奔 | 属实，=OPT-2；报告补充的".env 重写可劫持上游"升级说明已并入 OPT-2 描述。**维持待用户决策，不自行实施** |
-| P0-3 审批桥全局单例 | 属实（复核 index.js:2149/3001/3020），维持 ⬜。**本轮不指派给弱模型**（涉及 processWithTools 管线改造 + 并发测试，单独一轮实施） |
+| P0-4 无 key 时管理接口裸奔 | 属实，=OPT-2；报告补充的".env 重写可劫持上游"升级说明已并入 OPT-2 描述。⛔ 用户已于 2026-10-01 决策不修，见 OPT-2，不再作为待决项 |
+| P0-3 审批桥全局单例 | 当时核对属实；✅ 已由 3c30c7f 修复请求级审批桥，见 P0 主表。后续 13a4b70 为隔离其他全局状态引入 requestGate，当前 HTTP 聊天仍串行；完整并发另见 AST-15/OPT-6 |
 
 ### 与既有条目的状态联动
 
-- 旧 P1-5（退出码）由 🔶 改判：代码侧从未真正修复（flushExit 吞码），本轮 DS-1 指派重修。
-- 旧 P2-11（git 口径）= DS-4，升为本轮修复。
-- 旧 P1-2（version）= DS-3、旧 P2-8（README 语法描述）并入 DS-10、OPT-7 = DS-9：均转 🔧。
-- 报告确认已修复项（cron 0h、run_tests 换行、webui 持久化、writeWorkspaceEnv 注释、--prompt "" fail-fast）与 ISSUES-LOG 现状一致，无需变动。
+- 历史报告把退出码称作“旧 P1-5”，本统一表对应 P1-14/DS-1；DS-1 已完成，假关闭事故见执行记录。
+- 旧 P2-11（git 口径）= DS-4，已完成。
+- 旧 P1-2（version）= DS-3、旧 P2-8（README 语法描述）并入 DS-10、OPT-7 = DS-9：均已完成，见各主行。
+- cron 0h、webui 持久化、writeWorkspaceEnv 注释、--prompt "" fail-fast 已完成；run_tests 换行的历史“确认已修”后来被推翻，已于 2026-10-11 按 P1-1/OP2-3 真正修复，假关闭历史见清账记录。
 - KNOWN-ISSUES 373→390 计数过时：该文档已冻结，本文件头部已是实测新数，无需动作（OPT-10 自动汇总后彻底根治）。
 
 ---
@@ -277,10 +271,10 @@
 
 | # | 现状 | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
-| GAP-5 | 无 LSP；编辑后错误只能等跑测试 | 修错反馈环长 | 最小版 diagnostics_tool【✅ 2026-10-03 快赢批③】：只探测并运行项目本地 node_modules 的 tsc/eslint（零网络、异步、auto-safe LOW），tsc 行解析 / eslint JSON 解析，[DIAG] 结构化输出；tsc 忽略 path 参数（单文件+项目混用会失真，schema 已注明）。shim 版 tsc 红绿验证解析（diag 2 断言）。完整 LSP 仍留 D3 | 小→大 |
+| GAP-5 | 无 LSP；编辑后错误只能等跑测试 | 修错反馈环长 | 最小版 diagnostics_tool【✅ 2026-10-03 快赢批③】：只探测并运行项目本地 node_modules 的 tsc/eslint（零网络、异步；最初 auto-safe LOW，现已按 A2-03/1beb939 改为需审批的 MEDIUM），tsc 行解析 / eslint JSON 解析，[DIAG] 结构化输出；tsc 忽略 path 参数（单文件+项目混用会失真，schema 已注明）。shim 版 tsc 红绿验证解析（diag 2 断言）。完整 LSP 仍留 D3 | 小→大 |
 | GAP-6 | todo 只是往 TODO.md 追加文本 | 无状态流转，UI 无从展示进度 | 【✅ 2026-10-04 快赢批④（GLM+终检）】`.7coder/todos.json` {items:[{id,title,status,updated}]}（500 条上限、损坏自动重建）；todo_write_tool 改 action 式 add/update/list（旧 content 参数向后兼容）；GET /api/todos；webui 侧栏任务面板三色徽标（autoSave 成功回调刷新）。todos-api 场景 3 断言先红后绿。GLM 纠正了规格错误：todo_write_tool 本就不在 AUTO_SAFE，权限路径零改动 | 小 |
 | GAP-7 | REPL 仅固定命令；无 hooks | 无法沉淀自定义工作流，无法注入 pre/post-tool 规则 | 🔶 7a ✅（快赢批④：.7coder/commands/<name>.md 展开，slashcmd 2 断言）。7b hooks **降级**（2026-10-04 用户决策）：原始动机（"禁止改 src/legacy/**"式规则拦截）已被 GAP-11 deny 规则完整覆盖且语义更强（全模式生效）；剩余增量仅自定义动作（如写后 format）。保留待真实需求出现再评估，不排期 | 中 |
-| GAP-8 | usage 字段完全未用 | 无 token 可观测 | 【✅ 2026-10-03 快赢批③】sessionUsage 累计（流式末块/非流式信封两路），CLI 任务尾打印 [USAGE]、/api/info 暴露 usage 对象；mock-server 补 usage 字段（纯增量）供断言（usage-track 2 断言，红 0/7 先证）。审计入账与 web UI 面板显示为后续增量（原建议后半，未做） | 小 |
+| GAP-8 | usage 字段完全未用 | 无 token 可观测 | 【🔶 主体已完成（63fdf77），剩余增量未做】sessionUsage 累计（流式末块/非流式信封两路），CLI 任务尾打印 [USAGE]、/api/info 暴露 usage 对象；mock-server 补 usage 字段（纯增量）供断言（usage-track 2 断言，红 0/7 先证）。审计入账与 web UI 面板显示为后续增量（原建议后半，未做） | 小 |
 | GAP-9 | 记忆=7CODER.md 单文件 + BTW.md，扁平无分层 | 项目事实/用户偏好/临时笔记混一处，长了靠压缩 | 【✅ 2026-10-04 主会话实施】`.7coder/memory/<topic>.md` 分层笔记：memory_tool {save/read/list/delete}（topic 白名单 [a-z0-9][a-z0-9_-]，auto-safe LOW——与 todo 同信任级，仅写 .7coder/memory/）；任务启动**确定性关键词召回**（无 LLM 调用，score=词重叠，命中注入 ≤5 条/3000 加权单位，附主题索引行）；write_file 对 .7coder/memory/*.md 同享 7CODER.md 自动豁免（dream 可重写）；dream 提示注入主题清单（可选整理，强制目标仍是 7CODER.md，契约不变）；MEMORY_RECALL_CHARS 可配。memory 场景 7 断言（召回命中/不串主题/索引行/CRUD×4） | 中 |
 | GAP-10 | web_search 正则抓 DDG-lite HTML | 脆弱易限流无降级 | 【✅ 2026-10-03 快赢批③】SEARCH_PROVIDER/SEARCH_API_KEY/SEARCH_ENDPOINT 三键：searxng/brave/bing 分支 + ddg 原样兜底；显式未知值报错不回退网络；Search error 前缀入 TOOL_FAIL_RE。离线假 searxng 实例验证（search-api 2 断言先红后绿）；真实 brave/bing key 未测（付费） | 小 |
 
@@ -289,14 +283,14 @@
 | # | 现状 | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
 | GAP-11 | 保护清单硬编码；权限仅四模式 | 用户不可扩展 | 【✅ 2026-10-03 主会话实施】`.7coder/permissions.json`（+安装目录 permissions.json 双层合并）：protected_extra 纯路径模式（扩展受保护清单，正斜杠跨平台）/deny/allow 规则 `tool(pattern)`。安全序：deny 全模式生效（先于 auto-safe，bypass 也拦）；allow 仅跳过审批层（硬轨之后判定，永远压不过 protected/超级危险命令/denial/deny）。无效规则启动告警并忽略。perm-rules 场景 8 断言先红后绿 | 小 |
-| GAP-12 | 缺任务级改动汇总 | 任务收尾无"改了什么"总览 | 【✅ 2026-10-03 快赢批③】taskChanges 在审计包装处收集写类工具 {tool,path,status}（HTTP 常驻模式 1000 条上限——GLM 自纠的盲区），任务成败两路都打印 [CHANGES] 清单（≤20 行）（task-changes 断言先红后绿）。任务前 git stash 检查点半项未做 | 小 |
+| GAP-12 | 缺任务级改动汇总 | 任务收尾无"改了什么"总览 | 【🔶 主体已完成（63fdf77），任务前检查点未做】taskChanges 在审计包装处收集写类工具 {tool,path,status}（HTTP 常驻模式 1000 条上限——GLM 自纠的盲区），任务成败两路都打印 [CHANGES] 清单（≤20 行）（task-changes 断言先红后绿）。任务前 git stash 检查点半项未做 | 小 |
 | GAP-13 | 压缩按字符数近似（=C9） | 字符≠token，CJK 失真压缩偏晚 | 【✅ 2026-10-04 主会话实施（启发式半）】textUnits()：CJK/全角/韩文/假名码点 ×2 加权，messageSize 三处调用自动一致；中文密集会话压缩触发点与真实 token 预算对齐。cjk-ctx 场景 4 断言（提取 eval 单元级：汉字×2/混排/消息内容/tool_calls 同权重）。**剩余半**：⛔ 不做（2026-10-04 主会话决策）：零依赖纪律是项目硬约束（B 系列决策仅允许 axios+dotenv），×2 启发式已消除主要失真；若未来上下文预算成为瓶颈再评估 | 中 |
-| GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 【✅ 2026-10-04 尾巴批（GLM+终检）】REPL `/fork <N>`：按 1-based 用户轮截断内存会话（保留第 N 轮及其紧邻 assistant），之后对话从该点继续；超界安全拒绝；REPL 帮助行同步。fork 场景 5 断言（先红 3/5：阳性对照 FORK-B 确曾到达 + 分叉后末请求不含 FORK-B、FORK-A 历史保留） | 中 |
+| GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 【✅ 2026-10-04 尾巴批（GLM+终检）】REPL `/fork <N>`：按 1-based 用户轮截断内存会话（当前按 A2-05/8fb0a99 保留第 N 轮完整工具链与最终答复），之后对话从该点继续；超界安全拒绝；REPL 帮助行同步。fork 场景 5 断言（先红 3/5：阳性对照 FORK-B 确曾到达 + 分叉后末请求不含 FORK-B、FORK-A 历史保留） | 中 |
 
 ### 与既有条目的关系
 
-- GAP-3 的二进制半 = 老 P1-6（09-30 清单，一直 ⬜）；GAP-5 = D3 的务实降级版；GAP-13 = C9；GAP-1 修正了 README 对 MCP 的表述基础（当前文档宣称的 MCP 支持实为自定义协议，建议文档同步改口或实施本项）。
-- 全部 GAP 为新增待决项，不与已关闭条目冲突；实施顺序建议：GAP-3（纯小改）→ GAP-8/10/6（小）→ GAP-1（生态价值最大）→ GAP-2/4/5/7/9/11/12 → GAP-13/14。
+- GAP-3 的二进制半 = 老 P1-6，已完成；GAP-5 = D3 的务实降级版（diagnostics 已做，完整 LSP 未做）；GAP-13 = C9（加权已做，精确 tokenizer 不做）；GAP-1 已实现真实 MCP stdio，原“仅自定义协议”的描述是发现时快照。
+- 原实施顺序为历史建议，当前按各行状态执行；未完成增量为 GAP-7b hooks、GAP-8 审计/UI 用量展示、GAP-12 任务前检查点，真实视觉/搜索端点验证另见 GAP-4/10。
 
 ---
 
@@ -326,7 +320,7 @@
 | AST-08 | /api/settings + writeWorkspaceEnv | **设置值换行注入环境变量**：仅校验字符串类型，值含 `\nPERMISSION_MODE=bypass` 可落盘成独立配置行；且运行时全局先改后写盘，写失败出现"接口报错但已切换"的不一致 | ✅ /api/settings 拒绝含 CR/LF/NUL 的值（400），endpoint 强制 http(s) 前缀；落盘成功后才更新内存；settings-api 场景 5 条新断言（注入 400、.env 无污染、正常路径不回归） |
 | AST-09 | 全部 exec 路径 | **同步子进程阻塞 HTTP 事件循环 + 取消不贯穿**：execSync 单次可跑数分钟，期间健康查询/审批/取消全部排队；cancel 只在工具循环边界生效，未传入 axios/子进程/子代理（与 GAP-2 部分重叠但角度不同：本条是阻塞与取消，GAP-2 是状态与交互） | ✅ 最小版（2d091fb，主会话实施）：run_command/bash/powershell/process_list/run_tests 五个模型可达命令面转异步（run_tests 最长 600s 是典型冻结源）；取消令牌五层穿线、取消即 kill OS 进程；流式 finally 统一清理 keep-alive/未决审批/请求门。先红后绿实证：HEAD 上长命令期间 /api/info 冻结 2289ms，新代码即时（loopfree 2 断言）。**有意保留 sync**（有界管理型调用）：git() 30s、taskkill、截屏、findBash、worktree、csc。完整 ExecutionContext 线程化未做（与 AST-15 同族，重开条件见 AST-15） |
 | AST-10 | 各 POST 路由 | **请求体上限只设标志不停止累积**：聊天路由 oversized=true 后继续 `body += chunk` 到 end 才 413；其余 POST 路由（approve/save/settings/mode 等）完全没有上限 | ✅（2d091fb + GLM 边界补测轮）readJsonBody 共享有界读取器接入全部 9 个 POST 路由（聊天 10MB/其余 1MB）：字节即到即计、超限即时 413、后续分片只排空不累积、60s 安全销毁。bodycap 5 断言 + bodycap-edge 7 断言（多字节字符撕裂在 LIMIT+1 边界、无 Content-Length 分块、第二路由、900KB 低于上限正常处理）。GLM 红绿对照另发现：旧代码经 /api/sessions/save 会实际写入 2MB 会话文件——未设限写入洞随本项堵上 |
-| AST-11 | index.js:1706-1709 vs 2057-2060 | **两张失败判定正则漂移**：workflow 步骤失败正则比审计正则少 `List error`/`Download error`/`Input error`/`Kill error` 等前缀——list_dir 失败后工作流继续执行后续写步骤并报 `[OK] Workflow complete`；`Auto-approval declined` 两边都不认；denial 拒绝在审计里记 `status:"ok"`。= deepseek 建议 5.2（结构化 ToolResult）的实证，二者合并处理 | ✅ 13a4b70（最小版）：TOOL_FAIL_RE 单一失败判定源统一喂 workflow 步停判定与审计状态映射；denial 记 blocked、List error 步骤停批（ast-security 2 断言）。完整结构化 ToolResult 仍留待后续（随 P2-5/建议 5.2） |
+| AST-11 | index.js:1706-1709 vs 2057-2060 | **两张失败判定正则漂移**：workflow 步骤失败正则比审计正则少 `List error`/`Download error`/`Input error`/`Kill error` 等前缀——list_dir 失败后工作流继续执行后续写步骤并报 `[OK] Workflow complete`；`Auto-approval declined` 两边都不认；denial 拒绝在审计里记 `status:"ok"`。= deepseek 建议 5.2（结构化 ToolResult）的实证，二者合并处理 | ✅ 13a4b70（最小版）：TOOL_FAIL_RE 单一失败判定源统一喂 workflow 步停判定与审计状态映射；denial 记 blocked、List error 步骤停批（ast-security 2 断言）。完整结构化 ToolResult 仍留 OPT-13（建议 5.2） |
 
 ### 测试与打包配套问题（核对属实）
 
@@ -343,7 +337,7 @@
 |---|------|------|------|
 | AST-14 | test/mock-server.js + 各 runner | 裸字符串 mock 步骤（如 'WF-DONE'）没有 .content 属性 → mock 发空 delta → 客户端报 empty streamed response → 错误路径也写 [DONE]。多数场景恰好在工具结果上断言所以仍过，但意味着这些用例的最终回复从未真实到达、7CODER.md 摘要被跳过。approval-iso 已改对象步骤根治；其余场景的字符串尾步骤属已知无害怪癖 | ✅ 根治法：mock-server/chaos-mock 三处取步骤点统一字符串→对象归一化（一处改动消灭整类陷阱，优于改几十处场景）；strstep 场景 3 断言先红后绿（旧代码 stdout 现错误路径文案，新代码真实回复到达） |
 | AST-15 | requestGate 语义 | HTTP 聊天请求端到端串行后，长审批等待会阻塞后续请求（单用户工具可接受；approval-iso 已锁定该语义）。根治=ExecutionContext 线程化（AST-09 同族） | 🔶 requestGate 串行门语义维持（AST-09 最小版未做 ExecutionContext 线程化）；多标签场景仍为排队。重开条件：常用多标签 或 OPT-6 重开 或 下次大结构改动时一并线程化 |
-| AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | 🔶 两子项已做（快赢批②）：SUMMARY_MODEL/SUMMARY_MAX_TOKENS=512 独立配置 + 短回复(<200 字符)跳过摘要（空回复仍走兜底摘要，保住套件 G 契约）；summary-budget 断言（body 含 max_tokens:512、短回复零轻调用）。**全部完成**（2026-10-04 主会话）：非流式聊天先返回响应，摘要经 summaryChain 串行链后台落地（并发不交错写 7CODER.md；CLI/REPL 保持等待防进程先退）；bg-summary 场景 3 断言；连带 summary-race 断言按新契约改轮询（仍是强断言）。连带：9 个套件的 mock 尾步补长以保持步骤账（含注释说明） |
+| AST-R1 | index.js summarizeAction | 真实模型补测实测：7 次任务摘要吃掉 71.1% 输出 tokens / 67.7% 上游耗时——summarizeAction 无独立 maxTokens、与主模型共用配置（同 4096 上限），非流式请求同步等待摘要 | ✅ 全部完成（27cb24c + 56cea98）：SUMMARY_MODEL/SUMMARY_MAX_TOKENS=512 独立配置 + 短回复(<200 字符)跳过摘要（空回复仍兜底）；非流式 HTTP 先返回响应，摘要经 summaryChain 串行链后台落地，CLI/REPL 保持等待。summary-budget/bg-summary/summary-race 已有断言；2026-10-11 清账补翻状态，bg-summary 本轮复测见文末 |
 | AST-R2 | 审批链路 | 语义等价编辑因表述不同被先拒后批——YES/NO 单字判定承担硬边界过载 | ✅ 2026-10-03 与 GAP-11 合并实施（主会话）：isAutoApprovalSafe 改结构化 JSON 判定 {safe,reason}（兼容旧 YES/NO 文本）；拒绝时 reason 回传给模型（可针对性重试）并落审计 approval_decline 条目（type/tool/mode/reason/argsPreview）；确定性规则（GAP-11 deny/allow/protected_extra + DETERMINISTIC_RISK 表）为主、模型判断兜底的分层已成型 |
 
 
@@ -365,7 +359,7 @@
 |---|------|------|------|
 | OP2-1 | index.js:2626-2628 | **parseTestOutput 指数级 ReDoS**：三处 `(d+)+` 经典 evil regex；实测 34 位连续数字 52.4 秒（每+4 位 ×16）。run_tests_tool 把原始输出直喂主线程同步正则——被测程序一行长数字即冻结 --server 整个服务。= P2-10 的真身 | ✅ 3926e3f：三处 (d+)+ → (d+) + 64KB 尾部限长；计时断言 32 位 2ms + 源码无嵌套量词（剥注释）+ 摘要形态回归（sec1 3 断言） |
 | OP2-2 | index.js:3119 vs 2396/1270 | **cron 绕过超级危险命令硬防线**：isSuperDangerous 只接 run_command/bash/powershell/task_create 四工具，schedule_cron_tool/cron_create_tool 不在其列却用 exec 周期跑 shell——bypass 下 cron_create rm -rf / 每 30s 执行一次，README 的"even in bypass"承诺对 cron 不成立。= astra2 A2-17 同源（其另指出 run_tests/legacy npx 入口也不经该检查） | ✅ 3926e3f：cron/run_tests/npx-legacy 三入口接入硬防线 + cron 触发时复查（sec1 3 断言：bypass 下 BLOCK、非危险 npx 不误伤） |
-| OP2-3 | index.js:2674/2677/2678 | run_tests_tool 输出游离单引号 ×3（结构化输出脏串污染模型读到的测试结论）+ ts3 断言对准错目标（false-green）。= P1-1 真身 | ⬜ P2 级 |
+| OP2-3 | index.js run_tests_tool | run_tests_tool 输出游离单引号 + ts3 断言对准错目标（false-green），=P1-1 | ✅ 2026-10-11 与 P1-1 同修（代码位置：index.js run_tests_tool；test/runner-b.js tests-runner）：四条输出路径改为真实换行，tests-runner 精确检查 Output tail/Failures/All green/Raw tail 分隔；旧代码四条反例均失败，新代码 tests-runner 6/6；Node 24/13 定向回归各 22/22 |
 | OP2-4 | index.js:3927/3932/3940 | **设 HTTP_API_KEY 时三个读接口仍不鉴权**：/api/info（含 workspace 绝对路径+模型+用量）、/api/todos（任务清单）、/v1/models 无 401 门——用户专为 LAN 配了 key 却裸奔读接口。与 OPT-2 ⛔（未设 key 场景）是不同问题。= astra2 A2-10（todos 部分） | ✅ 机械轮：/api/info、/api/todos、/v1/models 三路由补 401 门（webui headers() 已带存储 key 兼容）；sec4 3 断言（无凭证 401/带 Bearer 200 ×3）；套件 A/D 两条钉死旧行为的断言更新为新契约（401+带 key 200，不是削弱） |
 | OP2-5 | README.md:113/128 | 两处过实表述：超级危险拦截实为子串小黑名单（rm -fr /、:(){ :|:& };: 等不拦）；protected 读在 bypass 下只 warn 不审批 | ✅ 机械轮：README 两处措辞按实际收口（denylist not sandbox；bypass 只 warn 不审批） |
 
@@ -382,14 +376,13 @@
 | A2-07 | index.js:2666-2679, 3251 | **失败测试不停工作流**：run_tests_tool 非零退出仍返回 [TESTS] 前缀文本，TOOL_FAIL_RE 不识别 → 复现 [OK] Workflow complete 后接写入步骤。Fetch error/Tests error 等散落前缀也未纳入 | ✅ 批次二机械轮（start-plan GLM + 主会话）：exit≠0 两个返回点改 Tests error: 前缀，TOOL_FAIL_RE 增补该前缀（修复员 escalation 抓出规格假前提——正则里本没有 Tests error，主会话核实后亲自补上）；sec4 3 断言（STOPPED、后续写步不执行、前缀携带）；tests-runner ts1 契约同步钉新前缀 |
 | A2-08 | index.js:1377-1395, 1426-1432 | **dream 失败覆盖 7CODER.md**（catch 直接写 DREAM FALLBACK 单行，原文无备份丢失）+ 新工作区 DREAM_ALLOW=true 无 .7coder 目录时写锁 ENOENT 崩 | ✅ 机械轮：catch 不再写 DREAM FALLBACK（原文逐字保留，console.error 报错）+ 写锁前 mkdir（sec2 4 断言先红：HEAD 实测覆盖与 ENOENT 均复现）；dream 场景 6/6 回归 |
 | A2-09 | index.js:2999-3016 | **auto_debug spawn 无 error 监听**：不存在 exe → 未捕获 error 事件 → HTTP 服务 exit 1（实测复现）。两条 spawn 路径同病 | ✅ 机械轮：两条 spawn 挂 error 监听（spawnFailed 闭包 + 观察循环 break + 外层修复循环 break——防 3 轮空转）；sec2 3 断言先红（HEAD 实测 ECONNRESET 服务死）后绿（200 + spawn failed 文案 + 事后健康）；GLM 并纠规格两处旧参数名/默认值错误 |
-| A2-10 | index.js:3932 | 设 key 后 /api/todos 匿名可读 | ⬜ 并入 OP2-4 |
+| A2-10 | index.js:3932 | 设 key 后 /api/todos 匿名可读 | ✅ 并入 OP2-4（4cd0066）；当前 /api/todos 已有 HTTP_API_KEY/Bearer 401 门，sec4 覆盖无凭证 401、带凭证 200；2026-10-11 补翻旧行 |
 | A2-11 | index.js:2708-2715 | tsc 全局错误（TS18003 无文件定位）被误报 [DIAG] clean | ✅ 机械轮：tsc 裸 error TS 行收集为诊断 + exit≠0 无解析时 Diagnostics error:（sec4 2 断言：TS18003 报告非 clean、真零问题仍 clean） |
 | A2-12 | webui.html:409-422, 478-488 | **单标签会话切换/保存竞态**：A 回答中载 B → 回答串进 B；旧存档返回晚于新对话 → 旧文件名写回 → 新内容存进旧档（DOM 模拟双复现）。AST-06 首存修复未覆盖切换竞态 | ✅ 15c7e7d：sessGen generation 守卫（send/autoSave/load 三处捕获；迟到回复不进新档、旧文件名不回写、busy 拒载入）；dom-sim 10/10 |
 | A2-13 | index.js:3505-3515 | 记忆召回首条可无限超额（picked.length 条件），实测预算 100 却召回 16075 字符；MAX_FILES=20 只是读取截断非保存上限 | ✅ 机械轮：首条也截断（textUnitsSlice 按加权单位截到剩余预算 + 标记行，磁盘原文不动）；sec6 2 断言先红（HEAD 注入 4103 字符）后绿 |
 | A2-14 | index.js:964-969, 4605 | /clear 不清持久 shell（实测 export 状态跨"新会话"残留）；agent-1/wf-1 键跨实例复用 | ✅ 机械轮：/clear 调 disposePersistentShells + 提示文案；sec6 2 断言先红（export 跨清存活）后绿（空值） |
 | A2-15 | index.js:1569-1576 | SSE 无 finish_reason 即 EOF → 默认 stop 当成功（残缺回答入库）；未覆盖首段后失败重试的前缀重复 | ✅ 8fb0a99：无 [DONE] 且无 finish_reason 的 EOF → upstream error（不重试上抛）；[DONE]+finish 与仅 finish 两方向兼容保留；parseSSEStream 假流单元 3 断言 |
-| A2-16 | ✅ 15c7e7d：只重写受管键（整文件重序列化移除）；round-trip 离线证明 + 真实 POST /api/settings 端到端（多行值逐字节存活、注释保留）；sec6 3 断言 | writeWorkspaceEnv 重序列化全部键：多行 env 值 \"first
-second\" 保存后变 first（丢引号语义，实测）。P1-4 注释保留修复的姊妹缺陷 | ⬜ P2 |
+| A2-16 | index.js writeWorkspaceEnv | writeWorkspaceEnv 重序列化全部键：带引号的多行 env 值保存后丢失引号语义。P1-4 注释保留修复的姊妹缺陷 | ✅ 15c7e7d：只重写本次更新的受管键，未知键/多行续行保留；真实 POST /api/settings 端到端覆盖多行 CUSTOM 值、受管 HEAVY_MODEL 更新和注释保留（实际场景 sec5，3 断言）。2026-10-11 修复错位状态列与断裂表格 |
 | A2-17 | index.js:3119 | 超级危险拦截入口不全（cron/run_tests/npx legacy）| ✅ 并入 OP2-2（3926e3f） |
 | A2-18 | index.js:381-387, 3054-3066 | 审计 result 首行不脱敏：紧凑 models.json 读取把 apiKey 原样落日志（实测假键复现）。AST-04 只修了名单，日志复制面仍在 | ✅ 机械轮：sanitizeAuditLine（Bearer/sk- 模式）盖 result 字段——先脱敏再 160 截断防边界前缀泄露；只动唯一产出 result 的 safeExecuteTool；sec6 断言先红后绿 |
 | A2-19 | index.js:248-252 | Windows 下 spawn('npx') ENOENT（双运行时实测）——README 的 MCP 示例在 Windows 直接起不来 | ✅ 机械轮：resolveCommandOnWindows（PATH 找 .cmd/.bat/.exe → shell:true 启动，信任边界=mcp.json 是用户自写，注释声明）；**升级式改进**：规格的降级断言在修复侧不可通过，改为实现最小 JSON-RPC shim 达成强断言（tools/list 应答、无 ENOENT）——先红（HEAD 实测 spawn npx ENOENT）后绿 |
@@ -402,9 +395,9 @@ second\" 保存后变 first（丢引号语义，实测）。P1-4 注释保留修
 - **测试洞因分析（8.1 节）采纳**：fork 只测纯文本、memory 只测普通目录、permissions 未测双层相反 bucket、diagnostics shim 不测副作用、DOM 把"丢弃保存"当通过条件、MCP echo 不覆盖 Windows npm shim、workflow 未接退出码契约——**新功能只测理想路径**是 B 215/215 仍漏掉这批问题的根因；修复时应随各项补反例（先红后绿）。
 - **工程改造建议（8.2 节）登记为方向项**：①工具声明元数据表收口（执行性/读写资源/可取消性/可并行集中声明）②统一 ToolResult 结构化状态（先 run_tests/diagnostics/workflow 三工具）③统一文件访问门（内建状态路径也要真实路径校验——A2-01 的根治）④统一取消契约（上下文对象替代位置参数——A2-06 的根治）⑤会话 generation/id（A2-12 根治）⑥测试总入口（npm test 只跑 A）⑦少量真实浏览器测试。均为渐进式，不要求破依赖约束。→ 登记 OPT-12~17 见下。
 - **受保护文件硬链接别名**（第六节）：动态复现但需预植链接，登记不修（文件名保护的固有局限，威胁模型内可接受）；`.env.` 尾点探针**未**绕过（阴性对照，记录防再查）。
-- **/v1/models 与 /api/info 模型清单不一致**（profile 模型缺失）：小修，并入 OP2-4 轮。
-- **cron 重叠执行**（上次未结束又启动、child 句柄单值）：并入 OP2-2 修复轮测试面。
-- **受限环境 5 个断言失败**（astra2 环境的进程枚举/采样权限问题）：不归因为产品缺陷，也不宣布排除——正常权限机器复测后定论。
+- **/v1/models 与 /api/info 模型清单不一致**（profile 模型缺失）：原拟并入 OP2-4；2026-10-11 清账时仍未修，转 NEW-1 跟踪并于同日修复，OP2-4 的鉴权修复维持完成。
+- **cron 重叠执行**（上次未结束又启动、child 句柄单值）：原拟并入 OP2-2 测试面；2026-10-11 清账时仍未修，转 NEW-2 跟踪并于同日修复，OP2-2 的危险命令拦截修复维持完成。
+- **受限环境 5 个断言失败**（astra2 环境的进程枚举/采样权限问题）：历史 add7f51 已记录正常环境 A–J 579/579 全绿；缺少这 5 项逐条对应记录，不据此单独关闭该验证备注，仍待定向核验。
 
 ### OPT 新增（来自 astra2 8.2，渐进式登记）
 
@@ -414,14 +407,52 @@ second\" 保存后变 first（丢引号语义，实测）。P1-4 注释保留修
 | OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | ⬜ |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ⬜（A2-01 根治） |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
-| OPT-16 | 会话 generation/id（异步回调只改所属会话） | ⬜（A2-12 根治） |
+| OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
 | OPT-17 | 测试总入口 + 少量真实浏览器测试 | ⬜ |
 
-### 建议修复批次（两报告一致的收敛）
+### 原建议修复批次（历史排期，当前状态见各行）
 
 1. **第一批（授权与数据止损）**：OP2-1 ReDoS + OP2-2/A2-17 cron 硬防线 + A2-01 memory 边界 + A2-02 deny 吞没 + A2-03 diagnostics 审批 + A2-04 错误 XSS + A2-08 dream 覆盖 + A2-09 spawn 崩溃
 2. **第二批（任务执行闭环）**：A2-05 fork 配对 + A2-06 取消贯穿 + A2-07 失败测试停工作流 + A2-11 clean 误报 + A2-15 SSE 中断 + OP2-4 读接口鉴权
 3. **第三批（会话/资源/分发）**：A2-12/13/14/16/18/19/20/21/22 + OP2-3/5
+
+---
+
+## 2026-10-11 —— 状态清账（代码与提交证据核对）
+
+> 清账阶段核对基线：HEAD `b8c81ba`；工作树已有未提交的 UI/分发等改动。清账阶段只编辑本日志；随后用户授权修复三个缺陷，代码、测试与日志同批更新，验证见下方修复记录。已有工作树改动未视作已发布。
+> 修正上次口头盘点：A2-16 已修，不能继续列为待办；P1-1/OP2-3 则相反，提交说明声称关闭但代码仍复现，因此按代码重开。清账时双审阅 OP2 5 项 + A2 22 项中，26 行已关闭（含合并行），OP2-3 未关闭，故撤回当时的“27 项全清”。后续本轮真正修复 OP2-3 后，该批 27 行方可全关；工程增量与验证盲区仍保留。
+
+### 从原备注转入独立跟踪（保留原记录）
+
+| # | 位置 | 问题 | 状态 |
+|---|------|------|------|
+| NEW-1 | index.js modelList / GET /v1/models | /api/info 含 profile 模型，/v1/models 只列 HEAVY_MODEL/LIGHT_MODEL，两接口模型清单不一致 | ✅ 2026-10-11 修复（index.js GET /v1/models；test/runner-b.js sec4）：/v1/models 统一调用 modelList()，包含 profile 模型并按大小写不敏感去重；sec4 增加真实 HTTP 模型清单一致性与 heavy/light/profile 同名去重 2 条反例，先红后绿，401/200 鉴权回归保留 |
+| NEW-2 | index.js scheduleCronJob | cron 未等待上次结束即可再启动，重叠时覆盖 job.child，旧回调还会清空新句柄 | ✅ 2026-10-11 修复（index.js scheduleCronJob；test/runner-b.js cron-overlap）：每个 job 独立 running 守卫，运行中跳过触发，不积压补跑；完成/失败后释放执行位，同步 launch 异常记录后继续调度，stopped 拒绝迟到触发。cron-overlap 在真实调度函数上注入可控时钟/exec 回调，覆盖长任务、独立任务、完成恢复、失败恢复、launch 异常、停止 6 条断言，先红后绿；Node 24/13 均通过 |
+
+### 当前剩余工作索引（不重复计数）
+
+- **本轮三项缺陷均已修复**：P1-1/OP2-3（同一问题，连带 OPT-8 的 ts3 断言）；NEW-1 模型清单；NEW-2 cron 重叠执行。剩余工作仍按下列工程增量、暂缓项与验证盲区跟踪。
+- **工程增量**：P2-7 跨平台测试工装；OPT-12~15/17；OPT-16 已有局部 sessGen，端到端统一未做；GAP-8 审计/UI 用量展示；GAP-12 任务前检查点。
+- **暂缓/按需**：OPT-3/DS-13（模块拆分与审计 runId，同族）；OPT-6/AST-15（多客户端语义与上下文并发，同族）；D3 完整 LSP；GAP-7b hooks。沿用既有决策，不因清账自动重开排期。
+- **验证盲区**：C1~C8；GAP-4 真实视觉端点/截图链路；GAP-10 真实 Brave/Bing；A2-06 行为级取消与残余活动中止；原受限环境 5 条断言的定向核验。C9 精确 tokenizer 属不做决策，已从未处理回翻。
+
+### 清账阶段验证与范围（修复前）
+
+- `RUN_ONLY=tests-runner,sec4,sec5,bg-summary node test/runner-b.js`：21/21 通过；A2-10 鉴权、A2-16 设置保存、AST-R1 后台摘要均有行为证据。tests-runner 的通过不证明单引号已修。
+- 将修复前 run_tests_tool 函数段在隔离调用中注入假命令返回值（不执行 shell）：有摘要/无摘要两路径都实际输出单引号+真实换行+单引号，复现 OP2-3 的 false-green。
+- `node scripts/count-assertions.js`：清账时静态断言为 551；本轮修复新增断言后另行刷新标记段。
+- 历史发布包与后续修复分开标注；本轮没有构建或验证包含最新修复的新离线包。
+
+### 随后执行的三项修复（2026-10-11）
+
+- **NEW-2**：单个 cron 任务运行中跳过后续触发；完成或失败后在下一次到点运行，不积压补跑，其他任务可继续并行。同步 launch 异常记入 lastError 后继续调度，停止后的迟到触发不再启动命令。cron-overlap 用实际调度函数和可控时钟/exec 回调验证，6 条断言先红后绿。
+- **P1-1/OP2-3 + OPT-8**：成功/失败 × 有摘要/无摘要四条路径移除包裹换行的字面单引号；保留 Tests error: 失败前缀。tests-runner 改为检查完整分隔文案，旧代码四条格式反例全部失败，修复后 6/6。
+- **NEW-1**：/v1/models 使用与 /api/info 相同的 modelList()，包含 profile 模型且大小写不敏感去重。sec4 新增真实 HTTP 一致性与去重断言（旧代码 0/2，新代码 2/2），原鉴权断言仍通过。
+- 定向回归：tests-runner/sec4/cron-overlap，Node 24.19.0 与内置 Node 13.14.0 各 22/22；后续强化 cron 停止断言（完成后再停止，避免 running 守卫掩盖停止判断）在 Node 13 复测 6/6。
+- UI 验证：`npm run test:ui`，UI 模拟 42/42 + DOM 模拟 12/12；验证的是当前工作树 UI（含用户此前未提交的 UI 改动）。本批没有编辑这些 UI 文件。
+- 全量回归先发现安装目录 .env 对默认模型、权限模式、auto-debug 等用例产生干扰；保留失败记录，随后在测试进程中按 .env.example 固定配置，ENABLE_AUTO_DEBUG=false，与既有测试默认契约一致。场景显式 env/工作区 .env 仍可覆盖该基线，用户 .env 未改。 B 的旧 config 场景需验证 MAX_ATTEMPT_RETRIES 别名，但未清空优先级更高的 MAX_RETRIES；补显式空值隔离，config 定向复测 2/2，未改产品重试语义。
+- 最终全量回归：A85/B280/C35/D32/E22/F23/G29/H32/I34/J16，逐套均 exit 0，合计 **588/588**。B 基线首轮 279/280，修正 config 用例后完整重跑 280/280；未降低断言。日志保存于本机临时目录 7coder-baseline-regression-8cf4d40566a04db7beb9ad56b6fcbc8e（最终 B 为 runner-b-rerun.log）。
 
 ---
 

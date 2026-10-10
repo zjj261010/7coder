@@ -1332,8 +1332,11 @@ function scheduleCronJob(jobId, schedule, command) {
   if (!parsed) {
     return `[ERROR] Unsupported schedule "${schedule}". Supported formats: "30s", "5m", "2h", "every 10m", "daily 09:30".`;
   }
-  const job = { schedule, command, parsed, nextRun: null, timer: null, runs: 0, lastError: null, stopped: false };
+  const job = { schedule, command, parsed, nextRun: null, timer: null, runs: 0, lastError: null, stopped: false, running: false, child: null };
   const runCommand = () => {
+    // NEW-2: skip missed ticks while this job is still executing. Other jobs
+    // keep their own slots; do not queue a burst of catch-up commands.
+    if (job.stopped || job.running) return;
     job.runs++;
     // OP2-2: re-check at FIRE time too - the job was vetted when created,
     // but isSuperDangerous patterns or the command string must not run just
@@ -1342,10 +1345,18 @@ function scheduleCronJob(jobId, schedule, command) {
       job.lastError = 'BLOCKED at fire time: super-dangerous command.';
       return;
     }
-    job.child = child_process.exec(command, { cwd: launchDir, timeout: 300000 }, (err) => {
-      if (err) job.lastError = err.message;
+    job.running = true;
+    try {
+      job.child = child_process.exec(command, { cwd: launchDir, timeout: 300000 }, (err) => {
+        if (err) job.lastError = err.message;
+        job.child = null;
+        job.running = false;
+      });
+    } catch (err) {
+      job.lastError = err.message;
       job.child = null;
-    });
+      job.running = false;
+    }
   };
   // setTimeout delays cap at ~24.8 days (2^31-1 ms); re-arm in chunks so very
   // long intervals don't overflow into an immediate fire.
@@ -2777,13 +2788,13 @@ function parseTestOutput(text) {
     // workflow instead of the next steps marching on. Exit 0 with no
     // recognizable summary stays informational ('[TESTS]').
     if (!r.parsed) {
-      if (exitStatus !== 0) return "Tests error: command finished with exit " + exitStatus + " but no recognizable summary.'\n'Output tail:'\n'" + out.substring(out.length - 2000);
-      return "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.'\n'Output tail:'\n'" + out.substring(out.length - 2000);
+      if (exitStatus !== 0) return "Tests error: command finished with exit " + exitStatus + " but no recognizable summary.\nOutput tail:\n" + out.substring(out.length - 2000);
+      return "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.\nOutput tail:\n" + out.substring(out.length - 2000);
     }
     let res = (exitStatus !== 0 ? "Tests error:" : "[TESTS]") + " exit=" + exitStatus + " " + (r.passed || 0) + " passed, " + (r.failed || 0) + " failed, " + (r.skipped || 0) + " skipped (of " + r.total + ").";
     res += '\n';
-    res += (r.failures.length ? "Failures:'\n'" + r.failures.join('\n') : "All green.");
-    res += "'\n''\n'Raw tail:'\n'" + out.substring(out.length - 1500);
+    res += (r.failures.length ? "Failures:\n" + r.failures.join('\n') : "All green.");
+    res += "\n\nRaw tail:\n" + out.substring(out.length - 1500);
     return res;
   }
 
@@ -4173,7 +4184,7 @@ function startHttpServer() {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({
         object: 'list',
-        data: [HEAVY_MODEL, LIGHT_MODEL].map(id => ({ id, object: 'model', owned_by: '7coder' }))
+        data: modelList().map(id => ({ id, object: 'model', owned_by: '7coder' }))
       }));
       return;
     }
