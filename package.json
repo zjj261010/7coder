@@ -28,6 +28,7 @@
     "start": "node index.js",
     "server": "node index.js --server",
     "test": "node test/runner.js",
+    "test:all": "node scripts/test-all.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",
     "test:ui": "node test/webui-ui-sim.js && node test/webui-dom-sim.js",

@@ -32,7 +32,7 @@ const COPY_FILES = [
   'scripts/start-web.ps1',
   // A2-22: INSTALL.md tells offline users to run this (it is dependency-free
   // and reads the bundled test/), so ship it and keep the scripts/ layout.
-  'scripts/count-assertions.js'
+  'scripts/count-assertions.js', 'scripts/test-all.js'
 ];
 const COPY_DIRS = ['node_modules', 'test'];
 

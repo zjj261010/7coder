@@ -55,7 +55,9 @@ function create(opts) {
   function freshCwd(name) {
     let dir = path.join(ROOT, wsPrefix + name);
     rmrf(dir, { recursive: true, force: true });
-    for (let i = 0; i < 3 && fs.existsSync(dir); i++) { try { rmrf(dir, { recursive: true, force: true }); } catch (e) { require('child_process').execSync('ping -n 2 127.0.0.1 >nul', { stdio: 'ignore' }); } }
+    // Do not use a Windows-only ping as a sleep here. If a locked directory
+    // survives cleanup, use a unique workspace instead of delaying the suite.
+    if (fs.existsSync(dir)) dir = dir + '-' + Date.now();
     if (fs.existsSync(dir)) dir = dir + '-' + Date.now(); // unique-suffix fallback (stale dir undeletable)
     fs.mkdirSync(dir, { recursive: true });
     ownWorkdirs.push(dir);

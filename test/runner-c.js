@@ -393,7 +393,17 @@ scenarios.push({
         { t: '/bye\n', d: 400 }
       ]
     });
-    const backups = fs.existsSync(path.join(cwd, '.7coder', 'backups')) ? require('child_process').execSync('dir /s /b "' + path.join(cwd, '.7coder', 'backups') + '" 2>nul', { shell: 'cmd.exe' }).toString() : '';
+    const backupRoot = path.join(cwd, '.7coder', 'backups');
+    const backupFiles = [];
+    (function walkBackups(dir) {
+      if (!fs.existsSync(dir)) return;
+      for (const entry of fs.readdirSync(dir)) {
+        const full = path.join(dir, entry);
+        if (fs.statSync(full).isDirectory()) walkBackups(full);
+        else backupFiles.push(full);
+      }
+    })(backupRoot);
+    const backups = backupFiles.join('\n');
     record('backup-sub: subdir backup created', backups.replace(/\\/g, '/').includes('sub/inner.txt'), backups.substring(0, 120));
     record('backup-sub: /undo usage + missing-file messages', r.out.includes('Usage: /undo') && r.out.includes('No backup found'), '');
     record('backup-sub: /undo restores subdir file to V1', fs.readFileSync(path.join(cwd, 'sub/inner.txt'), 'utf8').includes('V1'), '');

@@ -116,12 +116,11 @@ ENABLE_HTTP_SERVER=true
 :: 内置运行时自检
 runtime\node.exe --version
 
-:: 运行基线测试套件（离线可用，跑 mock 端点，不消耗 API 额度）
-set RUN_ONLY=cli-exit,oneshot
-runtime\node.exe test\runner.js
+   :: 运行统一离线测试入口（A–J + UI mock/DOM，不消耗 API 额度）
+   runtime\node.exe scripts\test-all.js
 ```
 
-十二个测试套件（A–J 离线全量 + K/R 需真实端点，REAL_TEST=1）；当前断言总数运行 `node scripts/count-assertions.js` 查看。详见 `test\` 目录与 `README.md`。
+统一入口默认运行 A–J 与 UI mock/DOM 测试；设置 `REAL_TEST=1` 可追加 K/R 真实端点套件。当前断言总数运行 `node scripts/count-assertions.js` 查看。详见 `test\` 目录与 `README.md`。
 
 ## 八、常见问题
 

@@ -6,7 +6,7 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 当前状态（2026-10-11）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-12~17、P2-7、GAP-8/12 的剩余增量及暂缓项仍保留，不能称全部待办清零。详见文末清账与修复记录。
+> 当前状态（2026-10-12）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-12~16、GAP-8/12 的剩余增量及暂缓项仍保留；OPT-17 已完成统一入口，真实浏览器部分仍待做；P2-7 已关闭，不能称全部待办清零。详见文末清账与修复记录。
 > 历史发布快照（v2.18.0，`1f52a8a`）：离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、内置 Node 13.14.0 冒烟通过）。该产物早于后续 OP2/A2 修复，不能据此宣称包含修复；本轮未重新打包。
 > 本轮回归（2026-10-11，Node 24.19.0，固定测试基线配置）：A–J **588/588**（A85/B280/C35/D32/E22/F23/G29/H32/I34/J16）；UI 模拟 42/42 + DOM 模拟 12/12。Node 13.14.0 定向回归 22/22。静态断言口径见下表（本轮新增 11 点，551→562）。历史 add7f51 声称 579/579，但其套件分项合计为 577，本轮不沿用该汇总数字。
 
@@ -146,7 +146,7 @@
 | P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ✅ 状态回翻 2026-10-03（此前漏翻）：DS-14 重写 pruneBackups 时已删除写前调用，仅保留写后一次 |
 | P2-5 | 审计日志 | argsPreview 原样落盘，可能记录密钥 | ✅ 状态回翻 2026-10-03（此前漏翻）：=OPT-1，sanitizeAuditArgs 已入库并有 audit-log 断言 |
 | P2-6 | index.js / webui.html | server.listen 无 error 处理（EADDRINUSE 直接崩）；UI 每请求同步读盘 | ✅ 两半齐：server.on(error) EADDRINUSE 友好提示 + flushExit(1)（eaddr 断言：退出码 1、含 HTTP_PORT 提示、无原生堆栈）；webui.html 启动读一次缓存 Buffer 复用；前端侧核查无每请求重读盘逻辑 |
-| P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | 🔶 mock 日志路径已随 DS-8 改为 path.join；仍剩 test/_shared.js:58 的 ping 延时及 runner.js/runner-b.js/runner-c.js 中的 Windows ping 命令，跨平台测试工装未完成 |
+| P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ✅ mock 日志路径此前已改为 path.join；2026-10-12 移除 `_shared.js` 的 ping 等待，并将 runner-c 的备份枚举改为 Node fs 遍历，测试工装不再依赖 Windows 命令 |
 | P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-10，README 已改为 syntax stays within what Node.js 13.14 supports |
 | P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
 | P2-10 | parseTestOutput | 正则嵌套量词 `(d+)+` | ✅ 真实关闭（3926e3f，OP2-1）：三处改 `(d+)` + 限长；证据 = sec1 计时/源码/形态三断言 + 本行 2026-10-04 假✅纠正记录 |
@@ -408,7 +408,7 @@
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ⬜（A2-01 根治） |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
-| OPT-17 | 测试总入口 + 少量真实浏览器测试 | ⬜ |
+| OPT-17 | 测试总入口 + 少量真实浏览器测试 | 🔶 统一入口已完成（`npm run test:all`：A–J + UI mock/DOM）；真实浏览器自动化仍未做 |
 
 ### 原建议修复批次（历史排期，当前状态见各行）
 
@@ -433,7 +433,7 @@
 ### 当前剩余工作索引（不重复计数）
 
 - **本轮三项缺陷均已修复**：P1-1/OP2-3（同一问题，连带 OPT-8 的 ts3 断言）；NEW-1 模型清单；NEW-2 cron 重叠执行。剩余工作仍按下列工程增量、暂缓项与验证盲区跟踪。
-- **工程增量**：P2-7 跨平台测试工装；OPT-12~15/17；OPT-16 已有局部 sessGen，端到端统一未做；GAP-8 审计/UI 用量展示；GAP-12 任务前检查点。
+- **工程增量**：OPT-12~15；OPT-16 已有局部 sessGen，端到端统一未做；OPT-17 的真实浏览器自动化；GAP-8 审计/UI 用量展示；GAP-12 任务前检查点。
 - **暂缓/按需**：OPT-3/DS-13（模块拆分与审计 runId，同族）；OPT-6/AST-15（多客户端语义与上下文并发，同族）；D3 完整 LSP；GAP-7b hooks。沿用既有决策，不因清账自动重开排期。
 - **验证盲区**：C1~C8；GAP-4 真实视觉端点/截图链路；GAP-10 真实 Brave/Bing；A2-06 行为级取消与残余活动中止；原受限环境 5 条断言的定向核验。C9 精确 tokenizer 属不做决策，已从未处理回翻。
 
@@ -453,6 +453,17 @@
 - UI 验证：`npm run test:ui`，UI 模拟 42/42 + DOM 模拟 12/12；验证的是当前工作树 UI（含用户此前未提交的 UI 改动）。本批没有编辑这些 UI 文件。
 - 全量回归先发现安装目录 .env 对默认模型、权限模式、auto-debug 等用例产生干扰；保留失败记录，随后在测试进程中按 .env.example 固定配置，ENABLE_AUTO_DEBUG=false，与既有测试默认契约一致。场景显式 env/工作区 .env 仍可覆盖该基线，用户 .env 未改。 B 的旧 config 场景需验证 MAX_ATTEMPT_RETRIES 别名，但未清空优先级更高的 MAX_RETRIES；补显式空值隔离，config 定向复测 2/2，未改产品重试语义。
 - 最终全量回归：A85/B280/C35/D32/E22/F23/G29/H32/I34/J16，逐套均 exit 0，合计 **588/588**。B 基线首轮 279/280，修正 config 用例后完整重跑 280/280；未降低断言。日志保存于本机临时目录 7coder-baseline-regression-8cf4d40566a04db7beb9ad56b6fcbc8e（最终 B 为 runner-b-rerun.log）。
+
+---
+
+## 2026-10-12 —— 测试入口与跨平台工装
+
+| # | 变更 | 状态 |
+|---|------|------|
+| OPT-17 | `scripts/test-all.js` + `npm run test:all` | 🔶 统一入口顺序运行 A–J，并追加 `webui-ui-sim.js` 与 `webui-dom-sim.js`；默认注入 `.env.example` 基线并固定 `ENABLE_AUTO_DEBUG=false`，避免开发机 `.env` 污染测试。K/R 仅在 `REAL_TEST=1` 时追加；真实浏览器自动化仍未纳入 |
+| P2-7 | `test/_shared.js`、`test/runner-c.js` | ✅ 移除 `ping -n … >nul` 和 `dir /s /b … 2>nul`，分别改为唯一工作区回退与 Node fs 递归枚举；A–J + UI 全量入口验证通过 |
+
+本轮验证：`npm run test:all` 12/12 targets passed；A–J 历史分项 A85/B280/C35/D32/E22/F23/G29/H32/I34/J16，UI 42/42 + DOM 12/12。
 
 ---
 
