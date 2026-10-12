@@ -91,6 +91,7 @@ body.dark .brand-mark { color: #231b16; }
 .chip { display: inline-flex; align-items: center; gap: 7px; font-size: 11px; white-space: nowrap; }
 .mode-chip { border: 1px solid var(--line); border-radius: 6px; padding: 5px 9px; background: transparent; color: var(--dim); }
 #statusChip { color: var(--dim); }
+#usageChip { color: var(--dim); }
 #statusChip::before, .side-caption::before { content: ''; display: inline-block; width: 6px; height: 6px; background: var(--dim); border-radius: 50%; }
 #statusChip.connected::before { background: var(--ok); }
 #statusChip.failed::before { background: var(--err); }
@@ -222,7 +223,7 @@ body.dark .primary-btn { color: #231b16; }
   #sidebar.mobile-open { transform: translateX(0); }
   .side-head { height: 66px; } #ver { margin-left: auto; } #closeSidebar { display: flex; width: 28px; }
   .topbar { min-height: 62px; padding: 0 14px; gap: 9px; }
-  #wsChip { max-width: 190px; } .topbar .mode-chip, .top-divider { display: none; }
+  #wsChip { max-width: 190px; } .topbar .mode-chip, .top-divider, #usageChip { display: none; }
   #log { padding: 20px; gap: 20px; } #welcome { padding: 25px 0 10px; }
   #welcome h1 { font-size: 34px; letter-spacing: -1px; } .welcome-kicker { margin-bottom: 20px; }
   .suggestions { margin-top: 26px; } .suggestion { min-height: 144px; }
@@ -295,7 +296,7 @@ body.dark .primary-btn { color: #231b16; }
   <header class="topbar">
     <button class="icon-btn" id="burger" aria-label="切换导航" aria-controls="sidebar" aria-expanded="true"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button>
     <div class="workspace-heading"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7V5h6l2 2h10v12H3z"/></svg><div><div class="eyebrow">WORKSPACE</div><span id="wsChip" title="正在读取工作区">读取工作区…</span></div></div>
-    <span class="spacer"></span><button class="chip mode-chip" id="modeChip" title="查看执行权限">读取权限…</button><span class="chip" id="statusChip" role="status">正在连接</span><span class="top-divider"></span>
+    <span class="spacer"></span><button class="chip mode-chip" id="modeChip" title="查看执行权限">读取权限…</button><span class="chip" id="usageChip" title="本进程 token 用量">用量 0</span><span class="chip" id="statusChip" role="status">正在连接</span><span class="top-divider"></span>
     <button class="icon-btn" id="themeToggle" aria-label="切换到深色主题" title="切换到深色主题" aria-pressed="false"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14A8.5 8.5 0 0 1 10 4a8.5 8.5 0 1 0 10 10Z"/></svg></button>
   </header>
   <div id="log" role="region" aria-label="对话内容" tabindex="0">
@@ -885,6 +886,10 @@ body.dark .primary-btn { color: #231b16; }
       var workspace = info.workspace || '未指定工作区';
       $('wsChip').textContent = workspace;
       $('wsChip').title = workspace;
+      var usage = info.usage || {}, promptTokens = Number(usage.prompt) || 0, completionTokens = Number(usage.completion) || 0, totalTokens = Number(usage.total);
+      if (!isFinite(totalTokens)) totalTokens = promptTokens + completionTokens;
+      $('usageChip').textContent = '用量 ' + totalTokens.toLocaleString();
+      $('usageChip').title = '本进程 token 用量：输入 ' + promptTokens.toLocaleString() + '，输出 ' + completionTokens.toLocaleString() + '，合计 ' + totalTokens.toLocaleString();
       mode = info.mode || 'auto'; modeSel.value = mode; modeChip.textContent = modes[mode] || mode;
       modelSel.textContent = '';
       var models = info.models || [info.model || ''];

@@ -58,7 +58,7 @@ function harness(options) {
   parse(html.split('<body>')[1].split('<script>')[0], document.body);
   const media = { matches: !!options.mobile, addEventListener(k,f) { this.change = f; }, addListener(f) { this.change = f; } };
   const response = (body, status) => ({ ok: !status || status < 400, status: status || 200, json: () => Promise.resolve(body) });
-  const defaults = { '/api/info': { workspace: 'D:\\workspace\\7coder', models: ['test-model'], model: 'test-model', mode: 'default', version: 'test' }, '/api/sessions': { sessions: [] }, '/api/todos': { todos: [] }, '/api/settings': { model: 'test-model', profiles: {} } };
+  const defaults = { '/api/info': { workspace: 'D:\\workspace\\7coder', models: ['test-model'], model: 'test-model', mode: 'default', version: 'test', usage: { prompt: 12, completion: 8, total: 20 } }, '/api/sessions': { sessions: [] }, '/api/todos': { todos: [] }, '/api/settings': { model: 'test-model', profiles: {} } };
   function fetch(url, opts) {
     calls.push({ url, opts: opts || {} });
     const route = routes.find(r => r[0] === url); if (route) return Promise.resolve(route[1](opts || {}));
@@ -78,6 +78,7 @@ function check(name, condition) { assert.ok(condition, name); console.log('PASS 
   const h = harness(); await settle();
   check('connected state comes from successful info response', h.ids.statusChip.textContent === '服务已连接');
   check('workspace label shows the concrete path and preserves it in title', h.ids.wsChip.textContent === 'D:\\workspace\\7coder' && h.ids.wsChip.title === 'D:\\workspace\\7coder');
+  check('token usage chip shows the /api/info total', h.ids.usageChip.textContent === '用量 20' && h.ids.usageChip.title.includes('输入 12') && h.ids.usageChip.title.includes('输出 8'));
   check('empty send is disabled', h.ids.send.disabled);
   h.ids.welcome.querySelector('.suggestion').fire('click');
   check('suggestion fills editable draft without sending', h.ids.ta.value.includes('目录结构') && !h.ids.send.disabled && !h.calls.some(c => c.url === '/v1/chat/completions'));

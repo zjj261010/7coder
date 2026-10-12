@@ -1674,7 +1674,13 @@ scenarios.push({
   name: 'task-changes',
   fn: async () => {
     const cwd = freshCwd('b-changes');
+    spawnSync('git', ['init'], { cwd });
+    spawnSync('git', ['config', 'user.email', 't@t'], { cwd });
+    spawnSync('git', ['config', 'user.name', 't'], { cwd });
     fs.writeFileSync(path.join(cwd, 'b.txt'), 'orig\n');
+    spawnSync('git', ['add', '.'], { cwd });
+    spawnSync('git', ['commit', '-m', 'base'], { cwd, stdio: 'ignore' });
+    fs.appendFileSync(path.join(cwd, 'b.txt'), 'pre-task change\n');
     const m = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'ch1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'a.txt', content: 'A' }) } }] },
       { role: 'assistant', content: null, tool_calls: [{ id: 'ch2', type: 'function', function: { name: 'edit_file', arguments: JSON.stringify({ path: 'b.txt', old_string: 'orig', new_string: 'edited' }) } }] },
@@ -1683,6 +1689,8 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
     record('changes: [CHANGES] summary lists both touched files', r.out.includes('[CHANGES]') && r.out.includes('a.txt') && r.out.includes('b.txt'), r.out.substring(Math.max(0, r.out.length - 300)));
+    const refs = spawnSync('git', ['for-each-ref', '--format=%(refname)', 'refs/7coder/task-snapshots/'], { cwd, encoding: 'utf8' }).stdout || '';
+    record('changes: task starts with a recoverable git checkpoint', r.out.includes('[CHECKPOINT] git task snapshot') && refs.includes('refs/7coder/task-snapshots/'), r.out.substring(0, 220));
     stopMock(m);
   }
 });

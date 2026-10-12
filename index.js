@@ -3622,6 +3622,24 @@ function printTaskChanges() {
   console.log('[CHANGES] this task: ' + ok + ' ok, ' + (taskChanges.length - ok) + ' blocked/failed');
   for (const c of taskChanges.slice(0, 20)) console.log('  ' + c.tool + ' ' + c.path + ' -> ' + c.status);
 }
+// GAP-12: create a lightweight, recoverable pre-task checkpoint without
+// touching the working tree. This complements the git_commit_tool checkpoint
+// and makes every task boundary recoverable in a Git workspace.
+function createTaskGitCheckpoint() {
+  const gitTask = (args, opts) => child_process.execFileSync('git', args, Object.assign({ encoding: 'utf8', cwd: launchDir, timeout: 30000 }, opts || {}));
+  try {
+    gitTask(['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe' });
+    const snapshot = gitTask(['stash', 'create']).trim();
+    if (!snapshot) return '';
+    const ref = 'refs/7coder/task-snapshots/' + Date.now() + '-' + snapshot.substring(0, 12);
+    gitTask(['update-ref', '-m', '7coder task checkpoint', ref, snapshot], { stdio: 'pipe' });
+    console.log('[CHECKPOINT] git task snapshot ' + snapshot.substring(0, 12));
+    return snapshot;
+  } catch (e) {
+    console.warn('[WARN] task git checkpoint failed: ' + e.message);
+    return '';
+  }
+}
 // GAP-8: end-of-session token usage trailer.
 function logSessionUsage() {
   console.log('[USAGE] this process: prompt=' + sessionUsage.prompt + ' completion=' + sessionUsage.completion + ' total=' + (sessionUsage.prompt + sessionUsage.completion) + ' tokens');
@@ -3996,6 +4014,7 @@ function updateCompleteSummary(newSummary) {
 // ====================== CORE EXECUTION ======================
 async function executeTask() {
   resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
+  createTaskGitCheckpoint();
   console.log(`7coder is ${getRandomSpinner()}`);
   try {
     let streamed = false;
