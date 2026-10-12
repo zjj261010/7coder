@@ -10,30 +10,26 @@
 // Usage:
 //   node scripts/pack-offline.js [--with-node]
 //
-// The --with-node flag downloads node-v13.14.0-win-x64.zip once (cached in
-// test/../.cache) and bundles runtime/node.exe. Zip creation uses PowerShell
-// Compress-Archive (Windows 10+); on other platforms the staged folder is
-// left for you to zip yourself.
+// The --with-node flag copies an existing runtime/node.exe (or the development
+// cache copy) into the package. It never downloads or extracts a zip. Zip
+// creation uses PowerShell Compress-Archive (Windows 10+); on other platforms
+// the staged folder is left for you to zip yourself.
 
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
-const https = require('https');
 
 const REPO = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
 const version = pkg.version;
-const NODE_VER = 'v13.14.0';
-const NODE_ZIP_NAME = `node-${NODE_VER}-win-x64.zip`;
-const NODE_URL = `https://nodejs.org/dist/${NODE_VER}/${NODE_ZIP_NAME}`;
-const CACHE = path.join(REPO, '.cache');
 
 const withNode = process.argv.includes('--with-node');
 const stage = path.join(REPO, 'dist', `7coder-v${version}-offline`);
 
 const COPY_FILES = [
   'index.js', 'package.json', 'package-lock.json', 'README.md', 'INSTALL.md',
-  'LICENSE', '.env.example', '7coder.bat', 'webui.html',
+  'LICENSE', '.env.example', '7coder.bat', '7coder-web.bat', 'webui.html',
+  'scripts/start-web.ps1',
   // A2-22: INSTALL.md tells offline users to run this (it is dependency-free
   // and reads the bundled test/), so ship it and keep the scripts/ layout.
   'scripts/count-assertions.js'
@@ -66,25 +62,6 @@ function copyRec(src, dest) {
   }
 }
 
-function download(url, dest) {
-  return new Promise((resolve, reject) => {
-    const get = (u, n) => {
-      https.get(u, res => {
-        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && n < 4) {
-          res.resume();
-          return get(res.headers.location, n + 1);
-        }
-        if (res.statusCode !== 200) { res.resume(); return reject(new Error('HTTP ' + res.statusCode + ' for ' + u)); }
-        const out = fs.createWriteStream(dest);
-        res.pipe(out);
-        out.on('finish', () => out.close(resolve));
-        out.on('error', reject);
-      }).on('error', reject);
-    };
-    get(url, 0);
-  });
-}
-
 (async () => {
   console.log(`packing 7coder v${version} -> ${stage}`);
   rmrf(stage);
@@ -105,25 +82,11 @@ function download(url, dest) {
   }
 
   if (withNode) {
-    if (process.platform !== 'win32') {
-      console.warn('--with-node bundles the win-x64 node.exe; run this on Windows or place node.exe at runtime/node.exe manually.');
-    }
     fs.mkdirSync(path.join(stage, 'runtime'), { recursive: true });
-    fs.mkdirSync(CACHE, { recursive: true });
-    const zipPath = path.join(CACHE, NODE_ZIP_NAME);
-    if (!fs.existsSync(zipPath)) {
-      console.log('downloading ' + NODE_URL + ' ...');
-      await download(NODE_URL, zipPath);
-    }
-    // extract just node.exe via PowerShell (packer is a modern Windows box)
-    const tmpEx = path.join(CACHE, 'extract-' + Date.now());
-    fs.mkdirSync(tmpEx, { recursive: true });
-    const ps = spawnSync('powershell', ['-NoProfile', '-Command',
-      `Expand-Archive -LiteralPath '${zipPath}' -DestinationPath '${tmpEx}' -Force`], { stdio: 'pipe' });
-    if (ps.status !== 0) { console.error('extract failed: ' + ps.stderr.toString()); process.exit(1); }
-    fs.copyFileSync(path.join(tmpEx, NODE_ZIP_NAME.replace('.zip', ''), 'node.exe'), path.join(stage, 'runtime', 'node.exe'));
-    fs.rmSync(tmpEx, { recursive: true, force: true });
-    console.log('runtime bundled: runtime/node.exe');
+    const runtimeSource = path.join(REPO, 'runtime', 'node.exe');
+    if (!fs.existsSync(runtimeSource)) throw new Error('No node.exe found. Place Node 13.14.0 at runtime/node.exe before packing.');
+    fs.copyFileSync(runtimeSource, path.join(stage, 'runtime', 'node.exe'));
+    console.log('runtime bundled from: ' + runtimeSource);
   }
 
   const zipPath = path.join(REPO, 'dist', `7coder-v${version}-offline-win64.zip`);

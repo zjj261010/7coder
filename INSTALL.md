@@ -15,6 +15,7 @@
 | `node_modules\` | 预装的生产依赖（axios 1.20.0、dotenv 8.6.0） |
 | `.env.example` | 配置模板（复制为 `.env` 后填写） |
 | `7coder.bat` | 便捷启动脚本（自动使用内置运行时） |
+| `7coder-web.bat` | 启动网页版聊天，自动使用内置 Node.js 13.14.0 |
 | `INSTALL.md` | 本说明 |
 | `README.md` | 项目简介与功能总览 |
 | `LICENSE` | 许可证 |
@@ -31,18 +32,18 @@
    ```
    - 兼容任何 OpenAI 协议端点（Groq、本地 Ollama 等），改 `OPENAI_ENDPOINT` 即可。
    - `HEAVY_MODEL` / `LIGHT_MODEL` 按你的端点支持的模型名填写。
-3. **运行**（二选一）：
+3. **运行**：
    ```bat
-   :: 方式 A：双击或命令行执行启动脚本（使用内置运行时）
-   7coder.bat
+   :: 双击或命令行执行，启动网页版聊天（使用内置运行时）
+   7coder-web.bat
 
-   :: 方式 B：显式调用（等价）
-   runtime\node.exe index.js
+   :: 可选：指定项目工作区（从该目录读取 .env）
+   7coder-web.bat "D:\projects\my-app"
    ```
-   看到 `7coder initialized at: ...` 即启动成功，进入交互式 REPL。
+   浏览器打开 `http://127.0.0.1:7103/`。按 Ctrl+C 停止服务。交互式命令行仍可用 `7coder.bat` 或 `runtime\node.exe index.js` 启动。
 
 > 无需安装 Node.js：`runtime\node.exe` 就是完整的运行时。
-> 如果你机器上已有 Node.js ≥ 13.14，也可以直接 `node index.js`。
+> 从源码仓库启动时，`7coder-web.bat` 使用 `runtime\node.exe`；该文件缺失时才回退到 PATH 中的 Node.js，不会下载或提取压缩包。
 
 ## 项目级配置（可选）
 
@@ -64,7 +65,7 @@ runtime\node.exe index.js --server
 
 HTTP 服务默认只监听 `127.0.0.1:7103`（本机回环，安全）。
 
-**浏览器聊天界面**：服务启动后用浏览器打开 `http://127.0.0.1:7103/`，即可在网页里
+**浏览器聊天界面**：运行 `7coder-web.bat` 后用浏览器打开 `http://127.0.0.1:7103/`，即可在网页里
 用中文与 AI 对话（流式输出、可随时停止；工具仍在服务器工作区内执行）。在 Cursor 等工具里把
 Base URL 设为 `http://127.0.0.1:7103/v1` 即可。局域网访问需设 `HTTP_BIND=0.0.0.0`
 并强烈建议同时设置 `HTTP_API_KEY`。

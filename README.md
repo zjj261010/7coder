@@ -51,6 +51,14 @@ This project is distributed as an **offline zip** with bundled runtime — see *
  # or set ENABLE_HTTP_SERVER=true in .env
 ```
 
+On Windows offline packages, run `7coder-web.bat` to start the built-in browser chat. It prefers the bundled Node.js 13.14.0 runtime and loads `.env` from the selected workspace. Pass a workspace path to override the default:
+
+```bat
+7coder-web.bat "D:\projects\my-app"
+```
+
+Open `http://127.0.0.1:7103/` after startup.
+
 The server binds to **127.0.0.1 only** by default (`HTTP_BIND` to change) and can
 require an API key (`HTTP_API_KEY` in .env → clients send `Authorization: Bearer <key>`).
 Both non-streaming and streaming (`stream: true`, SSE) `/v1/chat/completions` are

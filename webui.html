@@ -122,6 +122,9 @@ body.dark .brand-mark { color: #231b16; }
 .msg { padding: 14px 18px; border-radius: 13px; line-height: 1.85; font-size: 14px; white-space: pre-wrap; word-break: break-word; max-width: 100%; min-width: 0; }
 .msg-row.user .msg { background: var(--user); border-bottom-right-radius: 4px; }
 .msg-row.bot .msg { width: 100%; padding: 4px 0; }
+.msg-actions { display: flex; gap: 5px; margin-top: 5px; opacity: .72; }
+.msg-actions button { border: 0; background: transparent; color: var(--dim); font-size: 10px; padding: 2px 5px; border-radius: 4px; }
+.msg-actions button:hover { background: var(--card); color: var(--fg); }
 .msg.err-msg { background: var(--acc-dim); border: 1px solid var(--err); color: var(--err); font-size: 13px; }
 .msg.sys-msg { color: var(--dim); font-size: 11px; text-align: center; background: transparent; padding: 3px; }
 .cursor { display: inline-block; width: 6px; height: 1em; margin-left: 3px; vertical-align: text-bottom; background: var(--acc); animation: cursor-blink 1s steps(1) infinite; }
@@ -415,10 +418,30 @@ body.dark .primary-btn { color: #231b16; }
     var pres = root.querySelectorAll ? root.querySelectorAll('pre') : [];
     for (var i = 0; i < pres.length; i++) addCopyBtn(pres[i]);
   }
-  function addMsg(type, html) {
+  function copyText(text) {
+    return Promise.resolve().then(function () {
+      if (!navigator.clipboard || !navigator.clipboard.writeText) throw new Error('clipboard unavailable');
+      return navigator.clipboard.writeText(String(text || ''));
+    });
+  }
+  function addCopyAction(row, text) {
+    var actions = row.querySelector('.msg-actions');
+    if (!actions) { actions = document.createElement('div'); actions.className = 'msg-actions'; row.appendChild(actions); }
+    var copy = document.createElement('button'); copy.className = 'copy-msg'; copy.type = 'button'; copy.textContent = '复制'; copy.setAttribute('aria-label', '复制这条消息');
+    copy.addEventListener('click', function () {
+      if (copy.disabled) return;
+      copy.disabled = true;
+      copyText(text).then(function () { copy.textContent = '已复制'; }).catch(function () { copy.textContent = '复制失败'; }).then(function () {
+        setTimeout(function () { copy.textContent = '复制'; copy.disabled = false; }, 1400);
+      });
+    });
+    actions.appendChild(copy);
+  }
+  function addMsg(type, html, historyIndex, rawText) {
     hideWelcome();
     var row = document.createElement('div');
     row.className = 'msg-row ' + (type === 'user' ? 'user' : type === 'bot' ? 'bot' : '');
+    if (type === 'user' && historyIndex !== undefined) row.dataset.historyIndex = String(historyIndex);
     var label = document.createElement('div');
     label.className = 'msg-label';
     label.textContent = type === 'user' ? '你' : type === 'bot' ? '7coder' : '';
@@ -432,11 +455,42 @@ body.dark .primary-btn { color: #231b16; }
     else { msg.textContent = html; }
     if (type === 'sys') { row.appendChild(msg); }
     else { row.appendChild(label); row.appendChild(msg); }
+    if (type === 'user') {
+      var actions = document.createElement('div'); actions.className = 'msg-actions';
+      var edit = document.createElement('button'); edit.className = 'edit-msg'; edit.type = 'button'; edit.textContent = '编辑'; edit.setAttribute('aria-label', '编辑这条消息');
+      edit.addEventListener('click', function () { beginEdit(row); });
+      actions.appendChild(edit); row.appendChild(actions);
+    }
+    if (type === 'user' || type === 'bot') addCopyAction(row, rawText === undefined ? html : rawText);
     log.appendChild(row);
     log.scrollTop = log.scrollHeight;
     enhancePre(msg);
     return msg;
   }
+
+  function beginEdit(row) {
+    if (busy || sessionLoading) { toast('任务运行中，请先停止生成。', 'err'); return; }
+    var allRows = log.querySelectorAll ? log.querySelectorAll('.msg-row') : [], userRows = [];
+    for (var ri = 0; ri < allRows.length; ri++) { if (allRows[ri].classList.contains('user')) userRows.push(allRows[ri]); }
+    var rowIndex = row.dataset && row.dataset.historyIndex !== undefined ? parseInt(row.dataset.historyIndex, 10) : -1;
+    if (isNaN(rowIndex)) {
+      var userPosition = -1;
+      for (var i = 0; i < userRows.length; i++) { if (userRows[i] === row) { userPosition = i; break; } }
+      var seenUsers = 0;
+      for (var hi = 0; hi < history.length; hi++) { if (history[hi].role === 'user') { if (seenUsers === userPosition) { rowIndex = hi; break; } seenUsers++; } }
+    }
+    if (rowIndex < 0 || !history[rowIndex] || history[rowIndex].role !== 'user') return;
+    var original = history[rowIndex].content || '';
+    history = history.slice(0, rowIndex);
+    sessionActivities = [];
+    sessGen++;
+    while (row && row.parentNode && row.parentNode.lastChild && row.parentNode.lastChild !== row) row.parentNode.lastChild.remove();
+    if (row && row.parentNode) row.remove();
+    if (!history.length) showWelcome();
+    ta.value = original; resizeInput(); ta.focus();
+    toast('已载入消息，修改后点击发送', 'ok');
+  }
+
 
   /* ===== Elements ===== */
   var log = $('log'), ta = $('ta'), sendBtn = $('send'), stopBtn = $('stop'),
@@ -627,7 +681,7 @@ body.dark .primary-btn { color: #231b16; }
         if (!Array.isArray(j.messages)) throw new Error('会话格式不正确');
         history = j.messages.slice(); sessionActivities = Array.isArray(j.activities) ? j.activities : []; rememberSessFile(file); log.textContent = '';
         if (!history.length) showWelcome();
-        history.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'bot', render(m.content)); });
+        history.forEach(function (m, i) { addMsg(m.role === 'user' ? 'user' : 'bot', render(m.content), m.role === 'user' ? i : undefined, m.content); });
         if (sessionActivities.length) replayActivities(sessionActivities);
         closeNavigation(false);
         toast('已载入会话', 'ok');
@@ -643,7 +697,7 @@ body.dark .primary-btn { color: #231b16; }
     if (!text) return;
     sessGen++; sessionActivities = [];
     ta.value = ''; ta.style.height = 'auto';
-    addMsg('user', esc(text));
+    addMsg('user', esc(text), history.length, text);
     history.push({ role: 'user', content: text });
     setBusy(true);
     statusEl.innerHTML = '<span class="dot"></span>思考中 / 工具执行中…';
@@ -751,6 +805,7 @@ body.dark .primary-btn { color: #231b16; }
     }).then(function () {
       if (!contentEl) { contentEl = document.createElement('div'); contentEl.className = 'stream-content'; streamEl.appendChild(contentEl); }
       contentEl.innerHTML = render(segmentAcc || acc) || '(空回复)'; enhancePre(contentEl);
+      if (acc) addCopyAction(row, acc);
       if (acc) history.push({ role: 'assistant', content: acc });
       autoSaveSession(activityRecords);
       finish();
@@ -812,6 +867,7 @@ body.dark .primary-btn { color: #231b16; }
     stopBtn.style.display = b ? '' : 'none';
     log.setAttribute('aria-busy', String(b));
     $('btnNew').disabled = b;
+    log.querySelectorAll('.edit-msg').forEach(function (el) { el.disabled = b; });
     syncComposer(); renderSessions();
     if (!settingsOpen && !(mobile.matches && mobileOpen)) ta.focus();
   }
@@ -827,7 +883,7 @@ body.dark .primary-btn { color: #231b16; }
     $('statusChip').textContent = '正在连接'; $('statusChip').className = 'chip';
     return fetch('/api/info', { headers: headers() }).then(readJSON).then(function (info) {
       var workspace = info.workspace || '未指定工作区';
-      $('wsChip').textContent = workspace.replace(/\\/g, '/').replace(/\/$/, '').split('/').pop() || workspace;
+      $('wsChip').textContent = workspace;
       $('wsChip').title = workspace;
       mode = info.mode || 'auto'; modeSel.value = mode; modeChip.textContent = modes[mode] || mode;
       modelSel.textContent = '';
@@ -863,7 +919,7 @@ body.dark .primary-btn { color: #231b16; }
       return fetch('/api/sessions/load', { method: 'POST', headers: headers(), body: JSON.stringify({ file: target }) }).then(readJSON).then(function (j) {
         if (generation !== sessGen || busy || sessionLoading || history.length || !j.messages || !j.messages.length) return;
         history = j.messages.slice(); rememberSessFile(target); log.textContent = '';
-        history.forEach(function (m) { addMsg(m.role === 'user' ? 'user' : 'bot', render(m.content)); });
+        history.forEach(function (m, i) { addMsg(m.role === 'user' ? 'user' : 'bot', render(m.content), m.role === 'user' ? i : undefined, m.content); });
         renderSessions(); toast('已恢复上次会话', 'ok');
       });
     }).catch(function () {});

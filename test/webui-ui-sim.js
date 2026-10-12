@@ -15,6 +15,7 @@ const source = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1].replace(/\}\)\
 function harness(options) {
   options = options || {};
   const ids = {}, docHandlers = {}, calls = [], routes = [], storage = Object.assign({}, options.storage);
+  let clipboardText = '';
   let hook;
   const document = { activeElement: null, getElementById: id => ids[id] || null, addEventListener: (k, f) => { docHandlers[k] = f; } };
   function el(tag) {
@@ -64,11 +65,11 @@ function harness(options) {
     if (url === '/v1/chat/completions') return Promise.resolve({ ok: true, body: { getReader: () => ({ read: () => Promise.resolve({ done: true }) }) } });
     return Promise.resolve(response(defaults[url] || {}));
   }
-  const sandbox = { document, window: { matchMedia: () => media }, fetch, navigator: { clipboard: { writeText: () => Promise.resolve() } },
+  const sandbox = { document, window: { matchMedia: () => media }, fetch, navigator: { clipboard: { writeText: value => { clipboardText = String(value); return Promise.resolve(); } } },
     localStorage: { getItem: k => { if (options.blockStorage) throw Error('blocked'); return storage[k] || null; }, setItem: (k,v) => { if (options.blockStorage) throw Error('blocked'); storage[k] = String(v); }, removeItem: k => { delete storage[k]; } },
     setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {}, AbortController, TextDecoder: util.TextDecoder, confirm: () => options.confirm !== false, console, __HOOK: h => { hook = h; } };
   vm.runInNewContext(source, sandbox, { filename: 'webui.html' });
-  return { ids, document, docHandlers, media, calls, storage, hook, response, route: (url, fn) => routes.unshift([url,fn]) };
+  return { ids, document, docHandlers, media, calls, storage, hook, response, get clipboardText() { return clipboardText; }, route: (url, fn) => routes.unshift([url,fn]) };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 let count = 0;
@@ -76,7 +77,7 @@ function check(name, condition) { assert.ok(condition, name); console.log('PASS 
 (async () => {
   const h = harness(); await settle();
   check('connected state comes from successful info response', h.ids.statusChip.textContent === '服务已连接');
-  check('workspace label is short but full path remains in title', h.ids.wsChip.textContent === '7coder' && h.ids.wsChip.title === 'D:\\workspace\\7coder');
+  check('workspace label shows the concrete path and preserves it in title', h.ids.wsChip.textContent === 'D:\\workspace\\7coder' && h.ids.wsChip.title === 'D:\\workspace\\7coder');
   check('empty send is disabled', h.ids.send.disabled);
   h.ids.welcome.querySelector('.suggestion').fire('click');
   check('suggestion fills editable draft without sending', h.ids.ta.value.includes('目录结构') && !h.ids.send.disabled && !h.calls.some(c => c.url === '/v1/chat/completions'));
@@ -86,6 +87,10 @@ function check(name, condition) { assert.ok(condition, name); console.log('PASS 
   check('Shift+Enter preserves the draft', !h.calls.some(c => c.url === '/v1/chat/completions'));
   h.ids.ta.fire('keydown', { key: 'Enter' }); await settle();
   check('Enter sends and removes the welcome state', h.calls.some(c => c.url === '/v1/chat/completions') && !h.ids.welcome.parentNode);
+  h.ids.log.querySelector('.copy-msg').fire('click'); await settle();
+  check('message copy includes only the sent user message', h.clipboardText === '请先梳理当前项目的目录结构、技术栈和主要功能，再给我一份清晰的项目导览。');
+  h.ids.log.querySelector('.edit-msg').fire('click');
+  check('editing a sent message restores its text and truncates the turn', h.ids.ta.value.includes('目录结构') && h.hook.history().length === 0, JSON.stringify({ value: h.ids.ta.value, history: h.hook.history(), rows: h.ids.log.children.length }));
   h.ids.btnNew.fire('click');
   check('new conversation restores welcome and clears draft/history', h.ids.welcome.parentNode === h.ids.log && !h.hook.history().length && !h.ids.ta.value);
   h.ids.themeToggle.fire('click');
