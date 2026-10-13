@@ -21,6 +21,12 @@ const server = http.createServer((req, res) => {
     if (req.url === '/v1/chat/completions') {
       requests++;
       res.writeHead(200, {'Content-Type':'text/event-stream'});
+      if (!slow) {
+        for (const result of [
+          {name:'diagnostics_tool',status:'error',result:'Friendly failure details'},
+          {name:'run_tests_tool',status:'completed',result:'Tests error: is sample text'}
+        ]) res.write('data: '+JSON.stringify({choices:[{delta:{tool_result:result}}]})+'\n\n');
+      }
       res.write('data: '+JSON.stringify({choices:[{delta:{content:slow?'Still generating':'Browser answer'}}]})+'\n\n');
       if(slow) { res.on('close',()=>{aborted=true;}); return; }
       total+=150;
@@ -44,6 +50,7 @@ function check(name, condition) { assert.ok(condition,name); count++; console.lo
     await page.locator('#ta').fill('First browser question'); await page.locator('#send').click();
     await page.waitForFunction(()=>document.querySelector('#usageChip').textContent==='用量 150');
     check('usage refreshes after completed streaming reply',await page.locator('#usageChip').textContent()==='用量 150');
+    check('tool cards use explicit server status rather than infer it from text',await page.locator('.tool-result.error').filter({hasText:'Friendly failure details'}).count()===1 && await page.locator('.tool-result.completed').filter({hasText:'Tests error: is sample text'}).count()===1);
     await page.waitForFunction(()=>!document.querySelector('#btnNew').disabled);
     await page.locator('.edit-msg').first().click();
     check('edit restores draft and removes the edited turn',await page.locator('#ta').inputValue()==='First browser question' && await page.locator('.msg-row.user').count()===0);

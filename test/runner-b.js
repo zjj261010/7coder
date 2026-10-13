@@ -2813,5 +2813,78 @@ scenarios.push({
   }
 });
 
+// OPT-13: text prefixes intentionally disagree with semantic status here.
+// Exercise actual commands/workflows, then compare SSE status with audit status.
+scenarios.push({
+  name: 'tool-results',
+  fn: async () => {
+    const cwd = freshCwd('tool-results');
+    fs.writeFileSync(path.join(cwd, 'fail-zero.js'), 'console.log("Tests: 1 failed, 0 passed, 1 total");');
+    fs.writeFileSync(path.join(cwd, 'pass-wording.js'), 'console.log("Tests: 1 passed, 1 total"); console.log("User declined is just test data");');
+    const eslintDir = path.join(cwd, 'node_modules', 'eslint', 'bin');
+    fs.mkdirSync(eslintDir, { recursive:true });
+    fs.writeFileSync(path.join(eslintDir, 'eslint.js'), [
+      'const target = process.argv[process.argv.length - 1];',
+      'if (target.endsWith("empty.js")) { console.log("[]"); process.exit(2); }',
+      'if (target.endsWith("clean.js")) { console.log("[]"); process.exit(0); }',
+      'if (target.endsWith("badjson.js")) { console.log("malformed"); process.exit(0); }',
+      'const severity = target.endsWith("warnings.js") ? 1 : 2;',
+      'console.log(JSON.stringify([{filePath:"declined.js",messages:[{severity,line:1,ruleId:"test",message:"literal diagnostic severity "+severity}]}]));',
+      'process.exit(severity === 1 ? 0 : 1);'
+    ].join('\n'));
+    const tc = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const fail = {tool:'run_tests_tool',args:{command:'node fail-zero.js'}};
+    const calls = [
+      tc('tz','run_tests_tool',fail.args),
+      tc('te','run_tests_tool',{command:'node -e "process.exit(3)"'}),
+      tc('tp','run_tests_tool',{command:'node pass-wording.js'}),
+      tc('tn','run_tests_tool',{command:'node -e "console.log(123)"'}),
+      tc('de','diagnostics_tool',{path:'empty.js'}),
+      tc('dw','diagnostics_tool',{path:'warnings.js'}),
+      tc('df','diagnostics_tool',{path:'errors.js'}),
+      tc('dc','diagnostics_tool',{path:'clean.js'}),
+      tc('dj','diagnostics_tool',{path:'badjson.js'}),
+      tc('rail','run_tests_tool',{command:'echo mkfs NONEXEC-PROBE'}),
+      tc('ws','workflow_tool',{steps:[fail,{tool:'write_file',args:{path:'should-not-write.txt',content:'bad'}}]}),
+      tc('wo','workflow_tool',{steps:[Object.assign({optional:true},fail),{tool:'write_file',args:{path:'optional-ok.txt',content:'ok'}}]}),
+      tc('wd','workflow_tool',{steps:[{tool:'diagnostics_tool',args:{path:'empty.js'}},{tool:'write_file',args:{path:'diag-should-not-write.txt',content:'bad'}}]}),
+      tc('wi','workflow_tool',{steps:[]})
+    ];
+    const malformed=tc('parse','run_tests_tool',{}); malformed.function.arguments='{'; calls.push(malformed);
+    const m = startMock([
+      {role:'assistant',content:null,tool_calls:calls}, {role:'assistant',content:'RESULTS-DONE'},
+      {role:'assistant',content:null,tool_calls:[tc('blocked','run_tests_tool',{command:'echo never'})]}, {role:'assistant',content:'BLOCKED-DONE'}
+    ]);
+    let srv;
+    try {
+      await new Promise(r=>setTimeout(r,600));
+      const srvPort=port+590;
+      srv=spawn(NODE_BIN,[IDX,'--server'],{cwd,stdio:'ignore',env:Object.assign({},process.env,{OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',HTTP_PORT:String(srvPort),HTTP_API_KEY:'',PERMISSION_MODE:'bypass'})});
+      await new Promise(r=>setTimeout(r,1800));
+      const chat=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'results'}]});
+      const events=chat.body.split('\n').filter(l=>l.startsWith('data: {')).map(l=>JSON.parse(l.slice(6)));
+      const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
+      const log=readLog(m.log);
+      const result=id=>tr(log,id);
+      const emitted=text=>outputs.find(e=>e.result===text);
+      record('ToolResult: parsed failures with exit 0 stop workflow despite a [TESTS] text prefix', result('tz') && result('tz').c.startsWith('[TESTS] exit=0') && emitted(result('tz').c).status==='error' && result('ws').c.startsWith('[STOPPED]') && !fs.existsSync(path.join(cwd,'should-not-write.txt')), JSON.stringify(outputs));
+      record('ToolResult: nonzero no-summary tests remain failures and zero-exit no-summary stays completed', result('te').c.startsWith('Tests error:') && emitted(result('te').c).status==='error' && emitted(result('tn').c).status==='completed', '');
+      record('ToolResult: successful test text containing declined does not change semantic status', emitted(result('tp').c).status==='completed' && result('tp').c.includes('User declined'), '');
+      record('ToolResult: failed diagnostics with empty JSON cannot report clean or continue workflow', result('de').c.startsWith('Diagnostics error:') && emitted(result('de').c).status==='error' && result('wd').c.startsWith('[STOPPED]') && !fs.existsSync(path.join(cwd,'diag-should-not-write.txt')), '');
+      record('ToolResult: warning-only diagnostics complete while diagnostic errors fail', emitted(result('dw').c).status==='completed' && emitted(result('df').c).status==='error' && result('dw').c.includes('declined.js'), JSON.stringify({warning:emitted(result('dw').c),error:emitted(result('df').c)}));
+      record('ToolResult: zero-problem diagnostics stay clean but malformed JSON is an error', result('dc').c==='[DIAG] clean (0 problems)' && emitted(result('dc').c).status==='completed' && result('dj').c.startsWith('Diagnostics error:') && emitted(result('dj').c).status==='error', '');
+      record('ToolResult: argument parse and dangerous-command failures are normalized at the wrapper', result('parse').c.startsWith('Parse error:') && emitted(result('parse').c).status==='error' && result('rail').c.startsWith('BLOCKED:') && emitted(result('rail').c).status==='blocked', '');
+      record('ToolResult: optional failing step still permits following write and completed workflow', result('wo').c.startsWith('[OK] Workflow complete') && emitted(result('wo').c).status==='completed' && fs.readFileSync(path.join(cwd,'optional-ok.txt'),'utf8')==='ok', '');
+      record('ToolResult: malformed workflow returns an error status without object serialization', result('wi').c.startsWith('Workflow error:') && emitted(result('wi').c).status==='error' && calls.every(c=>result(c.id) && !result(c.id).c.includes('[object Object]')), '');
+      const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
+      record('ToolResult: every streamed pilot result has the same authoritative status in audit', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status) && a.result===sanitizeFirst(e.result))), JSON.stringify(auditRows));
+      await httpReq(srvPort,'POST','/api/mode',{mode:'denial'});
+      const denial=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'denial'}]});
+      record('ToolResult: early permission denial remains blocked in SSE and audit', denial.body.includes('"status":"blocked"') && readLog(path.join(cwd,'.7coder','audit.jsonl')).some(e=>e.tool==='run_tests_tool' && e.status==='blocked'), '');
+    } finally { if(srv) srv.kill(); stopMock(m); }
+    function sanitizeFirst(text) { return text.split('\n')[0].substring(0,160); }
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);

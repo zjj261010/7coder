@@ -275,6 +275,45 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'tool-result-contract',
+  fn: async () => {
+    const src = fs.readFileSync(IDX,'utf8');
+    const start = src.indexOf('// OPT-13: pilot tools carry authoritative status');
+    const end = src.indexOf('// Central choke point', start);
+    const ctx={};
+    require('vm').runInNewContext(src.slice(start,end)+'\nthis.api={makeToolResult,toolResultText,toolResultStatus,toolFailed,normalizeToolResult};',ctx);
+    const api=ctx.api;
+    record('ToolResult contract: semantic status overrides both benign and error-looking text', api.toolFailed(api.makeToolResult('error','Friendly failure')) && !api.toolFailed(api.makeToolResult('ok','Tests error: sample text User declined')) && api.toolResultStatus(api.makeToolResult('ok','User declined'))==='ok', '');
+    record('ToolResult contract: blocked declined cancelled are distinct failing statuses', ['blocked','declined','cancelled'].every(s=>{const r=api.makeToolResult(s,'same text');return api.toolFailed(r)&&api.toolResultStatus(r)===s;}), '');
+    record('ToolResult contract: legacy prefix rules remain compatible for non-pilot tools', api.toolFailed('Read error: missing') && api.toolFailed('User declined the tool action.') && !api.toolFailed('[OK] read succeeded') && !api.toolFailed('a sample mentions declined') && api.toolResultStatus('Permission mode = denial. Action blocked.')==='blocked', '');
+    const result=api.makeToolResult('ok','plain model text',{value:42});
+    record('ToolResult contract: optional data stays internal and normalized identity is preserved', api.toolResultText(result)==='plain model text' && result.data.value===42 && api.normalizeToolResult(result)===result && Object.isFrozen(result), '');
+    const invalid=(s,t)=>{try{api.makeToolResult(s,t);return false;}catch(e){return true;}};
+    record('ToolResult contract: malformed statuses, nontext results and unbranded objects get no authority', invalid('success','text') && invalid('ok',{}) && api.toolResultStatus({status:'blocked',text:'fake'})==='ok' && api.toolResultText({status:'error'})==='[object Object]', '');
+    // Exercise workflow completion and cancellation directly with controlled
+    // tool callbacks; no wall-clock race or process kill needed.
+    const wfStart=src.indexOf("  if (name === 'workflow_tool') {");
+    const wfEnd=src.indexOf('// ====================== TEST RUNNER PARSING',wfStart);
+    const wfCtx={tools:[{function:{name:'read_file'}}],workflowStepDepth:0,...api};
+    require('vm').runInNewContext('async function run(name,args,conversation,approvalBridge,cancelled) {\n'+src.slice(wfStart,wfEnd)+'\n}\nthis.run=run;',wfCtx);
+    let calls=0;
+    wfCtx.safeExecuteTool=async()=>{calls++;return api.makeToolResult('cancelled','Interrupted');};
+    const cancelled=await wfCtx.run('workflow_tool',{steps:[{tool:'read_file',optional:true},{tool:'read_file'}]},null,null,()=>false);
+    record('ToolResult workflow: cancelled optional step stops immediately with cancelled status', cancelled.status==='cancelled' && cancelled.text.startsWith('[STOPPED]') && calls===1 && cancelled.data.steps[0].status==='cancelled' && wfCtx.workflowStepDepth===0, '');
+    calls=0;
+    const before=await wfCtx.run('workflow_tool',{steps:[{tool:'read_file'}]},null,null,()=>true);
+    record('ToolResult workflow: pre-cancelled task runs no steps and restores depth', before.status==='cancelled' && calls===0 && wfCtx.workflowStepDepth===0, '');
+    wfCtx.safeExecuteTool=async()=>api.makeToolResult('error','Friendly failure');
+    const failed=await wfCtx.run('workflow_tool',{steps:[{tool:'read_file'}]},null,null,()=>false);
+    record('ToolResult workflow: benign failure text still stops and records status in step data', failed.status==='error' && failed.data.steps[0].status==='error' && failed.text.includes('Friendly failure'), '');
+    let token=false;
+    wfCtx.safeExecuteTool=async()=>{token=true;return '[aborted: client disconnected]';};
+    const legacyCancel=await wfCtx.run('workflow_tool',{steps:[{tool:'read_file',optional:true}]},null,null,()=>token);
+    record('ToolResult workflow: token cancellation during final legacy step cannot report completion', legacyCancel.status==='cancelled' && legacyCancel.data.steps[0].status==='cancelled' && wfCtx.workflowStepDepth===0, '');
+  }
+});
+
 // --- I8: RALPH_ITERATIONS bounds ---
 scenarios.push({
   name: 'metadata-scheduling',

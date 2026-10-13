@@ -2955,39 +2955,47 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
   if (name === 'workflow_tool') {
     const steps = Array.isArray(args.steps) ? args.steps : null;
-    if (!steps || steps.length === 0) return 'Workflow error: steps must be a non-empty array';
-    if (steps.length > 50) return 'Workflow error: too many steps (max 50)';
+    if (!steps || steps.length === 0) return makeToolResult('error', 'Workflow error: steps must be a non-empty array');
+    if (steps.length > 50) return makeToolResult('error', 'Workflow error: too many steps (max 50)');
     const transcript = [];
-    const finishWf = (stopReason) => {
+    const stepResults = [];
+    const finishWf = (stopReason, status) => {
       const head = stopReason ? ('[STOPPED] ' + stopReason) : '[OK] Workflow complete';
-      return head + '\n' + transcript.join('\n');
+      return makeToolResult(status || (stopReason ? 'error' : 'ok'), head + '\n' + transcript.join('\n'), { steps: stepResults });
     };
     workflowStepDepth++;
     try {
     for (let i = 0; i < steps.length; i++) {
+      if (cancelled && cancelled()) return finishWf('client disconnected', 'cancelled');
       const st = steps[i] || {};
       const toolName = typeof st.tool === 'string' ? st.tool.trim() : '';
       if (!toolName) {
+        stepResults.push({ step: i + 1, tool: '', status: 'error', optional: !!st.optional });
         transcript.push('step ' + (i + 1) + ': ERROR - missing tool name');
         if (!st.optional) return finishWf('step ' + (i + 1) + ' has no tool name');
         continue;
       }
       if (toolName === 'workflow_tool') {
+        stepResults.push({ step: i + 1, tool: toolName, status: 'error', optional: !!st.optional });
         transcript.push('step ' + (i + 1) + ' (' + toolName + '): ERROR - nested workflows are not allowed');
         return finishWf('nested workflow at step ' + (i + 1));
       }
       if (!tools.some(t => t.function.name === toolName)) {
+        stepResults.push({ step: i + 1, tool: toolName, status: 'error', optional: !!st.optional });
         transcript.push('step ' + (i + 1) + ' (' + toolName + '): ERROR - unknown tool');
         if (!st.optional) return finishWf('unknown tool at step ' + (i + 1));
         continue;
       }
       const stepArgs = (st.args && typeof st.args === 'object' && !Array.isArray(st.args)) ? st.args : {};
       const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation, approvalBridge, cancelled);
-      const firstLine = String(res).split('\n')[0];
+      const firstLine = toolResultText(res).split('\n')[0];
+      const stepStatus = cancelled && cancelled() ? 'cancelled' : toolResultStatus(res);
+      stepResults.push({ step: i + 1, tool: toolName, status: stepStatus, optional: !!st.optional });
       transcript.push('step ' + (i + 1) + ' (' + toolName + '): ' + firstLine.substring(0, 160));
+      if (stepStatus === 'cancelled') return finishWf('step ' + (i + 1) + ' cancelled', 'cancelled');
       if (!st.optional && toolFailed(res)) {
         transcript.push('(stopped after failed step ' + (i + 1) + ')');
-        return finishWf('step ' + (i + 1) + ' failed');
+        return finishWf('step ' + (i + 1) + ' failed', stepStatus === 'ok' ? 'error' : stepStatus);
       }
     }
     return finishWf(null);
@@ -3036,14 +3044,15 @@ function parseTestOutput(text) {
         if (hasTests) command = "node --test";
       } catch (e) {}
     }
-    if (!command) return "Tests error: no command given and nothing to auto-detect (no scripts.test, no *.test.js).";
+    if (!command) return makeToolResult('error', "Tests error: no command given and nothing to auto-detect (no scripts.test, no *.test.js).");
     const timeoutMs = Math.max(10, Math.min(600, parseInt(args.timeout_seconds, 10) || 120)) * 1000;
     console.log("[TESTS] running: " + command);
     let out = "";
     let exitStatus = 0;
     // AST-09: async - a test run can hold the old sync call for up to 600s,
     // freezing the whole HTTP server for its entire duration.
-    const { r: cmdR } = await awaitCommandCancellable(runCommandAsync({ cmd: command }, { timeout: timeoutMs }), cancelled);
+    const { r: cmdR, aborted } = await awaitCommandCancellable(runCommandAsync({ cmd: command }, { timeout: timeoutMs }), cancelled);
+    if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
     // callback-args stdout/stderr are authoritative on failure (the error
     // object's copies are not populated consistently across exec backends)
     out = (cmdR.stdout || "") + (cmdR.stderr || "");
@@ -3051,30 +3060,32 @@ function parseTestOutput(text) {
       exitStatus = (typeof cmdR.error.code === 'number') ? cmdR.error.code : (cmdR.error.status !== undefined ? cmdR.error.status : 1);
     }
     const r = parseTestOutput(out);
-    // A2-07: a non-zero exit is a FAILURE - the result must carry a prefix the
-    // workflow's TOOL_FAIL_RE recognizes so a failed test step stops the
-    // workflow instead of the next steps marching on. Exit 0 with no
-    // recognizable summary stays informational ('[TESTS]').
+    // OPT-13: exit codes and parsed failures determine status independently
+    // of wording. Keep the existing text protocol for the model.
+    const status = exitStatus !== 0 || (r.failed || 0) > 0 || r.failures.length > 0 ? 'error' : 'ok';
+    const data = { exitCode: exitStatus, parsed: r.parsed, passed: r.passed,
+      failed: r.failed, skipped: r.skipped, total: r.total, failures: r.failures };
     if (!r.parsed) {
-      if (exitStatus !== 0) return "Tests error: command finished with exit " + exitStatus + " but no recognizable summary.\nOutput tail:\n" + out.substring(out.length - 2000);
-      return "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.\nOutput tail:\n" + out.substring(out.length - 2000);
+      if (exitStatus !== 0) return makeToolResult(status, "Tests error: command finished with exit " + exitStatus + " but no recognizable summary.\nOutput tail:\n" + out.substring(out.length - 2000), data);
+      return makeToolResult(status, "[TESTS] command finished (exit=" + exitStatus + ") but no recognizable summary.\nOutput tail:\n" + out.substring(out.length - 2000), data);
     }
     let res = (exitStatus !== 0 ? "Tests error:" : "[TESTS]") + " exit=" + exitStatus + " " + (r.passed || 0) + " passed, " + (r.failed || 0) + " failed, " + (r.skipped || 0) + " skipped (of " + r.total + ").";
     res += '\n';
-    res += (r.failures.length ? "Failures:\n" + r.failures.join('\n') : "All green.");
+    res += (r.failures.length ? "Failures:\n" + r.failures.join('\n') : (r.failed || 0) > 0 ? 'Failures: ' + r.failed + ' reported (no failure details).' : "All green.");
     res += "\n\nRaw tail:\n" + out.substring(out.length - 1500);
-    return res;
+    return makeToolResult(status, res, data);
   }
 
 // ====================== DIAGNOSTICS FORMATTING (GAP-5) ======================
 // One header line + per-problem '  <file>:<line> <code> <msg>' lines, capped.
-function formatDiagResult(toolLabel, problems) {
-  if (!problems.length) return '[DIAG] clean (0 problems)';
+function formatDiagResult(toolLabel, problems, status) {
+  const data = { toolchain: toolLabel, problems };
+  if (!problems.length) return makeToolResult(status || 'ok', '[DIAG] clean (0 problems)', data);
   const CAP = 50;
   const lines = problems.slice(0, CAP).map(p => '  ' + p.file + ':' + p.line + ' ' + p.code + ' ' + String(p.msg || '').substring(0, 120));
   let out = '[DIAG] ' + toolLabel + ': ' + problems.length + ' 个问题\n' + lines.join('\n');
   if (problems.length > CAP) out += '\n  ... and ' + (problems.length - CAP) + ' more problems (truncated to ' + CAP + ')';
-  return out;
+  return makeToolResult(status || 'error', out, data);
 }
 
   if (name === 'diagnostics_tool') {
@@ -3091,14 +3102,15 @@ function formatDiagResult(toolLabel, problems) {
         // args.path is deliberately ignored for tsc: `tsc --noEmit <file>`
         // bypasses the project tsconfig and reports a different problem set
         // than the project build - diagnostics stay whole-project instead.
-        const { r } = await awaitCommandCancellable(runCommandAsync({ file: process.execPath, args: [tscBin, '--noEmit'] }, { timeout: 120000 }), cancelled);
+        const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: process.execPath, args: [tscBin, '--noEmit'] }, { timeout: 120000 }), cancelled);
+        if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
         // exit 2 is tsc's "has errors" - the callback's stdout still carries the list
         for (const line of String(r.stdout || '').split('\n')) {
           const m = line.match(/^([^(]+)\((\d+),(\d+)\): error (TS\d+): (.*)$/);
           if (m) problems.push({ file: m[1].trim(), line: m[2], code: m[4], msg: m[5] });
         }
         if (!problems.length && r.error && !String(r.stdout || '').trim() && !String(r.stderr || '').trim()) {
-          return 'Diagnostics error: tsc failed: ' + (r.error.message || 'exit ' + r.error.code);
+          return makeToolResult('error', 'Diagnostics error: tsc failed: ' + (r.error.message || 'exit ' + r.error.code));
         }
         // A2-11: global tsc errors (e.g. "error TS18003: No inputs were found.")
         // carry no file(line,col) shape, so the loop above misses them and a
@@ -3108,15 +3120,15 @@ function formatDiagResult(toolLabel, problems) {
         // only an empty set with exit 0 stays clean.
         if (!problems.length) {
           const tscOut = String(r.stdout || '') + '\n' + String(r.stderr || '');
-          const tscFailed = !!(r.error && typeof r.error.code === 'number' && r.error.code !== 0);
+          const tscFailed = !!r.error;
           const additional = tscOut.split('\n')
             .filter(l => /error TS\d+/.test(l))
             .map(l => l.trim().substring(0, 160));
           if (additional.length) {
-            return '[DIAG] tsc: ' + additional.length + ' 个问题\n' + additional.map(l => '  ' + l).join('\n');
+            return makeToolResult('error', '[DIAG] tsc: ' + additional.length + ' 个问题\n' + additional.map(l => '  ' + l).join('\n'), { toolchain: 'tsc', globalErrors: additional });
           }
           if (tscFailed) {
-            return 'Diagnostics error: tsc failed: exit ' + r.error.code + (String(r.stderr || '').trim() ? (' | ' + String(r.stderr).trim().substring(0, 200)) : '');
+            return makeToolResult('error', 'Diagnostics error: tsc failed: exit ' + r.error.code + (String(r.stderr || '').trim() ? (' | ' + String(r.stderr).trim().substring(0, 200)) : ''));
           }
         }
         return formatDiagResult('tsc', problems);
@@ -3124,24 +3136,26 @@ function formatDiagResult(toolLabel, problems) {
       if (fs.existsSync(eslintBin)) {
         let target = '.';
         if (args.path && String(args.path).trim()) {
-          try { target = sanitizePath(String(args.path).trim()) || '.'; } catch (e2) { return 'Diagnostics error: ' + e2.message; }
+          try { target = sanitizePath(String(args.path).trim()) || '.'; } catch (e2) { return makeToolResult('error', 'Diagnostics error: ' + e2.message); }
         }
-        const { r } = await awaitCommandCancellable(runCommandAsync({ file: process.execPath, args: [eslintBin, '--format', 'json', target] }, { timeout: 120000 }), cancelled);
+        const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: process.execPath, args: [eslintBin, '--format', 'json', target] }, { timeout: 120000 }), cancelled);
+        if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
         let rows = null;
         try { rows = JSON.parse(String(r.stdout || 'null')); } catch (e2) { rows = null; }
-        if (rows === null) {
-          return 'Diagnostics error: eslint output was not valid JSON' + (r.error ? (': ' + r.error.message) : '') + (String(r.stderr || '').trim() ? (' | ' + String(r.stderr).trim().substring(0, 200)) : '');
+        if (!Array.isArray(rows)) {
+          return makeToolResult('error', 'Diagnostics error: eslint output was not valid JSON' + (r.error ? (': ' + r.error.message) : '') + (String(r.stderr || '').trim() ? (' | ' + String(r.stderr).trim().substring(0, 200)) : ''));
         }
         for (const f of rows) {
           for (const msg of (f.messages || [])) {
-            problems.push({ file: f.filePath, line: msg.line, code: msg.ruleId || '(no rule)', msg: msg.message });
+            problems.push({ file: f.filePath, line: msg.line, code: msg.ruleId || '(no rule)', msg: msg.message, severity: msg.severity });
           }
         }
-        return formatDiagResult('eslint', problems.slice(0, 30));
+        if (!problems.length && r.error) return makeToolResult('error', 'Diagnostics error: eslint failed: ' + (r.error.message || 'exit ' + r.error.code));
+        return formatDiagResult('eslint', problems.slice(0, 30), r.error || problems.some(p => p.severity !== 1) ? 'error' : 'ok');
       }
-      return 'Diagnostics: no toolchain found (install typescript or eslint in node_modules).';
+      return makeToolResult('error', 'Diagnostics: no toolchain found (install typescript or eslint in node_modules).');
     } catch (e) {
-      return 'Diagnostics error: ' + e.message;
+      return makeToolResult('error', 'Diagnostics error: ' + e.message);
     }
   }
 
@@ -3471,12 +3485,12 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   const func = toolCall.function;
   let argsPreview = {};
   try { const a = JSON.parse(func.arguments || '{}'); for (const k of Object.keys(a)) argsPreview[k] = String(JSON.stringify(a[k])).substring(0, 200); } catch (e) { argsPreview = { raw: String(func.arguments || '').substring(0, 200) }; }
-  const res = await safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled);
-  const first = String(res).split('\n')[0];
-  const status = (/^BLOCKED/.test(res) || /^Permission mode = denial/.test(res)) ? 'blocked'
-    : /declined/i.test(res) ? 'declined'
-    : toolFailed(res) ? 'error'
-    : 'ok';
+  const raw = await safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled);
+  // Pilot tools are structured even when permission/argument checks return
+  // early. Other tools retain their string interface and legacy inference.
+  const res = STRUCTURED_RESULT_TOOLS.has(func.name) ? normalizeToolResult(raw) : raw;
+  const first = toolResultText(res).split('\n')[0];
+  const status = toolResultStatus(res);
   // GAP-12: remember mutating calls for the end-of-task [CHANGES] summary.
   // argsPreview values are the redacted/truncated audit previews - reuse them.
   if (getToolMetadata(func.name).trackChanges && taskChanges.length < 1000) {
@@ -3660,17 +3674,41 @@ async function askApproval(question, approvalBridge) {
 }
 
 // ====================== TOOL CALLING LOOP ======================
-// AST-11: single source of truth for "did this tool call fail". The workflow
-// step-stop check and the audit status mapping both consume this regex, so
-// they can never drift apart again (they once disagreed: 'List error' and
-// declined steps let workflows continue and audit logged denials as 'ok').
+// OPT-13: pilot tools carry authoritative status alongside legacy model text.
+// The symbol identifies internal results, so arbitrary returned objects are
+// never mistaken for status-bearing results. Data stays internal (not SSE).
+const TOOL_RESULT_MARKER = Symbol('7coder.ToolResult');
+const TOOL_RESULT_STATUSES = ['ok', 'error', 'blocked', 'declined', 'cancelled'];
+const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool']);
+function makeToolResult(status, text, data) {
+  if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
+  const result = { [TOOL_RESULT_MARKER]: true, status, text };
+  if (data !== undefined) result.data = data;
+  return Object.freeze(result);
+}
+function isToolResult(result) { return !!result && result[TOOL_RESULT_MARKER] === true; }
+function toolResultText(result) {
+  return isToolResult(result) ? result.text : String(result == null ? '' : result);
+}
+function toolResultStatus(result) {
+  if (isToolResult(result)) return result.status;
+  const text = toolResultText(result);
+  if (/^BLOCKED|^Permission mode = denial/.test(text)) return 'blocked';
+  if (/declined/i.test(text)) return 'declined';
+  return TOOL_FAIL_RE.test(text) ? 'error' : 'ok';
+}
+function normalizeToolResult(result) {
+  return isToolResult(result) ? result : makeToolResult(toolResultStatus(result), toolResultText(result));
+}
+// Non-pilot tools still use the historical text-prefix contract. Do not widen
+// their workflow failure rules as part of this gradual migration.
 const TOOL_FAIL_RE = /^(?:\[ERROR\]|BLOCKED|Tool error|Tests error|Parse error|Read error|Write error|Append error|Edit error|Notebook error|Brief error|Download error|List error|Input error|Kill error|Workflow error|Git status error|Git diff error|Git commit error|MCP tool error|MCP error|Auto-approval declined|Permission mode = denial|User declined|Search error|Diagnostics error|[SHELL] timeout)/;
-function toolFailed(res) { return TOOL_FAIL_RE.test(String(res)); }
+function toolFailed(res) { return isToolResult(res) ? res.status !== 'ok' : TOOL_FAIL_RE.test(toolResultText(res)); }
 
 // Central choke point for every model call: caps tool result size and
 // compresses the conversation when it grows past CONTEXT_CHARS.
 function capToolResult(result) {
-  const s = String(result === undefined || result === null ? '' : result);
+  const s = toolResultText(result);
   if (s.length <= MAX_TOOL_RESULT_CHARS) return s;
   const head = Math.floor(MAX_TOOL_RESULT_CHARS * 0.7);
   const tail = MAX_TOOL_RESULT_CHARS - head;
@@ -4885,9 +4923,9 @@ function startHttpServer() {
                 onReasoning: t => writeChunk({ reasoning: t }, null),
                 onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: sanitizeAuditArgs(args) } }, null),
                 onToolResult: (name, args, output) => {
-                  const resultText = sanitizeAuditLine(String(output == null ? '' : output)).substring(0, 12000);
-                  const status = (/^BLOCKED/.test(resultText) || /^Permission mode = denial/.test(resultText)) ? 'blocked'
-                    : /declined/i.test(resultText) ? 'declined' : toolFailed(resultText) ? 'error' : 'completed';
+                  const resultText = sanitizeAuditLine(toolResultText(output)).substring(0, 12000);
+                  const resultStatus = toolResultStatus(output);
+                  const status = resultStatus === 'ok' ? 'completed' : resultStatus;
                   writeChunk({ tool_result: { name: name, args: sanitizeAuditArgs(args), result: resultText, status: status } }, null);
                 },
                 approvalBridge: approvalBridge

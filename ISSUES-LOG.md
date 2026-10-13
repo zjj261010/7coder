@@ -8,24 +8,24 @@
 >
 > 当前状态（2026-10-13）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-13~16 及既有暂缓项仍保留；OPT-12 已完成统一元数据；GAP-8/12、OPT-17 与 P2-7 已按 10-13 补齐范围验收，不能称全部待办清零。详见文末清账与修复记录。
 > 历史发布快照（v2.18.0，`1f52a8a`）：离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、内置 Node 13.14.0 冒烟通过）。该产物早于后续 OP2/A2 修复，不能据此宣称包含修复；本轮未重新打包。
-> 本轮回归（2026-10-13，OPT-12，Node 24.19.0 固定离线基线）：A–J **612/612**（A85/B296/C35/D32/E22/F23/G29/H32/I42/J16）；UI mock 43/43、DOM 12/12、真实 Chrome 8/8，完整入口 13/13 目标通过。Node 13.14.0 定向：权限/安全 13/13、元数据/调度 11/11。静态断言 **578**（570→578）；实测与静态计数不混用。
+> 本轮回归（2026-10-13，OPT-13 试点）：A–J 合并验收 **632/632**（A85/B307/C35/D32/E22/F23/G29/H32/I51/J16）；UI mock 43/43、DOM 12/12、Chrome 9/9。完整入口先 13/13 targets、631/631 全绿；最终取消补丁后 I 整套 51/51 + B 定向 23/23。Node 13 结果/取消定向 20/20。静态断言 **598**（578→598），与实测分开。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 278 |
+| runner-b.js | 289 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 23 |
 | runner-g.js | 31 |
 | runner-h.js | 27 |
-| runner-i.js | 40 |
+| runner-i.js | 49 |
 | runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **578** |
+| **合计** | **598** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -404,7 +404,7 @@
 | # | 方向 | 状态 |
 |---|------|------|
 | OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ✅ 本轮统一为 index.js TOOL_METADATA：53 个工具逐一声明风险/审批说明/自动放行/只读并行/改动跟踪、执行性/资源/现有取消支持。初始化校验与旧策略基线对照见文末 OPT-12 记录；取消语义本身仍由 OPT-15 跟踪 |
-| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | ⬜ |
+| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 本轮完成 run_tests/diagnostics/workflow 三工具试点：status/text/data 内部结果，工作流/审计/SSE 共用显式状态，模型保留原文本；其他 50 工具仍走旧字符串兼容，后续逐步迁移。实现与验收见文末 |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ⬜（A2-01 根治） |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
@@ -510,6 +510,20 @@
 - 定向 Node 13.14.0：A 的 perm/security **13/13**；I 的 metadata/scheduling **11/11**。
 - 完整 `BROWSER_TEST=1 npm run test:all`：**13/13 targets passed**，A85/B296/C35/D32/E22/F23/G29/H32/I42/J16，合计 **612/612**；UI mock 43/43、DOM 12/12、真实 Chrome 8/8，单次入口 exit 0，无失败。日志：系统临时目录 `7coder-opt12-all.log`。
 - 静态断言 **578**（新增 8 个静态断言点）；模型收到的 53 个 tool schemas/descriptions 另经对照 HEAD 验证一致。未执行真实付费端点、完整 Node 13 全套或 Linux/macOS 实机验证。
+
+---
+
+## 2026-10-13 —— OPT-13 结构化工具结果（三工具试点）
+
+- **返回契约**：run_tests_tool、diagnostics_tool、workflow_tool 明确返回 `ToolResult {status,text,data?}`，内部 Symbol 标识防普通对象被误当结构化结果。合法状态 ok/error/blocked/declined/cancelled；结果对象冻结，malformed status/text 拒绝。失败判定优先使用显式状态；其他工具仍用历史文本前缀，未扩大其匹配规则。
+- **权限与输出兼容**：试点工具的权限拒绝/参数解析等提前返回在 safe wrapper 归一化；权限顺序未改。模型的 tool.content 仍为文本，既有文本上限仍生效；SSE/audit 只传同一状态和已脱敏文本，不传结构化 data。SSE 的 ok 映射为既有 completed，取消显示 cancelled。
+- **测试工具**：非零 exit、解析到失败计数/失败行均为 error（即使 exit=0）；无摘要且 exit=0、无失败行则 ok。文本前缀兼容，失败计数非零时不再说 All green，data 携带 exit/解析计数。
+- **诊断工具**：tsc/eslint 问题或执行失败均可明确 error，eslint 空 JSON+非零退出不能误报 clean；警告单独为 ok，零问题+exit0 为 clean；无工具链/非法 JSON 为 error。模型仍能读取现有诊断文本。
+- **工作流**：非可选失败按显式状态停止，optional error 可继续且完成状态为 ok；cancelled 无论 optional 均停止。data 记录步骤状态，最终 STOPPED 正确进入审计和 UI error/blocked/declined/cancelled。
+- **反例验收**：真实 HTTP/SSE + 本地命令覆盖 exit0 测试失败、exit≠0 无摘要、成功文本含 declined、诊断空 JSON 失败/警告/错误/clean/坏 JSON、可选错误后写入、工作流停止后零写入、bad args/危险命令/denial 提前拒绝、SSE 与 audit 状态一致、模型无对象字面串。取消/内部 data/旧前缀规则通过受控工具回调验证；Chrome 加测卡片按 status 渲染而非文本推断。
+- 定向 Node 13.14.0：tool-results **11/11**、最终 tool-result-contract **9/9**（合计 **20/20**）。旧 workflow/tests-runner/diag/sec4 定向 22/22；最终取消补丁后的 B 试点回归 **23/23**。
+- 完整 `BROWSER_TEST=1 npm run test:all` 单次 **13/13 targets passed**，A85/B307/C35/D32/E22/F23/G29/H32/I50/J16，合计 **631/631**；UI 43/43 + DOM 12/12、真实 Chrome **9/9**。最后补上“末步执行期间取消”守卫及反例后，仅复跑受影响 I 整套 **51/51** 和 B 定向 23/23；最终 A–J 合并验收 **632/632**，不宣称 632 是同一次入口输出。
+- 日志：系统临时目录 `7coder-opt13-all.log`、`7coder-opt13-i-final.log`；静态断言 **598**。schema/descriptions 对照 HEAD 未变化，生产依赖未增加。其余工具结构化迁移、完整取消上下文和真实付费端点不在本批范围。
 
 ---
 
