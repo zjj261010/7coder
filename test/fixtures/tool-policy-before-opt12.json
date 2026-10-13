@@ -1,0 +1,569 @@
+{
+  "description": "Frozen pre-OPT-12 policy baseline from commit 2e85755. Null risk/explanation intentionally means model fallback; sleep_tool has LOW risk and no fixed explanation.",
+  "samples": [
+    {},
+    {
+      "path": "src/demo.js",
+      "file": "TODO.md",
+      "command": "echo test",
+      "url": "https://example.com/file",
+      "folder": "src",
+      "action": "save",
+      "topic": "topic",
+      "id": "t1",
+      "title": "A task",
+      "name": "worker",
+      "task": "Read files",
+      "schedule": "30s",
+      "job_id": "cron-1",
+      "pid": 123,
+      "tool_name": "echo",
+      "steps": [
+        {},
+        {}
+      ],
+      "message": "test commit",
+      "staged": true
+    },
+    {
+      "action": "delete",
+      "topic": "old",
+      "title": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "command": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "task": "yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+      "path": "中文/space name.txt"
+    },
+    {
+      "action": "list",
+      "steps": [],
+      "staged": false
+    },
+    {
+      "action": "read",
+      "description": "foo"
+    }
+  ],
+  "tools": {
+    "read_file": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "write_file": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": true,
+      "explanations": [
+        "Write file undefined",
+        "Write file src/demo.js",
+        "Write file 中文/space name.txt",
+        "Write file undefined",
+        "Write file undefined"
+      ]
+    },
+    "append_file": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": true,
+      "explanations": [
+        "Append to file undefined",
+        "Append to file src/demo.js",
+        "Append to file 中文/space name.txt",
+        "Append to file undefined",
+        "Append to file undefined"
+      ]
+    },
+    "edit_file": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": true,
+      "explanations": [
+        "Edit file undefined",
+        "Edit file src/demo.js",
+        "Edit file 中文/space name.txt",
+        "Edit file undefined",
+        "Edit file undefined"
+      ]
+    },
+    "agent_tool": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Spawn sub-agent \"undefined\" with task: ",
+        "Spawn sub-agent \"worker\" with task: Read files",
+        "Spawn sub-agent \"undefined\" with task: yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy",
+        "Spawn sub-agent \"undefined\" with task: ",
+        "Spawn sub-agent \"undefined\" with task: "
+      ]
+    },
+    "run_command": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Run shell command: ",
+        "Run shell command: echo test",
+        "Run shell command: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "Run shell command: ",
+        "Run shell command: "
+      ]
+    },
+    "bash_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Run bash command: ",
+        "Run bash command: echo test",
+        "Run bash command: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "Run bash command: ",
+        "Run bash command: "
+      ]
+    },
+    "powershell_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Run PowerShell command: ",
+        "Run PowerShell command: echo test",
+        "Run PowerShell command: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "Run PowerShell command: ",
+        "Run PowerShell command: "
+      ]
+    },
+    "glob_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "grep_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "list_dir": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "download_tool": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": true,
+      "explanations": [
+        "Download undefined to undefined",
+        "Download https://example.com/file to src/demo.js",
+        "Download undefined to 中文/space name.txt",
+        "Download undefined to undefined",
+        "Download undefined to undefined"
+      ]
+    },
+    "process_list_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "process_kill_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Kill process undefined",
+        "Kill process 123",
+        "Kill process undefined",
+        "Kill process undefined",
+        "Kill process undefined"
+      ]
+    },
+    "web_fetch_tool": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "web_search_tool": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "web_browser_tool": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "notebook_edit_tool": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": true,
+      "explanations": [
+        "Edit notebook undefined",
+        "Edit notebook src/demo.js",
+        "Edit notebook 中文/space name.txt",
+        "Edit notebook undefined",
+        "Edit notebook undefined"
+      ]
+    },
+    "ask_user_question_tool": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "brief_tool": {
+      "risk": "LOW",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Summarize folder undefined into undefined.summary",
+        "Summarize folder src into src.summary",
+        "Summarize folder undefined into undefined.summary",
+        "Summarize folder undefined into undefined.summary",
+        "Summarize folder undefined into undefined.summary"
+      ]
+    },
+    "todo_write_tool": {
+      "risk": "LOW",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Update structured task list (.7coder/todos.json): add",
+        "Update structured task list (.7coder/todos.json): save t1 \"A task\"",
+        "Update structured task list (.7coder/todos.json): delete \"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\"",
+        "Update structured task list (.7coder/todos.json): list",
+        "Update structured task list (.7coder/todos.json): read"
+      ]
+    },
+    "memory_tool": {
+      "risk": "LOW",
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Read memory notess (.7coder/memory)",
+        "Save memory note topic",
+        "Delete memory note old",
+        "Read memory notess (.7coder/memory)",
+        "Read memory notess (.7coder/memory)"
+      ]
+    },
+    "read_mcp_resource_tool": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "sleep_tool": {
+      "risk": "LOW",
+      "autoSafe": false,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "snip_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "tool_search_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "list_mcp_resources_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "enter_worktree_tool": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Create git worktree at undefined",
+        "Create git worktree at src/demo.js",
+        "Create git worktree at 中文/space name.txt",
+        "Create git worktree at undefined",
+        "Create git worktree at undefined"
+      ]
+    },
+    "schedule_cron_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Schedule cron \"undefined\" running: ",
+        "Schedule cron \"30s\" running: echo test",
+        "Schedule cron \"undefined\" running: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "Schedule cron \"undefined\" running: ",
+        "Schedule cron \"undefined\" running: "
+      ]
+    },
+    "cron_create_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Schedule cron \"undefined\" running: ",
+        "Schedule cron \"30s\" running: echo test",
+        "Schedule cron \"undefined\" running: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "Schedule cron \"undefined\" running: ",
+        "Schedule cron \"undefined\" running: "
+      ]
+    },
+    "cron_delete_tool": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Delete cron job undefined",
+        "Delete cron job cron-1",
+        "Delete cron job undefined",
+        "Delete cron job undefined",
+        "Delete cron job undefined"
+      ]
+    },
+    "cron_list_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "task_create_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Start background task: ",
+        "Start background task: echo test",
+        "Start background task: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "Start background task: ",
+        "Start background task: "
+      ]
+    },
+    "task_get_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "task_list_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "task_output_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "task_stop_tool": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "mcp_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": true,
+      "explanations": [
+        "Call MCP tool undefined",
+        "Call MCP tool echo",
+        "Call MCP tool undefined",
+        "Call MCP tool undefined",
+        "Call MCP tool undefined"
+      ]
+    },
+    "mcp_list_tools_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "prompt_from_file": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "skill_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "synthetic_output_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "workflow_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Run a ?-step tool workflow",
+        "Run a 2-step tool workflow",
+        "Run a ?-step tool workflow",
+        "Run a 0-step tool workflow",
+        "Run a ?-step tool workflow"
+      ]
+    },
+    "run_tests_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Run test suite: auto-detected",
+        "Run test suite: echo test",
+        "Run test suite: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "Run test suite: auto-detected",
+        "Run test suite: auto-detected"
+      ]
+    },
+    "diagnostics_tool": {
+      "risk": "MEDIUM",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": [
+        "Run project-local static diagnostics (tsc/eslint from node_modules) (executes project-defined JS - approval required)",
+        "Run project-local static diagnostics (tsc/eslint from node_modules) on src/demo.js (executes project-defined JS - approval required)",
+        "Run project-local static diagnostics (tsc/eslint from node_modules) on 中文/space name.txt (executes project-defined JS - approval required)",
+        "Run project-local static diagnostics (tsc/eslint from node_modules) (executes project-defined JS - approval required)",
+        "Run project-local static diagnostics (tsc/eslint from node_modules) (executes project-defined JS - approval required)"
+      ]
+    },
+    "git_status_tool": {
+      "risk": "LOW",
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": [
+        "Show git working tree status (read-only)",
+        "Show git working tree status (read-only)",
+        "Show git working tree status (read-only)",
+        "Show git working tree status (read-only)",
+        "Show git working tree status (read-only)"
+      ]
+    },
+    "git_diff_tool": {
+      "risk": "LOW",
+      "autoSafe": true,
+      "parallelRead": true,
+      "trackChanges": false,
+      "explanations": [
+        "Show git diff (read-only)",
+        "Show git diff (staged) for src/demo.js (read-only)",
+        "Show git diff for 中文/space name.txt (read-only)",
+        "Show git diff (read-only)",
+        "Show git diff (read-only)"
+      ]
+    },
+    "git_commit_tool": {
+      "risk": "HIGH",
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": true,
+      "explanations": [
+        "Stage all and commit (auto message) (snapshot taken)",
+        "Stage all and commit: test commit (snapshot taken)",
+        "Stage all and commit (auto message) (snapshot taken)",
+        "Stage all and commit (auto message) (snapshot taken)",
+        "Stage all and commit (auto message) (snapshot taken)"
+      ]
+    },
+    "auto_approval_return": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "computer_use": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "plan_mode": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "auto_debug_tool": {
+      "risk": null,
+      "autoSafe": false,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    },
+    "bickering_tool": {
+      "risk": null,
+      "autoSafe": true,
+      "parallelRead": false,
+      "trackChanges": false,
+      "explanations": null
+    }
+  }
+}

@@ -545,16 +545,6 @@ if (DANGER_MODE) {
   console.log('[WARN] DANGER MODE ENABLED - All CLI commands will run WITHOUT approval (within reason)!');
 }
 
-// Auto-safe tools (no permission prompt ever). Deliberately excludes anything
-// that executes code (run_command, auto_debug_tool, A2-03: diagnostics_tool)
-// or writes files.
-const AUTO_SAFE_TOOLS = [
-  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'list_mcp_resources_tool', 'mcp_list_tools_tool', 'memory_tool', 'tool_search_tool',
-  'prompt_from_file', 'snip_tool', 'cron_list_tool', 'process_list_tool', 'bickering_tool',
-  'task_get_tool', 'task_list_tool', 'task_output_tool', 'skill_tool', 'synthetic_output_tool',
-  'git_status_tool', 'git_diff_tool'
-];
-
 // ====================== TOOL DEFINITIONS ======================
 const tools = [
   { type: "function", function: { name: "read_file", description: "Read a file. Output is always line-numbered (cat -n style). Optional offset (1-based start line) and limit (number of lines) window large reads. Binary files are refused ([BINARY] marker); empty files return (empty file).", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } } },
@@ -611,6 +601,307 @@ const tools = [
   { type: "function", function: { name: "auto_debug_tool", description: "Launch app/script (compile if needed), test like a real user (GUI via desktop simulation or CLI via terminal) for 2-5 min, auto-fix errors until only warnings remain.", parameters: { type: "object", properties: { path: { type: "string" }, type: { type: "string", enum: ["gui", "cli", "script"] }, duration_minutes: { type: "number" } }, required: ["path"] } } },
   { type: "function", function: { name: "bickering_tool", description: "Two small-model PM sub-agents bicker/debate the current task until they reach agreement.", parameters: { type: "object", properties: { task: { type: "string" } }, required: ["task"] } } }
 ];
+
+// ====================== TOOL METADATA (OPT-12) ======================
+// One declaration per tool owns explicit permission and concurrency decisions.
+// Resource/execution annotations DESCRIBE effects; they never imply approval.
+// Memory writes and configured MCP discovery keep their auto-safe exceptions.
+// null risk/explain preserves model fallback (sleep has LOW risk, LLM explain).
+// Cancellation: boundary = loop boundaries; active-command = child cancellation;
+// inherited = child steps inherit token; partial = persistent shell is partial.
+function toolMetadata(overrides) {
+  return Object.freeze(Object.assign({ risk: null, explain: null, autoSafe: false,
+    parallelRead: false, trackChanges: false }, overrides, {
+      resources: Object.freeze(Object.assign({}, overrides.resources))
+    }));
+}
+const TOOL_METADATA = Object.freeze(Object.assign(Object.create(null), {
+  read_file: toolMetadata({
+    autoSafe: true, parallelRead: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read' }
+  }),
+  write_file: toolMetadata({
+    explain: (a) => `Write file ${a.path}`, risk: "MEDIUM", trackChanges: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'write' }
+  }),
+  append_file: toolMetadata({
+    explain: (a) => `Append to file ${a.path}`, risk: "MEDIUM", trackChanges: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'write' }
+  }),
+  edit_file: toolMetadata({
+    explain: (a) => `Edit file ${a.path}`, risk: "MEDIUM", trackChanges: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'write' }
+  }),
+  agent_tool: toolMetadata({
+    explain: (a) => `Spawn sub-agent "${a.name}" with task: ${String(a.task || '').substring(0, 60)}`, risk: "MEDIUM",
+    execution: "composite", cancellation: "inherited",
+    resources: { workspace: 'readwrite', process: 'execute', network: 'readwrite', state: 'readwrite' }
+  }),
+  run_command: toolMetadata({
+    explain: (a) => `Run shell command: ${String(a.command || '').substring(0, 100)}`, risk: "HIGH",
+    execution: "command", cancellation: "active-command",
+    resources: { workspace: 'readwrite', process: 'execute' }
+  }),
+  bash_tool: toolMetadata({
+    explain: (a) => `Run bash command: ${String(a.command || '').substring(0, 100)}`, risk: "HIGH",
+    execution: "command", cancellation: "partial",
+    resources: { workspace: 'readwrite', process: 'execute', shell: 'readwrite' }
+  }),
+  powershell_tool: toolMetadata({
+    explain: (a) => `Run PowerShell command: ${String(a.command || '').substring(0, 100)}`, risk: "HIGH",
+    execution: "command", cancellation: "active-command",
+    resources: { workspace: 'readwrite', process: 'execute' }
+  }),
+  glob_tool: toolMetadata({
+    autoSafe: true, parallelRead: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read' }
+  }),
+  grep_tool: toolMetadata({
+    autoSafe: true, parallelRead: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read' }
+  }),
+  list_dir: toolMetadata({
+    autoSafe: true, parallelRead: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read' }
+  }),
+  download_tool: toolMetadata({
+    explain: (a) => `Download ${a.url} to ${a.path}`, risk: "MEDIUM", trackChanges: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'write', network: 'read' }
+  }),
+  process_list_tool: toolMetadata({
+    autoSafe: true, parallelRead: true,
+    execution: "command", cancellation: "active-command",
+    resources: { process: 'read' }
+  }),
+  process_kill_tool: toolMetadata({
+    explain: (a) => `Kill process ${a.pid}`, risk: "HIGH",
+    execution: "command", cancellation: "boundary",
+    resources: { process: 'write' }
+  }),
+  web_fetch_tool: toolMetadata({
+    execution: "builtin", cancellation: "boundary",
+    resources: { network: 'read' }
+  }),
+  web_search_tool: toolMetadata({
+    execution: "builtin", cancellation: "boundary",
+    resources: { network: 'read' }
+  }),
+  web_browser_tool: toolMetadata({
+    execution: "model", cancellation: "boundary",
+    resources: { network: 'read', model: 'execute' }
+  }),
+  notebook_edit_tool: toolMetadata({
+    explain: (a) => `Edit notebook ${a.path}`, risk: "MEDIUM", trackChanges: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'write' }
+  }),
+  ask_user_question_tool: toolMetadata({
+    execution: "builtin", cancellation: "boundary",
+    resources: { conversation: 'readwrite' }
+  }),
+  brief_tool: toolMetadata({
+    explain: (a) => `Summarize folder ${a.folder} into ${a.folder}.summary`, risk: "LOW",
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read', state: 'write' }
+  }),
+  todo_write_tool: toolMetadata({
+    explain: (a) => `Update structured task list (.7coder/todos.json): ${a.action === 'list' ? 'list' : (a.action || 'add')}${a.id ? ' ' + a.id : ''}${a.title ? ' "' + String(a.title).substring(0, 40) + '"' : ''}`, risk: "LOW",
+    execution: "builtin", cancellation: "boundary",
+    resources: { state: 'readwrite', workspace: 'write' }
+  }),
+  memory_tool: toolMetadata({
+    explain: (a) => `${a.action === 'save' ? 'Save memory note' : a.action === 'delete' ? 'Delete memory note' : 'Read memory notes'}${a.topic ? ' ' + a.topic : 's (.7coder/memory)'}`, risk: "LOW", autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { memory: 'readwrite' }
+  }),
+  read_mcp_resource_tool: toolMetadata({
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read' }
+  }),
+  sleep_tool: toolMetadata({
+    risk: "LOW", parallelRead: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { clock: 'read' }
+  }),
+  snip_tool: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { conversation: 'read' }
+  }),
+  tool_search_tool: toolMetadata({
+    autoSafe: true, parallelRead: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { configuration: 'read' }
+  }),
+  list_mcp_resources_tool: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'readwrite' }
+  }),
+  enter_worktree_tool: toolMetadata({
+    explain: (a) => `Create git worktree at ${a.path}`, risk: "MEDIUM",
+    execution: "command", cancellation: "boundary",
+    resources: { git: 'write', workspace: 'write' }
+  }),
+  schedule_cron_tool: toolMetadata({
+    explain: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`, risk: "HIGH",
+    execution: "command", cancellation: "boundary",
+    resources: { process: 'execute', state: 'write' }
+  }),
+  cron_create_tool: toolMetadata({
+    explain: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`, risk: "HIGH",
+    execution: "command", cancellation: "boundary",
+    resources: { process: 'execute', state: 'write' }
+  }),
+  cron_delete_tool: toolMetadata({
+    explain: (a) => `Delete cron job ${a.job_id}`, risk: "MEDIUM",
+    execution: "builtin", cancellation: "boundary",
+    resources: { state: 'write' }
+  }),
+  cron_list_tool: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { state: 'read' }
+  }),
+  task_create_tool: toolMetadata({
+    explain: (a) => `Start background task: ${String(a.command || '').substring(0, 80)}`, risk: "HIGH",
+    execution: "command", cancellation: "boundary",
+    resources: { workspace: 'readwrite', process: 'execute', state: 'write' }
+  }),
+  task_get_tool: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { state: 'read' }
+  }),
+  task_list_tool: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { state: 'read' }
+  }),
+  task_output_tool: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { state: 'read' }
+  }),
+  task_stop_tool: toolMetadata({
+    execution: "command", cancellation: "boundary",
+    resources: { process: 'write', state: 'write' }
+  }),
+  mcp_tool: toolMetadata({
+    explain: (a) => `Call MCP tool ${a.tool_name}`, risk: "HIGH", trackChanges: true,
+    execution: "configured", cancellation: "boundary",
+    resources: { workspace: 'readwrite', process: 'execute', network: 'readwrite' }
+  }),
+  mcp_list_tools_tool: toolMetadata({
+    autoSafe: true,
+    execution: "configured", cancellation: "boundary",
+    resources: { configuration: 'read', process: 'execute' }
+  }),
+  prompt_from_file: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read' }
+  }),
+  skill_tool: toolMetadata({
+    autoSafe: true,
+    execution: "builtin", cancellation: "boundary",
+    resources: { workspace: 'read' }
+  }),
+  synthetic_output_tool: toolMetadata({
+    autoSafe: true,
+    execution: "model", cancellation: "boundary",
+    resources: { model: 'execute' }
+  }),
+  workflow_tool: toolMetadata({
+    explain: (a) => `Run a ${Array.isArray(a.steps) ? a.steps.length : '?'}-step tool workflow`, risk: "HIGH",
+    execution: "composite", cancellation: "inherited",
+    resources: { workspace: 'readwrite', state: 'readwrite', process: 'execute', network: 'readwrite' }
+  }),
+  run_tests_tool: toolMetadata({
+    explain: (a) => `Run test suite: ${String(a.command || 'auto-detected').substring(0, 80)}`, risk: "HIGH",
+    execution: "command", cancellation: "active-command",
+    resources: { workspace: 'readwrite', process: 'execute' }
+  }),
+  diagnostics_tool: toolMetadata({
+    explain: (a) => `Run project-local static diagnostics (tsc/eslint from node_modules)${a.path ? ' on ' + a.path : ''} (executes project-defined JS - approval required)`, risk: "MEDIUM",
+    execution: "project", cancellation: "active-command",
+    resources: { workspace: 'readwrite', process: 'execute' }
+  }),
+  git_status_tool: toolMetadata({
+    explain: () => 'Show git working tree status (read-only)', risk: "LOW", autoSafe: true, parallelRead: true,
+    execution: "command", cancellation: "boundary",
+    resources: { git: 'read', workspace: 'read' }
+  }),
+  git_diff_tool: toolMetadata({
+    explain: (a) => `Show git diff${a.staged ? ' (staged)' : ''}${a.path ? ' for ' + a.path : ''} (read-only)`, risk: "LOW", autoSafe: true, parallelRead: true,
+    execution: "command", cancellation: "boundary",
+    resources: { git: 'read', workspace: 'read' }
+  }),
+  git_commit_tool: toolMetadata({
+    explain: (a) => `Stage all and commit${a.message ? ': ' + String(a.message).substring(0, 60) : ' (auto message)'} (snapshot taken)`, risk: "HIGH", trackChanges: true,
+    execution: "command", cancellation: "boundary",
+    resources: { git: 'write', workspace: 'readwrite' }
+  }),
+  auto_approval_return: toolMetadata({
+    execution: "builtin", cancellation: "boundary",
+    resources: { conversation: 'read' }
+  }),
+  computer_use: toolMetadata({
+    execution: "command", cancellation: "boundary",
+    resources: { desktop: 'readwrite', state: 'write' }
+  }),
+  plan_mode: toolMetadata({
+    execution: "model", cancellation: "boundary",
+    resources: { model: 'execute' }
+  }),
+  auto_debug_tool: toolMetadata({
+    execution: "composite", cancellation: "boundary",
+    resources: { workspace: 'readwrite', desktop: 'readwrite', process: 'execute', model: 'execute' }
+  }),
+  bickering_tool: toolMetadata({
+    autoSafe: true,
+    execution: "model", cancellation: "boundary",
+    resources: { model: 'execute' }
+  }),
+}));
+const UNKNOWN_TOOL_METADATA = toolMetadata({ execution: 'unknown', cancellation: 'boundary', resources: {} });
+function getToolMetadata(name) {
+  return Object.prototype.hasOwnProperty.call(TOOL_METADATA, name) ? TOOL_METADATA[name] : UNKNOWN_TOOL_METADATA;
+}
+function validateToolMetadata(declarations, registry) {
+  const names = declarations.map(t => t.function.name);
+  const entries = Object.keys(registry);
+  if (new Set(names).size !== names.length || names.length !== entries.length ||
+      names.some(n => !Object.prototype.hasOwnProperty.call(registry, n)) || entries.some(n => !names.includes(n))) {
+    throw new Error('Tool metadata must match the tool declarations exactly');
+  }
+  const executions = ['builtin', 'command', 'project', 'configured', 'model', 'composite'];
+  const cancellations = ['boundary', 'active-command', 'inherited', 'partial'];
+  const resources = ['workspace', 'process', 'network', 'state', 'shell', 'model',
+    'conversation', 'memory', 'clock', 'configuration', 'git', 'desktop'];
+  for (const name of names) {
+    const m = registry[name];
+    if (!m || !(m.risk === null || ['LOW', 'MEDIUM', 'HIGH'].includes(m.risk)) ||
+        !(m.explain === null || typeof m.explain === 'function') ||
+        ['autoSafe', 'parallelRead', 'trackChanges'].some(k => typeof m[k] !== 'boolean') ||
+        !executions.includes(m.execution) || !cancellations.includes(m.cancellation) ||
+        !m.resources || !Object.keys(m.resources).length || Object.keys(m.resources).some(k =>
+          !resources.includes(k) || !['read', 'write', 'readwrite', 'execute'].includes(m.resources[k])) ||
+        (m.parallelRead && (m.trackChanges || Object.values(m.resources).some(v => v !== 'read')))) {
+      throw new Error('Invalid tool metadata: ' + name);
+    }
+  }
+}
+validateToolMetadata(tools, TOOL_METADATA);
+const READ_ONLY_TOOLS = new Set(Object.keys(TOOL_METADATA).filter(n => TOOL_METADATA[n].parallelRead));
 
 // ====================== SYSTEM PROMPT ======================
 // GAP-3c: one-shot workspace sketch injected below the base prompt so the
@@ -1753,36 +2044,6 @@ async function callOpenAI(currentMessages, options = {}) {
     }
   }
 }
-
-// Deterministic one-line explanations for the approval prompt - no light-model
-// call needed for the common tools (A8). Unmapped tools fall back to the LLM.
-const DETERMINISTIC_EXPLAIN = {
-  write_file: (a) => `Write file ${a.path}`,
-  append_file: (a) => `Append to file ${a.path}`,
-  edit_file: (a) => `Edit file ${a.path}`,
-  notebook_edit_tool: (a) => `Edit notebook ${a.path}`,
-  download_tool: (a) => `Download ${a.url} to ${a.path}`,
-  todo_write_tool: (a) => `Update structured task list (.7coder/todos.json): ${a.action === 'list' ? 'list' : (a.action || 'add')}${a.id ? ' ' + a.id : ''}${a.title ? ' "' + String(a.title).substring(0, 40) + '"' : ''}`,
-  memory_tool: (a) => `${a.action === 'save' ? 'Save memory note' : a.action === 'delete' ? 'Delete memory note' : 'Read memory notes'}${a.topic ? ' ' + a.topic : 's (.7coder/memory)'}`,
-  brief_tool: (a) => `Summarize folder ${a.folder} into ${a.folder}.summary`,
-  enter_worktree_tool: (a) => `Create git worktree at ${a.path}`,
-  schedule_cron_tool: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`,
-  cron_create_tool: (a) => `Schedule cron "${a.schedule}" running: ${String(a.command || '').substring(0, 60)}`,
-  cron_delete_tool: (a) => `Delete cron job ${a.job_id}`,
-  process_kill_tool: (a) => `Kill process ${a.pid}`,
-  run_command: (a) => `Run shell command: ${String(a.command || '').substring(0, 100)}`,
-  bash_tool: (a) => `Run bash command: ${String(a.command || '').substring(0, 100)}`,
-  powershell_tool: (a) => `Run PowerShell command: ${String(a.command || '').substring(0, 100)}`,
-  task_create_tool: (a) => `Start background task: ${String(a.command || '').substring(0, 80)}`,
-  mcp_tool: (a) => `Call MCP tool ${a.tool_name}`,
-  agent_tool: (a) => `Spawn sub-agent "${a.name}" with task: ${String(a.task || '').substring(0, 60)}`,
-  workflow_tool: (a) => `Run a ${Array.isArray(a.steps) ? a.steps.length : '?'}-step tool workflow`,
-  run_tests_tool: (a) => `Run test suite: ${String(a.command || 'auto-detected').substring(0, 80)}`,
-  git_status_tool: () => 'Show git working tree status (read-only)',
-  git_diff_tool: (a) => `Show git diff${a.staged ? ' (staged)' : ''}${a.path ? ' for ' + a.path : ''} (read-only)`,
-  diagnostics_tool: (a) => `Run project-local static diagnostics (tsc/eslint from node_modules)${a.path ? ' on ' + a.path : ''} (executes project-defined JS - approval required)`,
-  git_commit_tool: (a) => `Stage all and commit${a.message ? ': ' + String(a.message).substring(0, 60) : ' (auto message)'} (snapshot taken)`
-};
 
 // ====================== RISK CLASSIFICATION & PERMISSION ======================
 async function classifyRisk(toolName, args) {
@@ -3218,7 +3479,7 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
     : 'ok';
   // GAP-12: remember mutating calls for the end-of-task [CHANGES] summary.
   // argsPreview values are the redacted/truncated audit previews - reuse them.
-  if (CHANGE_TOOLS[func.name] && taskChanges.length < 1000) {
+  if (getToolMetadata(func.name).trackChanges && taskChanges.length < 1000) {
     taskChanges.push({ tool: func.name, path: argsPreview.path || argsPreview.url || '', status: status });
   }
   // A2-18: scrub BEFORE truncating, so a token cut by the 160-char limit can
@@ -3271,7 +3532,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
         isAutoLogWrite = rel === '7coder.md' || (rel.indexOf('.7coder/memory/') === 0 && rel.endsWith('.md'));
       } catch (e) {}
     }
-    if (!protectedRead && !protectedWrite && (AUTO_SAFE_TOOLS.includes(name) || isAutoLogWrite)) {
+    if (!protectedRead && !protectedWrite && (getToolMetadata(name).autoSafe || isAutoLogWrite)) {
       console.log(`[TOOL] Auto-executing safe tool: ${name}`);
       return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
     }
@@ -3307,23 +3568,9 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
     }
 
-    // Deterministic risk classes (A8): the common tools need no light-model
-    // classification. Unmapped tools still fall back to the light model.
-    const DETERMINISTIC_RISK = {
-      write_file: 'MEDIUM', append_file: 'MEDIUM', edit_file: 'MEDIUM',
-      notebook_edit_tool: 'MEDIUM', download_tool: 'MEDIUM', todo_write_tool: 'LOW', memory_tool: 'LOW',
-      brief_tool: 'LOW', sleep_tool: 'LOW', enter_worktree_tool: 'MEDIUM',
-      agent_tool: 'MEDIUM', schedule_cron_tool: 'HIGH', cron_create_tool: 'HIGH',
-      cron_delete_tool: 'MEDIUM', process_kill_tool: 'HIGH',
-      run_command: 'HIGH', bash_tool: 'HIGH', powershell_tool: 'HIGH',
-      task_create_tool: 'HIGH', mcp_tool: 'HIGH', workflow_tool: 'HIGH', run_tests_tool: 'HIGH',
-      git_status_tool: 'LOW', git_diff_tool: 'LOW', git_commit_tool: 'HIGH',
-      // A2-03: tsc/eslint run project-defined JS (plugins/configs) - not read-only.
-      // MEDIUM keeps default mode on the approval path and auto mode on the
-      // light-model screen instead of waving the tool through.
-      diagnostics_tool: 'MEDIUM'
-    };
-    const risk = (protectedWrite || protectedRead) ? 'HIGH' : (DETERMINISTIC_RISK[name] || await classifyRisk(name, args));
+    // Fixed policy and model fallbacks share the same tool declaration.
+    const meta = getToolMetadata(name);
+    const risk = (protectedWrite || protectedRead) ? 'HIGH' : (meta.risk || await classifyRisk(name, args));
 
     if (mode === 'auto') {
       // AST-03: the workflow OUTER call passes the same auto-approval screen as
@@ -3367,8 +3614,8 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       }
       if (preview) {
         console.log(`\n[PERM] Proposed change to ${args.path}:\n${preview}\n`);
-      } else if (DETERMINISTIC_EXPLAIN[name]) {
-        console.log(`\n[PERM] ${DETERMINISTIC_EXPLAIN[name](args)} (risk: ${risk})`);
+      } else if (meta.explain) {
+        console.log(`\n[PERM] ${meta.explain(args)} (risk: ${risk})`);
       } else {
         const expl = await getPermissionExplanation(name, args, risk);
         console.log(`\n[PERM] ${expl}`);
@@ -3579,9 +3826,8 @@ async function processWithTools(currentMessages, opts = {}) {
       }
       // Parallel execution: read-only tools run concurrently via Promise.all;
       // write tools force sequential execution from that point onward.
-      const READ_ONLY = new Set(['read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'tool_search_tool', 'sleep_tool', 'process_list_tool']);
       const calls = assistantMsg.tool_calls;
-      if (calls.length > 1 && calls.every(tc => READ_ONLY.has(tc.function.name))) {
+      if (calls.length > 1 && calls.every(tc => READ_ONLY_TOOLS.has(tc.function.name))) {
         if (cancelled()) return '[aborted: client disconnected]';
         const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled).catch(e => 'Tool error: ' + e.message)));
         for (let i = 0; i < calls.length; i++) {
@@ -3620,8 +3866,6 @@ async function processWithTools(currentMessages, opts = {}) {
 // ends. Records are appended by safeExecuteTool (after the status is known) -
 // argsPreview values are the already-redacted/truncated audit previews.
 const taskChanges = [];
-// mutating tools whose calls belong in the [CHANGES] summary
-const CHANGE_TOOLS = { write_file: 1, append_file: 1, edit_file: 1, notebook_edit_tool: 1, download_tool: 1, git_commit_tool: 1, mcp_tool: 1 };
 function resetTaskChanges() { taskChanges.length = 0; }
 function printTaskChanges() {
   if (!taskChanges.length) return; // a task with no changes stays silent

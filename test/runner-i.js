@@ -237,26 +237,87 @@ scenarios.push({
   }
 });
 
-// --- I7: deterministic table consistency oracle ---
+// --- I7: tool metadata migration and fail-closed declaration validation ---
 scenarios.push({
   name: 'table-consistency',
   fn: async () => {
     const src = fs.readFileSync(IDX, 'utf8');
-    const riskSrc = src.match(/const DETERMINISTIC_RISK = \{[\s\S]*?\n    \};/)[0];
-    const explainSrc = src.match(/const DETERMINISTIC_EXPLAIN = \{[\s\S]*?\n\};/)[0];
-    const riskNames = [...riskSrc.matchAll(/^\s*([a-z_0-9]+):/gm)].map(m => m[1]);
-    const explainNames = [...explainSrc.matchAll(/^\s*([a-z_0-9]+):/gm)].map(m => m[1]);
-    const onlyRisk = riskNames.filter(n => !explainNames.includes(n));
-    record('consistency: every deterministic-risk tool has a deterministic explanation', onlyRisk.length === 0, 'risk-only=' + JSON.stringify(onlyRisk));
-    const badRisk = [...riskSrc.matchAll(/:\s*'([A-Z]+)'/g)].map(m => m[1]).filter(v => !['LOW', 'MEDIUM', 'HIGH'].includes(v));
-    record('consistency: risk values are valid', badRisk.length === 0, JSON.stringify(badRisk));
-    const toolNames = [...src.match(/const tools = \[[\s\S]*?\n\];/)[0].matchAll(/name:\s*"([a-z_0-9]+)"/g)].map(m => m[1]);
-    const ghost = riskNames.filter(n => !toolNames.includes(n));
-    record('consistency: no deterministic entries for unknown tools', ghost.length === 0, JSON.stringify(ghost));
+    const start = src.indexOf('const tools = [');
+    const end = src.indexOf('// ====================== SYSTEM PROMPT', start);
+    if (start < 0 || end < 0) throw new Error('tool metadata region not found');
+    const ctx = {};
+    require('vm').runInNewContext(src.slice(start, end) + '\nthis.api = { tools, TOOL_METADATA, getToolMetadata, validateToolMetadata };', ctx);
+    const { tools, TOOL_METADATA: metadata, getToolMetadata, validateToolMetadata } = ctx.api;
+    const baseline = JSON.parse(fs.readFileSync(path.join(ROOT, 'fixtures', 'tool-policy-before-opt12.json'), 'utf8'));
+    const names = tools.map(t => t.function.name);
+    const mismatch = names.filter(n => {
+      const m = metadata[n], old = baseline.tools[n];
+      return !old || ['risk','autoSafe','parallelRead','trackChanges'].some(k => m[k] !== old[k]);
+    });
+    record('metadata: all 53 tools retain their pre-migration permission and concurrency policy', names.length === 53 && names.length === Object.keys(baseline.tools).length && mismatch.length === 0, JSON.stringify(mismatch));
+    const wrongExplain = names.filter(n => {
+      const old = baseline.tools[n];
+      const actual = metadata[n].explain ? baseline.samples.map(a => metadata[n].explain(a)) : null;
+      return JSON.stringify(actual) !== JSON.stringify(old.explanations);
+    });
+    record('metadata: all approval explanations match historical outputs including model fallbacks', wrongExplain.length === 0, JSON.stringify(wrongExplain));
+    record('metadata: sleep keeps LOW risk with model explanation; diagnostics remains approval-required', metadata.sleep_tool.risk === 'LOW' && metadata.sleep_tool.explain === null && !metadata.sleep_tool.autoSafe && metadata.diagnostics_tool.risk === 'MEDIUM' && !metadata.diagnostics_tool.autoSafe && !metadata.diagnostics_tool.parallelRead, '');
+    const rejects = (declarations, registry) => { try { validateToolMetadata(declarations, registry); return false; } catch(e) { return true; } };
+    const missing = Object.assign({}, metadata); delete missing.read_file;
+    const ghost = Object.assign({}, metadata, { ghost_tool: metadata.read_file });
+    record('metadata: missing, undeclared and duplicate tools are rejected at startup', rejects(tools, missing) && rejects(tools, ghost) && rejects(tools.concat([tools[0]]), metadata), '');
+    const corrupted = override => Object.assign({}, metadata, { read_file: Object.assign({}, metadata.read_file, override) });
+    record('metadata: invalid risk and approval flag values are rejected', rejects(tools, corrupted({risk:'SAFE'})) && rejects(tools, corrupted({autoSafe:'true'})) && rejects(tools, corrupted({explain:'safe'})), '');
+    record('metadata: parallel writes and change-tracking conflicts are rejected', rejects(tools, corrupted({resources:{workspace:'write'}})) && rejects(tools, corrupted({trackChanges:true})), '');
+    record('metadata: invalid execution, cancellation and resource declarations are rejected', rejects(tools, corrupted({execution:'automatic'})) && rejects(tools, corrupted({cancellation:'instant'})) && rejects(tools, corrupted({resources:{}})) && rejects(tools, corrupted({resources:{secret:'read'}})), '');
+    record('metadata: unknown and prototype-named tools receive no automatic privileges', ['ghost_tool','__proto__','constructor','toString'].every(n => { const m=getToolMetadata(n); return !m.autoSafe && !m.parallelRead && !m.trackChanges && m.risk===null && m.explain===null; }), '');
+    record('metadata: registry, entries and resource descriptions are immutable', Object.isFrozen(metadata) && names.every(n => Object.isFrozen(metadata[n]) && Object.isFrozen(metadata[n].resources)), '');
   }
 });
 
 // --- I8: RALPH_ITERATIONS bounds ---
+scenarios.push({
+  name: 'metadata-scheduling',
+  fn: async () => {
+    const src = fs.readFileSync(IDX, 'utf8');
+    const definitions = src.slice(src.indexOf('const tools = ['), src.indexOf('// ====================== SYSTEM PROMPT'));
+    const loop = src.slice(src.indexOf('async function processWithTools('), src.indexOf('// ====================== TASK CHANGE SUMMARY'));
+    const vm = require('vm');
+    const run = async names => {
+      const starts = [], release = {};
+      let round = 0;
+      const ctx = {
+        MAX_TOOL_STEPS: 3, HEAVY_MODEL: 'fixture',
+        compressConversationIfNeeded: async () => {}, capToolResult: String,
+        callOpenAI: async () => ({ message: round++ === 0 ? { role:'assistant',tool_calls:names.map((name,i) => ({id:String(i),function:{name,arguments:'{}'}})) } : {role:'assistant',content:'done'} }),
+        safeExecuteTool: async call => {
+          starts.push(call.id);
+          return new Promise(resolve => { release[call.id] = () => resolve('result-'+call.id); });
+        }
+      };
+      vm.runInNewContext(definitions + '\n' + loop + '\nthis.run = processWithTools;', ctx);
+      const messages = [], done = ctx.run(messages);
+      await new Promise(resolve => setImmediate(resolve));
+      return { starts, release, messages, done };
+    };
+    const reads = await run(['sleep_tool','read_file']);
+    const bothStarted = reads.starts.join(',') === '0,1';
+    if (reads.release['1']) reads.release['1'](); // finish in reverse order
+    reads.release['0']();
+    if (!bothStarted) { await new Promise(r => setImmediate(r)); if(reads.release['1']) reads.release['1'](); }
+    await reads.done;
+    record('metadata scheduling: eligible reads start together and preserve tool-call result order', bothStarted && reads.messages.filter(m => m.role==='tool').map(m => m.tool_call_id+':'+m.content).join(',') === '0:result-0,1:result-1', reads.starts.join(','));
+    const mixed = await run(['write_file','read_file']);
+    const writeAlone = mixed.starts.join(',') === '0';
+    mixed.release['0']();
+    await new Promise(r => setImmediate(r));
+    const readAfterWrite = mixed.starts.join(',') === '0,1';
+    if(mixed.release['1']) mixed.release['1']();
+    await mixed.done;
+    record('metadata scheduling: mixed write/read batch stays sequential', writeAlone && readAfterWrite && mixed.messages.filter(m => m.role==='tool').map(m => m.content).join(',')==='result-0,result-1', mixed.starts.join(','));
+  }
+});
+
 scenarios.push({
   name: 'ralph-bounds',
   fn: async () => {

@@ -266,6 +266,8 @@ work but are legacy - real MCP ecosystem servers need the stdio config above.
 
 ## Validation
 
+Tool policy is declared once per tool in `index.js` (`TOOL_METADATA`): fixed risk and approval explanation, automatic approval, parallel read eligibility, change tracking, execution type, resources and current cancellation support. Startup checks require an exact match with the tool schemas and reject invalid declarations or parallel writes. Resource/cancellation descriptions do not grant approval or add cancellation support; protected paths, deny rules and dangerous-command checks keep their existing order. The frozen pre-migration fixture in `test/fixtures/tool-policy-before-opt12.json` checks policy and approval wording against the previous implementation, including model fallbacks.
+
 `npm run test:all` runs A–J and the dependency-free UI simulations in sequence using fixed offline defaults. Scenario-specific settings still override them. Set `NODE_BIN` to test the backend with another runtime; UI simulations use the modern Node running the entry point. Set `REAL_TEST=1` to append K/R and preserve real-endpoint settings.
 
 `npm run test:browser` runs message editing, cancellation, session switching and token refresh in real headless Chrome against local fixtures. It requires modern Node, an installed Chrome and Playwright supplied by your development environment (or `PLAYWRIGHT_MODULE_PATH`). `BROWSER_BIN` selects another Chromium executable. Playwright is not a production dependency or required by the offline package. Set `BROWSER_TEST=1` to append this test to `test:all`; missing browser tooling is an explicit failure when requested.
