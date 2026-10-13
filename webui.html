@@ -819,7 +819,7 @@ body.dark .primary-btn { color: #231b16; }
       finish();
     });
 
-    function finish() { setBusy(false); ctrl = null; statusEl.textContent = ''; refreshSessions(); }
+    function finish() { setBusy(false); ctrl = null; statusEl.textContent = ''; refreshSessions(); refreshInfo(); }
 
     // 审批处理: SSE 收到 approval_request 时显示按钮并等待用户操作
     function handleApproval(req) {

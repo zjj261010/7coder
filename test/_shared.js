@@ -19,6 +19,10 @@ const IDX = path.join(__dirname, '..', 'index.js');
 const NODE_BIN = process.env.NODE_BIN || process.execPath;
 const RUN_ONLY = (process.env.RUN_ONLY || '').split(',').map(s => s.trim()).filter(Boolean);
 
+function delayCommand(ms) {
+  return '"' + NODE_BIN + '" -e "setTimeout(function(){console.log(\'TASK-DELAY-DONE\')},' + ms + ')"';
+}
+
 function rmrf(p) { try { if (fs.rmSync) fs.rmSync(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
 
 function create(opts) {
@@ -58,7 +62,6 @@ function create(opts) {
     // Do not use a Windows-only ping as a sleep here. If a locked directory
     // survives cleanup, use a unique workspace instead of delaying the suite.
     if (fs.existsSync(dir)) dir = dir + '-' + Date.now();
-    if (fs.existsSync(dir)) dir = dir + '-' + Date.now(); // unique-suffix fallback (stale dir undeletable)
     fs.mkdirSync(dir, { recursive: true });
     ownWorkdirs.push(dir);
     return dir;
@@ -149,7 +152,7 @@ function create(opts) {
     })();
   }
 
-  return { ROOT, IDX, NODE_BIN, RUN_ONLY, results, record, startProcessAt, stopMock, freshCwd, runCli, httpReq, readLog, toolResults, tr, rmrf, finish, runAll };
+  return { ROOT, IDX, NODE_BIN, RUN_ONLY, delayCommand, results, record, startProcessAt, stopMock, freshCwd, runCli, httpReq, readLog, toolResults, tr, rmrf, finish, runAll };
 }
 
 module.exports = { create, rmrf, ROOT, IDX, NODE_BIN, RUN_ONLY };

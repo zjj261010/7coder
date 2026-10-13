@@ -116,11 +116,14 @@ ENABLE_HTTP_SERVER=true
 :: 内置运行时自检
 runtime\node.exe --version
 
-   :: 运行统一离线测试入口（A–J + UI mock/DOM，不消耗 API 额度）
-   runtime\node.exe scripts\test-all.js
+:: 完整开发回归：使用现代 Node 运行 UI 工装，以内置 Node 验证后端
+set NODE_BIN=%CD%\runtime\node.exe
+node scripts\test-all.js
 ```
 
 统一入口默认运行 A–J 与 UI mock/DOM 测试；设置 `REAL_TEST=1` 可追加 K/R 真实端点套件。当前断言总数运行 `node scripts/count-assertions.js` 查看。详见 `test\` 目录与 `README.md`。
+
+完整入口的 UI 工装需现代 Node；仅验证离线安装时可用 `runtime\node.exe test\runner.js` 运行 A。开发环境另可用 `npm run test:browser` 验证真实 Chrome（需 Playwright，依赖路径可设 `PLAYWRIGHT_MODULE_PATH`），或设 `BROWSER_TEST=1` 追加到全量入口。上述浏览器工具不随离线包安装。
 
 ## 八、常见问题
 

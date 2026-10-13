@@ -1571,10 +1571,16 @@ function screenshotToDataUrl(p) {
 // (a CLI session, or a server since it started). recordUsage() tolerates
 // endpoints that omit the field entirely.
 const sessionUsage = { prompt: 0, completion: 0 };
-function recordUsage(u) {
+function recordUsage(u, model) {
   if (!u || typeof u !== 'object') return;
-  if (typeof u.prompt_tokens === 'number') sessionUsage.prompt += u.prompt_tokens;
-  if (typeof u.completion_tokens === 'number') sessionUsage.completion += u.completion_tokens;
+  const valid = n => typeof n === 'number' && Number.isFinite(n) && n >= 0;
+  if (!valid(u.prompt_tokens) && !valid(u.completion_tokens)) return;
+  const prompt = valid(u.prompt_tokens) ? u.prompt_tokens : 0;
+  const completion = valid(u.completion_tokens) ? u.completion_tokens : 0;
+  sessionUsage.prompt += prompt;
+  sessionUsage.completion += completion;
+  audit({ ts: new Date().toISOString(), type: 'usage', model: String(model || ''),
+    prompt, completion, total: prompt + completion });
 }
 // Parses an OpenAI SSE stream and assembles a normal `choice` object.
 // Calls onDelta(text) for every content fragment (used for live output).
@@ -1705,13 +1711,14 @@ async function callOpenAI(currentMessages, options = {}) {
     try {
       if (onDelta) {
         payload.stream = true;
+        payload.stream_options = { include_usage: true };
         const response = await axios.post(url, payload, {
           headers: authHeadersFor(mcfg.apiKey),
           timeout: 420000,
           responseType: 'stream'
         });
         const choice = await parseSSEStream(response.data, onDelta, onReasoning);
-        if (choice) recordUsage(choice.usage); // GAP-8: streamed usage rides on the assembled choice
+        if (choice) recordUsage(choice.usage, model); // GAP-8: streamed usage rides on the assembled choice
         if (choice && (choice.message.content || (choice.message.tool_calls && choice.message.tool_calls.length))) {
           return choice;
         }
@@ -1722,7 +1729,7 @@ async function callOpenAI(currentMessages, options = {}) {
         timeout: 420000, // 7 minutes - generous for slow local LLM endpoints
       });
       if (response.data && response.data.choices && response.data.choices[0]) {
-        recordUsage(response.data.usage); // GAP-8: non-stream usage lives on the response envelope
+        recordUsage(response.data.usage, model); // GAP-8: non-stream usage lives on the response envelope
         return response.data.choices[0];
       }
       throw new Error('Invalid API response structure: ' + JSON.stringify(response.data));
@@ -3624,11 +3631,15 @@ function printTaskChanges() {
 }
 // GAP-12: create a lightweight, recoverable pre-task checkpoint without
 // touching the working tree. This complements the git_commit_tool checkpoint
-// and makes every task boundary recoverable in a Git workspace.
+// Tracked working-tree and index changes are preserved; untracked files are
+// excluded by `stash create`. Clean trees need no snapshot. No checkout/index
+// changes are made and the refs are local to the repository.
 function createTaskGitCheckpoint() {
   const gitTask = (args, opts) => child_process.execFileSync('git', args, Object.assign({ encoding: 'utf8', cwd: launchDir, timeout: 30000 }, opts || {}));
   try {
-    gitTask(['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe' });
+    if (gitTask(['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe' }).trim() !== 'true') return '';
+  } catch (e) { return ''; } // ordinary non-Git workspaces are silent
+  try {
     const snapshot = gitTask(['stash', 'create']).trim();
     if (!snapshot) return '';
     const ref = 'refs/7coder/task-snapshots/' + Date.now() + '-' + snapshot.substring(0, 12);
@@ -4623,6 +4634,8 @@ function startHttpServer() {
             // cleaned in one finally - an exception mid-stream used to leak the
             // interval (keep-alive writes on a dead response) and the approvals.
             try {
+              if (clientGone) return;
+              createTaskGitCheckpoint();
               const result = await processWithTools(tempMessages, {
                 onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel,
                 onReasoning: t => writeChunk({ reasoning: t }, null),
@@ -4655,6 +4668,7 @@ function startHttpServer() {
           const releaseGate = await requestGate(); // AST-03
           let result;
           try {
+            createTaskGitCheckpoint();
             result = await processWithTools(tempMessages, { model: reqModel });
           } finally {
             releaseGate();

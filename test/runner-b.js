@@ -710,7 +710,9 @@ scenarios.push({
     record('audit: audit.jsonl created', fs.existsSync(auditPath), '');
     if (!fs.existsSync(auditPath)) { stopMock(m); return; }
     const entries = fs.readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } });
-    record('audit: every line is valid JSON with ts/tool/mode/status', entries.length >= 3 && entries.every(e => e && e.ts && e.tool && e.mode && e.status), 'lines=' + entries.length);
+    record('audit: every JSON event has timestamp and its type-specific required fields', entries.length >= 3 && entries.every(e => e && e.ts &&
+      (e.type === 'usage' ? e.model && typeof e.prompt === 'number' && typeof e.completion === 'number' && e.total === e.prompt + e.completion
+        : e.type === 'tool' && e.tool && e.mode && e.status)), 'lines=' + entries.length);
     const byTool = {};
     for (const e of entries) if (!byTool[e.tool]) byTool[e.tool] = e.status;
     record('audit: ok / error / blocked statuses recorded', byTool.write_file === 'ok' && byTool.read_file === 'error' && byTool.run_command === 'blocked', JSON.stringify(byTool));
@@ -918,7 +920,9 @@ scenarios.push({
     const r = await runCli({ port: m.port, args: [], env: { PERMISSION_MODE: 'default' }, cwd, timeoutMs: 120000, stdinSteps: [ { t: 'do git work\n', d: 80 }, { t: '/execute-task-now\n', d: 2500 }, { t: 'y\n', d: 15000 }, { t: '/bye\n', d: 500 } ] });
     const log = readLog(m.log);
     const gs1 = tr(log, 'gs1');
-    record('git: status shows branch + dirty counts (auto-safe, no approval needed in default mode)', gs1 && gs1.c.includes('[GIT] branch') && gs1.c.includes('untracked:1'), gs1 ? gs1.c.substring(0, 120) : 'no result');
+    // The first upstream call now creates .7coder/audit.jsonl (usage event),
+    // alongside new.txt: count both, while still checking staged/modified XY.
+    record('git: status shows branch + exact dirty counts including usage audit', gs1 && gs1.c.includes('[GIT] branch') && gs1.c.includes('staged:1 modified:0 untracked:2'), gs1 ? gs1.c.substring(0, 120) : 'no result');
     const gs2 = tr(log, 'gs2');
     record('git: diff shows the v1->v2 change', gs2 && gs2.c.includes('-v1') && gs2.c.includes('+v2'), gs2 ? gs2.c.substring(0, 120) : 'no result');
     const gs3 = tr(log, 'gs3');
@@ -1380,7 +1384,7 @@ scenarios.push({
     const cwd = freshCwd('b-loopfree');
     const pad = 'final reply padded past the summary floor for the budget skip. ';
     const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'lf1', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'ping -n 4 127.0.0.1' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'lf1', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: S.delayCommand(3000) }) } }] },
       { role: 'assistant', content: 'LOOPFREE-DONE ' + pad.repeat(5) },
       { role: 'assistant', content: 'lf-summary' }
     ]);
@@ -1393,7 +1397,7 @@ scenarios.push({
     try {
       await new Promise(r => setTimeout(r, 2500));
       // fire the chat request WITHOUT awaiting it - the mock's first reply is
-      // a run_command tool call that sleeps ~3s (ping -n 4)
+      // a run_command tool call that waits 3s using Node on every platform
       const chatP = httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] });
       await new Promise(r => setTimeout(r, 800)); // command is now mid-flight
       const t0 = Date.now();
@@ -1612,6 +1616,12 @@ scenarios.push({
       record('usage: /api/info exposes usage object with prompt >= 100 after a non-stream chat',
         chat.status === 200 && info.body.includes('usage') && typeof usagePrompt === 'number' && usagePrompt >= 100,
         'chat=' + chat.status + ' prompt=' + JSON.stringify(usagePrompt) + ' total=' + JSON.stringify(usageTotal) + ' info=' + info.body.substring(0, 160));
+      await httpReq(srvPort, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'stream usage' }] });
+      const finalInfo = JSON.parse((await httpReq(srvPort, 'GET', '/api/info', null)).body);
+      const ledger = readLog(path.join(cwd, '.7coder', 'audit.jsonl')).filter(e => e.type === 'usage');
+      record('usage: streaming requests ask upstream for usage', readLog(m.log).some(e => e.stream && e.stream_options && e.stream_options.include_usage === true), '');
+      record('usage: streamed and non-streamed calls each audit their token usage once', ledger.length === 2 && ledger.every(e => e.model && e.prompt === 100 && e.completion === 50 && e.total === 150), JSON.stringify(ledger));
+      record('usage: audit totals agree with process totals and omit prompts/credentials', ledger.reduce((n,e) => n + e.total, 0) === finalInfo.usage.total && ledger.every(e => !e.messages && !e.apiKey && !e.args), JSON.stringify(finalInfo.usage));
     } finally {
       try { srv.kill(); } catch (e) {}
       stopMock(m);
@@ -2753,6 +2763,53 @@ scenarios.push({
     const beforeStop = calls.length;
     tick(job);
     record('cron: stopped job does not launch another command', calls.length === beforeStop, 'calls=' + calls.length);
+  }
+});
+
+scenarios.push({
+  name: 'task-checkpoint',
+  fn: async () => {
+    for (const mode of ['cli', 'http', 'stream']) {
+      const cwd = freshCwd('checkpoint-' + mode);
+      const g = args => {
+        const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+        if (r.status !== 0) throw new Error('git failed: ' + args[0] + ' ' + r.stderr);
+        return r.stdout.trim();
+      };
+      g(['init']); g(['config','user.email','t@t']); g(['config','user.name','t']);
+      fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'base\n');
+      g(['add','tracked.txt']); g(['commit','-m','base']);
+      fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'staged\n'); g(['add','tracked.txt']);
+      fs.writeFileSync(path.join(cwd, 'tracked.txt'), 'before-task\n');
+      fs.writeFileSync(path.join(cwd, 'untracked.txt'), 'untouched\n');
+      const stagedBefore = g(['diff','--cached']);
+      const m = startMock([
+        { role: 'assistant', content: null, tool_calls: [{ id: 'cpedit', type: 'function', function: { name: 'edit_file', arguments: JSON.stringify({ path: 'tracked.txt', old_string: 'before-task', new_string: 'after-task' }) } }] },
+        { role: 'assistant', content: 'CHECKPOINT-DONE' }
+      ]);
+      let srv;
+      try {
+        await new Promise(r => setTimeout(r, 600));
+        if (mode === 'cli') {
+          const r = await runCli({ port:m.port, args:['--prompt','checkpoint'], env:{PERMISSION_MODE:'bypass'}, cwd });
+          if (r.code !== 0) throw new Error(r.out);
+        } else {
+          const srvPort = port + 570;
+          srv = spawn(NODE_BIN, [IDX,'--server'], {
+            cwd, stdio:'ignore', env:Object.assign({}, process.env, {HTTP_PORT:String(srvPort),HTTP_API_KEY:'',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',OPENAI_API_KEY:'x',PERMISSION_MODE:'bypass'})
+          });
+          await new Promise(r => setTimeout(r, 1800));
+          const r = await httpReq(srvPort, 'POST','/v1/chat/completions',{stream:mode==='stream',messages:[{role:'user',content:'checkpoint'}]});
+          if (r.status !== 200) throw new Error(r.body);
+        }
+        const refs = g(['for-each-ref','--format=%(refname)','refs/7coder/task-snapshots/']).split('\n').filter(Boolean);
+        const ref = refs[0];
+        record('checkpoint '+mode+': snapshot contains tracked state before the AI edit', refs.length===1 && g(['show',ref+':tracked.txt'])==='before-task', JSON.stringify(refs));
+        record('checkpoint '+mode+': staged state preserved in snapshot and current index', !!ref && g(['show',ref+'^2:tracked.txt'])==='staged' && g(['diff','--cached'])===stagedBefore, '');
+        record('checkpoint '+mode+': working tree contains only the intended edit', fs.readFileSync(path.join(cwd,'tracked.txt'),'utf8')==='after-task\n', '');
+        record('checkpoint '+mode+': untracked file stays unchanged and is excluded from snapshot', fs.readFileSync(path.join(cwd,'untracked.txt'),'utf8')==='untouched\n' && !g(['ls-tree','-r','--name-only',ref]).split('\n').includes('untracked.txt'), '');
+      } finally { if(srv) srv.kill(); stopMock(m); }
+    }
   }
 });
 

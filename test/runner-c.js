@@ -219,7 +219,7 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('c6');
     const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'bg1', type: 'function', function: { name: 'task_create_tool', arguments: JSON.stringify({ command: 'ping -n 30 127.0.0.1', description: 'long' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'bg1', type: 'function', function: { name: 'task_create_tool', arguments: JSON.stringify({ command: S.delayCommand(30000), description: 'long' }) } }] },
       { role: 'assistant', content: 'BG-STARTED' }
     ]);
     await new Promise(r => setTimeout(r, 600));

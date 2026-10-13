@@ -6,14 +6,14 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> 当前状态（2026-10-12）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-12~16、GAP-8/12 的剩余增量及暂缓项仍保留；OPT-17 已完成统一入口，真实浏览器部分仍待做；P2-7 已关闭，不能称全部待办清零。详见文末清账与修复记录。
+> 当前状态（2026-10-13）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-12~16 及既有暂缓项仍保留；GAP-8/12、OPT-17 与 P2-7 已按 10-13 补齐范围验收，不能称全部待办清零。详见文末清账与修复记录。
 > 历史发布快照（v2.18.0，`1f52a8a`）：离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、内置 Node 13.14.0 冒烟通过）。该产物早于后续 OP2/A2 修复，不能据此宣称包含修复；本轮未重新打包。
-> 本轮回归（2026-10-11，Node 24.19.0，固定测试基线配置）：A–J **589/589**（A85/B281/C35/D32/E22/F23/G29/H32/I34/J16）；UI 模拟 43/43 + DOM 模拟 12/12。Node 13.14.0 定向回归 22/22。静态断言口径见下表（本轮新增 11 点，551→562）。历史 add7f51 声称 579/579，但其套件分项合计为 577，本轮不沿用该汇总数字。
+> 本轮回归（2026-10-13，Node 24.19.0，固定离线基线）：A–J **604/604**（A85/B296/C35/D32/E22/F23/G29/H32/I34/J16）；UI mock 43/43、DOM 12/12、真实 Chrome 8/8。Node 13.14.0 定向 19/19。首轮 B 的两条旧契约断言已修正后整套复跑，详见文末。静态断言 **570**（563→570）；实测与静态计数不混用。
 
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 271 |
+| runner-b.js | 278 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -25,7 +25,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 57 |
-| **合计** | **563** |
+| **合计** | **570** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -146,7 +146,7 @@
 | P2-4 | index.js:2353,2365 | backupFile 前后各调一次 pruneBackups（双全量遍历） | ✅ 状态回翻 2026-10-03（此前漏翻）：DS-14 重写 pruneBackups 时已删除写前调用，仅保留写后一次 |
 | P2-5 | 审计日志 | argsPreview 原样落盘，可能记录密钥 | ✅ 状态回翻 2026-10-03（此前漏翻）：=OPT-1，sanitizeAuditArgs 已入库并有 audit-log 断言 |
 | P2-6 | index.js / webui.html | server.listen 无 error 处理（EADDRINUSE 直接崩）；UI 每请求同步读盘 | ✅ 两半齐：server.on(error) EADDRINUSE 友好提示 + flushExit(1)（eaddr 断言：退出码 1、含 HTTP_PORT 提示、无原生堆栈）；webui.html 启动读一次缓存 Buffer 复用；前端侧核查无每请求重读盘逻辑 |
-| P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ✅ mock 日志路径此前已改为 path.join；2026-10-12 移除 `_shared.js` 的 ping 等待，并将 runner-c 的备份枚举改为 Node fs 遍历，测试工装不再依赖 Windows 命令 |
+| P2-7 | test 工装 | `ping -n 2 … >nul`、`'\\mock-log-'` 硬编码 Windows 写法 | ✅ 2026-10-13 补齐：A/B/C 三处 ping 等待改为 Node 定时器命令；mock 路径、目录枚举、唯一工作区回退已完成。10-12 提前关闭时遗漏这三处命令；此处仅关闭这些已知工装问题，不声称 Linux/macOS 全量已实测（见 C4） |
 | P2-8 | README:191 | "no modern JS syntax used" 不准确（ES2018+ 特性在用） | ✅ 状态回翻 2026-10-03（此前漏翻）：=DS-10，README 已改为 syntax stays within what Node.js 13.14 supports |
 | P2-9 | KNOWN-ISSUES | 头部日期未更新；A12 状态过时（代码已 fail-fast） | ✅ 状态回翻 2026-10-03（此前漏翻）：KNOWN-ISSUES 已随 OPT-9 归档，过时状态随快照冻结 |
 | P2-10 | parseTestOutput | 正则嵌套量词 `(d+)+` | ✅ 真实关闭（3926e3f，OP2-1）：三处改 `(d+)` + 限长；证据 = sec1 计时/源码/形态三断言 + 本行 2026-10-04 假✅纠正记录 |
@@ -274,7 +274,7 @@
 | GAP-5 | 无 LSP；编辑后错误只能等跑测试 | 修错反馈环长 | 最小版 diagnostics_tool【✅ 2026-10-03 快赢批③】：只探测并运行项目本地 node_modules 的 tsc/eslint（零网络、异步；最初 auto-safe LOW，现已按 A2-03/1beb939 改为需审批的 MEDIUM），tsc 行解析 / eslint JSON 解析，[DIAG] 结构化输出；tsc 忽略 path 参数（单文件+项目混用会失真，schema 已注明）。shim 版 tsc 红绿验证解析（diag 2 断言）。完整 LSP 仍留 D3 | 小→大 |
 | GAP-6 | todo 只是往 TODO.md 追加文本 | 无状态流转，UI 无从展示进度 | 【✅ 2026-10-04 快赢批④（GLM+终检）】`.7coder/todos.json` {items:[{id,title,status,updated}]}（500 条上限、损坏自动重建）；todo_write_tool 改 action 式 add/update/list（旧 content 参数向后兼容）；GET /api/todos；webui 侧栏任务面板三色徽标（autoSave 成功回调刷新）。todos-api 场景 3 断言先红后绿。GLM 纠正了规格错误：todo_write_tool 本就不在 AUTO_SAFE，权限路径零改动 | 小 |
 | GAP-7 | REPL 仅固定命令；无 hooks | 无法沉淀自定义工作流，无法注入 pre/post-tool 规则 | 🔶 7a ✅（快赢批④：.7coder/commands/<name>.md 展开，slashcmd 2 断言）。7b hooks **降级**（2026-10-04 用户决策）：原始动机（"禁止改 src/legacy/**"式规则拦截）已被 GAP-11 deny 规则完整覆盖且语义更强（全模式生效）；剩余增量仅自定义动作（如写后 format）。保留待真实需求出现再评估，不排期 | 中 |
-| GAP-8 | usage 字段完全未用 | 无 token 可观测 | 🔶 sessionUsage、CLI `[USAGE]` 和 `/api/info` 已完成；2026-10-12 Web UI 新增用量 chip，显示本进程 prompt/completion/total。审计日志入账仍未做 | 小 |
+| GAP-8 | usage 字段完全未用（发现时） | 无 token 可观测 | ✅ 2026-10-13：CLI /api/info 与 UI 显示本进程用量，回复结束或停止后刷新 UI；每次上游返回有效 usage 写 type:usage/model/prompt/completion/total 审计项；流式请求 include_usage。未提供用量的端点不估算；审计可按 AUDIT_LOG=false 关闭 | 小 |
 | GAP-9 | 记忆=7CODER.md 单文件 + BTW.md，扁平无分层 | 项目事实/用户偏好/临时笔记混一处，长了靠压缩 | 【✅ 2026-10-04 主会话实施】`.7coder/memory/<topic>.md` 分层笔记：memory_tool {save/read/list/delete}（topic 白名单 [a-z0-9][a-z0-9_-]，auto-safe LOW——与 todo 同信任级，仅写 .7coder/memory/）；任务启动**确定性关键词召回**（无 LLM 调用，score=词重叠，命中注入 ≤5 条/3000 加权单位，附主题索引行）；write_file 对 .7coder/memory/*.md 同享 7CODER.md 自动豁免（dream 可重写）；dream 提示注入主题清单（可选整理，强制目标仍是 7CODER.md，契约不变）；MEMORY_RECALL_CHARS 可配。memory 场景 7 断言（召回命中/不串主题/索引行/CRUD×4） | 中 |
 | GAP-10 | web_search 正则抓 DDG-lite HTML | 脆弱易限流无降级 | 【✅ 2026-10-03 快赢批③】SEARCH_PROVIDER/SEARCH_API_KEY/SEARCH_ENDPOINT 三键：searxng/brave/bing 分支 + ddg 原样兜底；显式未知值报错不回退网络；Search error 前缀入 TOOL_FAIL_RE。离线假 searxng 实例验证（search-api 2 断言先红后绿）；真实 brave/bing key 未测（付费） | 小 |
 
@@ -283,14 +283,14 @@
 | # | 现状 | 差距 | 建议 | 代价 |
 |---|------|------|------|------|
 | GAP-11 | 保护清单硬编码；权限仅四模式 | 用户不可扩展 | 【✅ 2026-10-03 主会话实施】`.7coder/permissions.json`（+安装目录 permissions.json 双层合并）：protected_extra 纯路径模式（扩展受保护清单，正斜杠跨平台）/deny/allow 规则 `tool(pattern)`。安全序：deny 全模式生效（先于 auto-safe，bypass 也拦）；allow 仅跳过审批层（硬轨之后判定，永远压不过 protected/超级危险命令/denial/deny）。无效规则启动告警并忽略。perm-rules 场景 8 断言先红后绿 | 小 |
-| GAP-12 | 缺任务级改动汇总 | 任务收尾无"改了什么"总览 | ✅ taskChanges 收集写类工具并在任务成败两路打印 `[CHANGES]`；2026-10-12 补上任务开始前的 `git stash create` 检查点，保存到 `refs/7coder/task-snapshots/*`，Git 工作区反例验证通过 | 小 |
+| GAP-12 | 缺任务级改动汇总（发现时） | 任务收尾无改动总览 | ✅ CLI/REPL 与 HTTP 流式/非流式均在任务执行前创建本地 stash refs（HTTP 在 requestGate 内）；真实 Git 反例验证快照保留任务前工作树和暂存内容、不修改 index，未跟踪文件留在原地且不在快照中。refs 不自动裁剪 | 小 |
 | GAP-13 | 压缩按字符数近似（=C9） | 字符≠token，CJK 失真压缩偏晚 | 【✅ 2026-10-04 主会话实施（启发式半）】textUnits()：CJK/全角/韩文/假名码点 ×2 加权，messageSize 三处调用自动一致；中文密集会话压缩触发点与真实 token 预算对齐。cjk-ctx 场景 4 断言（提取 eval 单元级：汉字×2/混排/消息内容/tool_calls 同权重）。**剩余半**：⛔ 不做（2026-10-04 主会话决策）：零依赖纪律是项目硬约束（B 系列决策仅允许 axios+dotenv），×2 启发式已消除主要失真；若未来上下文预算成为瓶颈再评估 | 中 |
 | GAP-14 | 会话线性：resume 载入最新一份，无分支 | 无法"回到三轮前试另一条路" | 【✅ 2026-10-04 尾巴批（GLM+终检）】REPL `/fork <N>`：按 1-based 用户轮截断内存会话（当前按 A2-05/8fb0a99 保留第 N 轮完整工具链与最终答复），之后对话从该点继续；超界安全拒绝；REPL 帮助行同步。fork 场景 5 断言（先红 3/5：阳性对照 FORK-B 确曾到达 + 分叉后末请求不含 FORK-B、FORK-A 历史保留） | 中 |
 
 ### 与既有条目的关系
 
 - GAP-3 的二进制半 = 老 P1-6，已完成；GAP-5 = D3 的务实降级版（diagnostics 已做，完整 LSP 未做）；GAP-13 = C9（加权已做，精确 tokenizer 不做）；GAP-1 已实现真实 MCP stdio，原“仅自定义协议”的描述是发现时快照。
-- 原实施顺序为历史建议，当前按各行状态执行；未完成增量为 GAP-7b hooks、GAP-8 审计/UI 用量展示、GAP-12 任务前检查点，真实视觉/搜索端点验证另见 GAP-4/10。
+- 原实施顺序为历史建议，当前按各行状态执行；未完成增量为 GAP-7b hooks；GAP-8 审计/UI 用量、GAP-12 检查点已于 10-13 补齐。真实视觉/搜索端点验证另见 GAP-4/10。
 
 ---
 
@@ -408,7 +408,7 @@
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ⬜（A2-01 根治） |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
-| OPT-17 | 测试总入口 + 少量真实浏览器测试 | 🔶 统一入口已完成（`npm run test:all`：A–J + UI mock/DOM）；真实浏览器自动化仍未做 |
+| OPT-17 | 测试总入口 + 少量真实浏览器测试 | ✅ 2026-10-13 补齐真实 headless Chrome 回归（test/webui-browser.js），消息编辑/停止/会话切换/用量刷新；`npm run test:browser` 独立运行，`BROWSER_TEST=1` 可追加到全量入口。Playwright 由开发环境提供，未增加生产依赖 |
 
 ### 原建议修复批次（历史排期，当前状态见各行）
 
@@ -433,7 +433,7 @@
 ### 当前剩余工作索引（不重复计数）
 
 - **本轮三项缺陷均已修复**：P1-1/OP2-3（同一问题，连带 OPT-8 的 ts3 断言）；NEW-1 模型清单；NEW-2 cron 重叠执行。剩余工作仍按下列工程增量、暂缓项与验证盲区跟踪。
-- **工程增量**：OPT-12~15；OPT-16 已有局部 sessGen，端到端统一未做；OPT-17 的真实浏览器自动化；GAP-8 的审计入账。
+- **工程增量**：OPT-12~15；OPT-16 已有局部 sessGen，端到端统一未做；GAP-8/12、OPT-17 的本轮收尾已完成；其余按各主行跟踪。
 - **暂缓/按需**：OPT-3/DS-13（模块拆分与审计 runId，同族）；OPT-6/AST-15（多客户端语义与上下文并发，同族）；D3 完整 LSP；GAP-7b hooks。沿用既有决策，不因清账自动重开排期。
 - **验证盲区**：C1~C8；GAP-4 真实视觉端点/截图链路；GAP-10 真实 Brave/Bing；A2-06 行为级取消与残余活动中止；原受限环境 5 条断言的定向核验。C9 精确 tokenizer 属不做决策，已从未处理回翻。
 
@@ -460,8 +460,8 @@
 
 | # | 变更 | 状态 |
 |---|------|------|
-| OPT-17 | `scripts/test-all.js` + `npm run test:all` | 🔶 统一入口顺序运行 A–J，并追加 `webui-ui-sim.js` 与 `webui-dom-sim.js`；默认注入 `.env.example` 基线并固定 `ENABLE_AUTO_DEBUG=false`，避免开发机 `.env` 污染测试。K/R 仅在 `REAL_TEST=1` 时追加；真实浏览器自动化仍未纳入 |
-| P2-7 | `test/_shared.js`、`test/runner-c.js` | ✅ 移除 `ping -n … >nul` 和 `dir /s /b … 2>nul`，分别改为唯一工作区回退与 Node fs 递归枚举；A–J + UI 全量入口验证通过 |
+| OPT-17 | 测试总入口 + 少量真实浏览器测试 | ✅ 2026-10-13 补齐真实 headless Chrome 回归（test/webui-browser.js），消息编辑/停止/会话切换/用量刷新；`npm run test:browser` 独立运行，`BROWSER_TEST=1` 可追加到全量入口。Playwright 由开发环境提供，未增加生产依赖 |
+| P2-7 | `test/_shared.js`、A/B/C runners | ✅ 10-12 已移除共享 ping 延时和 dir 枚举，但当时遗漏 A/B/C 三处 ping；2026-10-13 全部改为 Node 定时器命令，见当日验收 |
 
 本轮验证：`npm run test:all` 12/12 targets passed；A–J 历史分项 A85/B280/C35/D32/E22/F23/G29/H32/I34/J16，UI 42/42 + DOM 12/12。
 
@@ -471,8 +471,8 @@
 
 | # | 变更 | 状态 |
 |---|------|------|
-| GAP-8 | `webui.html` / `test/webui-ui-sim.js` | 🔶 Web UI 显示 `/api/info.usage` 的 prompt/completion/total；UI 回归由 42 增至 43 项。审计日志入账仍未做 |
-| GAP-12 | `index.js` / `test/runner-b.js` | ✅ `executeTask()` 在 Git 工作区任务开始前创建 stash snapshot 并写入 `refs/7coder/task-snapshots/*`；无 Git 工作区安全跳过；task-changes 场景新增检查点断言 |
+| GAP-8 | 用量面板与审计 | ✅ 已于 2026-10-13 补齐审计入账与回复结束刷新，历史 10-12 阶段仅完成面板；见当日验证 |
+| GAP-12 | 任务改动汇总与检查点 | ✅ CLI/REPL 与 HTTP 流式/非流式均在任务执行前创建本地 stash refs（HTTP 在 requestGate 内）；真实 Git 反例验证快照保留任务前工作树和暂存内容、不修改 index，未跟踪文件留在原地且不在快照中。refs 不自动裁剪 |
 
 验证：UI mock/DOM 通过 43/43 + 12/12；`RUN_ONLY=task-changes` 通过 2/2；完整 `npm run test:all` 随后复跑。
 
@@ -483,6 +483,19 @@
 - `npm run test:all`：12/12 targets passed。A–J 分项 A85/B281/C35/D32/E22/F23/G29/H32/I34/J16，合计 **589/589**；UI mock 43/43，DOM 12/12。
 - 静态断言总数：**563**。
 - 新增检查点只在 Git 工作区创建本地 refs，不改变工作树；非 Git 工作区和原有非 Git 场景均通过。
+
+---
+
+## 2026-10-13 —— 上轮收尾与真实浏览器回归
+
+- **P2-7**：10-12 关闭时仍有 A/B/C 三处 Windows ping 等待，现统一使用 `_shared.delayCommand(ms)` 的 Node 定时器；移除重复工作区回退。仅验证这些已知命令的替换，C4 的完整 Linux/macOS 实测仍未做。
+- **GAP-12**：CLI/REPL 与 HTTP 两种响应路径均覆盖检查点，HTTP 在请求门内创建。新增 CLI/HTTP/stream 各 4 条 Git 反例，实际读取 snapshot 工作树与 index 父提交、比较当前暂存 diff，证明检查点先于 AI 修改。未跟踪文件不入快照、原文保留；非 Git 工作区静默跳过。
+- **GAP-8**：合法有限非负 usage 才累加，每次调用按模型写 audit 用量事件，不带消息内容/凭证；流式请求标准 include_usage。UI 在完成/停止后刷新用量，不要求刷新页面。缺少 usage 的端点无法统计，未做估算。
+- **OPT-17**：真实 Chrome + Playwright（外部开发工具）验证编辑后重发只保留新用户轮、busy 会话切换按钮禁用且不发载入请求、停止取消 SSE、停止后切换会话、结束后刷新用量、无 pageerror。本地 HTTP fixture 驱动真实 HTML/浏览器，不消耗模型额度；浏览器依赖不进生产依赖。
+- **测试基线**：离线 test-all 以 .env.example 覆盖继承的产品配置；REAL_TEST=1 仍保留显式真实端点配置。浏览器通过 BROWSER_TEST=1 显式追加，缺工具时明确失败，不宣称跳过为通过。
+- 定向 Node 13.14.0：usage-track/task-checkpoint/loopfree **19/19**；真实 Chrome **8/8**，包括 busy switch 按钮点击/请求计数验证。
+- 全量入口追加真实 Chrome：A85/C35/D32/E22/F23/G29/H32/I34/J16 均通过，UI mock 43/43、DOM 12/12、Chrome 8/8。B 首轮 294/296 的两条失败源于旧断言假定所有 audit 行都是 tool、以及审计首次创建时间改变；按 usage/tool 分别验证必需字段，Git 断言精确检查新目录计数（无削弱），完整 B 复跑 **296/296**。最终 A–J 合计 **604/604**，首轮入口 exit 1 如实保留，不声称整条命令单次全绿。
+- 验证日志：系统临时目录 `7coder-20261013-all.log` 和 `7coder-20261013-b-final.log`；静态断言 570，生产依赖仍只有 axios/dotenv。没有跑付费/真实模型端点、完整 Linux/macOS 或完整 Node 13 UI 套件。
 
 ---
 

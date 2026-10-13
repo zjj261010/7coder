@@ -256,11 +256,19 @@ work but are legacy - real MCP ecosystem servers need the stdio config above.
 - **7CODER.md** — AI automatically creates and updates this file in the project root with all findings and progress.
 - **Layered memory (GAP-9)** — durable topic notes in `.7coder/memory/<topic>.md` via `memory_tool {action:save|read|list|delete, topic, content}`; at task start notes whose keywords match your prompt are recalled automatically (plus a topic index). Dream sessions may consolidate them. CJK-aware context budgeting (han chars count x2 toward CONTEXT_CHARS).
 - **Structured audit log** - every tool call and permission change is appended as JSON lines to `.7coder/audit.jsonl` (machine-readable, 5 MB rotation, `AUDIT_LOG=false` to disable).
+- **Token usage** - `/api/info`, the Web UI and `[USAGE]` show totals for the current process. Each upstream call that reports usage writes a `type: "usage"` audit event with model and prompt/completion counts; prompts and credentials are not included. Endpoints that omit usage cannot be counted.
+- **Task checkpoints** - CLI, REPL and HTTP tasks create a local `refs/7coder/task-snapshots/*` ref when tracked files have pending changes. `git stash create` preserves working-tree and staged contents without changing either. Clean repositories produce no checkpoint; untracked files are excluded. Inspect with `git for-each-ref refs/7coder/task-snapshots/` and `git show <ref>:<path>`; refs stay local and are not automatically pruned.
 - **Ralph Wiggum self-iteration loop** — still available (`ENABLE_RALPH_MODE=true`)
 - **Anti-frustration system** — detects when you’re mad and makes the model extra calm/helpful
 - **HTTP OpenAI endpoint** — works with any OpenAI-compatible UI (streaming and non-streaming)
 - **Light model** for risk checks, explanations, and moderation (saves tokens)
 - **Dream mode** (`DREAM_ALLOW=true`) — self-consolidates 7CODER.md after ≥5h idle
+
+## Validation
+
+`npm run test:all` runs A–J and the dependency-free UI simulations in sequence using fixed offline defaults. Scenario-specific settings still override them. Set `NODE_BIN` to test the backend with another runtime; UI simulations use the modern Node running the entry point. Set `REAL_TEST=1` to append K/R and preserve real-endpoint settings.
+
+`npm run test:browser` runs message editing, cancellation, session switching and token refresh in real headless Chrome against local fixtures. It requires modern Node, an installed Chrome and Playwright supplied by your development environment (or `PLAYWRIGHT_MODULE_PATH`). `BROWSER_BIN` selects another Chromium executable. Playwright is not a production dependency or required by the offline package. Set `BROWSER_TEST=1` to append this test to `test:all`; missing browser tooling is an explicit failure when requested.
 
 ## Compatibility
 

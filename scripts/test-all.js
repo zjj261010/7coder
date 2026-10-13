@@ -18,6 +18,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
+if (process.env.BROWSER_TEST === '1') targets.push({name:'webui-browser.js',args:[path.join(ROOT,'test','webui-browser.js')]});
 
 function loadBaseline() {
   const env = Object.assign({}, process.env);
@@ -25,7 +26,9 @@ function loadBaseline() {
   if (fs.existsSync(example)) {
     for (const line of fs.readFileSync(example, 'utf8').split(/\r?\n/)) {
       const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-      if (m && env[m[1]] === undefined) env[m[1]] = m[2];
+      // Offline validation must ignore inherited product settings; retain
+      // explicit caller settings only for the opt-in real-endpoint run.
+      if (m && (process.env.REAL_TEST !== '1' || env[m[1]] === undefined)) env[m[1]] = m[2];
     }
   }
   // Offline suites must not depend on a developer's auto-debug setting.
