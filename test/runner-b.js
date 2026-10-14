@@ -2887,4 +2887,55 @@ scenarios.push({
 });
 
 // ====================== RUNNER ======================
+scenarios.push({
+  name: 'state-path-guards',
+  fn: async () => {
+    const cases = [
+      ['memory', path.join('.7coder','memory'), 'review.md', 'memory_tool', { action:'read', topic:'review' }],
+      ['sessions', path.join('.7coder','sessions'), 'evil.json', 'http-session', null],
+      ['mcp', '.mcp', 'secret.txt', 'read_mcp_resource_tool', { resource_id:'secret.txt' }],
+      ['skills', path.join('.7coder','skills'), 'escape.md', 'skill_tool', { skill_name:'escape' }],
+      ['backups', path.join('.7coder','backups'), 'app.txt.2026-01-01T00-00-00Z.bak', 'undo', null]
+    ];
+    for (const [label, root, leaf, tool, args] of cases) {
+      const cwd = freshCwd('state-guard-' + label);
+      const outside = freshCwd('state-outside-' + label);
+      fs.writeFileSync(path.join(outside, leaf), 'OUTSIDE-STATE-DATA');
+      fs.mkdirSync(path.dirname(path.join(cwd, root)), { recursive:true });
+      const mk = spawnSync('cmd',['/c','mklink','/J',path.join(cwd,root),outside]);
+      if (mk.status !== 0) { record('state guard '+label+': junction setup unavailable', true, 'mklink skipped'); continue; }
+      if (label === 'memory') {
+        const m = startMock([tcState('sg1',tool,args),{role:'assistant',content:'DONE'}]);
+        await new Promise(r=>setTimeout(r,500)); await runCli({port:m.port,args:['--prompt','t'],env:{PERMISSION_MODE:'bypass'},cwd,timeoutMs:60000});
+        const got=tr(readLog(m.log),'sg1'); record('state guard memory: junction read is refused',got && got.c.startsWith('Tool error:') && got.c.indexOf('OUTSIDE')<0,got?got.c:'none'); stopMock(m);
+      } else if (label === 'mcp') {
+        const m = startMock([tcState('sg1',tool,args),{role:'assistant',content:'DONE'}]);
+        await new Promise(r=>setTimeout(r,500)); await runCli({port:m.port,args:['--prompt','t'],env:{PERMISSION_MODE:'bypass'},cwd,timeoutMs:60000});
+        const got=tr(readLog(m.log),'sg1'); record('state guard mcp: junction read is refused',got && got.c.includes('Resource not found'),got?got.c:'none'); stopMock(m);
+      } else if (label === 'skills') {
+        const m = startMock([tcState('sg1',tool,args),{role:'assistant',content:'DONE'}]);
+        await new Promise(r=>setTimeout(r,500)); await runCli({port:m.port,args:['--prompt','t'],env:{PERMISSION_MODE:'bypass'},cwd,timeoutMs:60000});
+        const got=tr(readLog(m.log),'sg1'); record('state guard skills: junction read is refused',got && !got.c.includes('OUTSIDE-STATE-DATA'),got?got.c:'none'); stopMock(m);
+      } else if (label === 'sessions') {
+        const srvPort = port + 601;
+        const srv = spawn(NODE_BIN, [IDX, '--server'], { cwd, stdio:'ignore', env:Object.assign({}, process.env, {HTTP_PORT:String(srvPort),OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:1/v1',PERMISSION_MODE:'bypass'}) });
+        try {
+          await new Promise(r=>setTimeout(r,1800));
+          const list = await httpReq(srvPort,'GET','/api/sessions',null);
+          const save = await httpReq(srvPort,'POST','/api/sessions/save',{messages:[{role:'user',content:'x'}]});
+          record('state guard sessions: junction list/save fail closed', list.status >= 400 && save.status >= 400 && fs.readFileSync(path.join(outside,leaf),'utf8')==='OUTSIDE-STATE-DATA', 'list='+list.status+' save='+save.status);
+        } finally { try{srv.kill();}catch(e){} }
+      } else {
+        const m = startMock([tcState('sg1','write_file',{path:'app.txt',content:'new'}),{role:'assistant',content:'DONE'}]);
+        fs.writeFileSync(path.join(cwd,'app.txt'),'old');
+        await new Promise(r=>setTimeout(r,500)); await runCli({port:m.port,args:['--prompt','t'],env:{PERMISSION_MODE:'bypass'},cwd,timeoutMs:60000});
+        record('state guard '+label+': junction backup root never receives workspace data', fs.readFileSync(path.join(cwd,'app.txt'),'utf8')==='new' && fs.readFileSync(path.join(outside,leaf),'utf8')==='OUTSIDE-STATE-DATA', '');
+        stopMock(m);
+      }
+    }
+    function tcState(id,name,args){return {role:'assistant',content:null,tool_calls:[{id,type:'function',function:{name,arguments:JSON.stringify(args)}}]};}
+  }
+});
+
+// ====================== RUNNER ======================
 S.runAll(scenarios);

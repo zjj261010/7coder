@@ -173,7 +173,9 @@ let auditDirReady = false;
 let modelProfiles = {};
 function loadModelProfiles() {
   modelProfiles = {};
-  for (const f of [path.join(appDir, 'models.json'), path.join(launchDir, '.7coder', 'models.json')]) {
+  const files = [path.join(appDir, 'models.json')];
+  try { files.push(internalStatePath('.7coder', 'models.json')); } catch (e) { console.warn('[WARN] workspace models.json rejected: ' + e.message); }
+  for (const f of files) {
     try {
       if (!fs.existsSync(f)) continue;
       const j = JSON.parse(fs.readFileSync(f, 'utf8'));
@@ -217,7 +219,9 @@ function authHeadersFor(key) {
 let mcpServers = {};
 function loadMcpServers() {
   mcpServers = {};
-  for (const f of [path.join(appDir, 'mcp.json'), path.join(launchDir, '.7coder', 'mcp.json')]) {
+  const files = [path.join(appDir, 'mcp.json')];
+  try { files.push(internalStatePath('.7coder', 'mcp.json')); } catch (e) { console.warn('[WARN] workspace mcp.json rejected: ' + e.message); }
+  for (const f of files) {
     try {
       if (!fs.existsSync(f)) continue;
       const j = JSON.parse(fs.readFileSync(f, 'utf8'));
@@ -416,10 +420,11 @@ function sanitizeAuditLine(text) {
 function audit(entry) {
   if (!AUDIT_ENABLED) return;
   try {
-    if (!auditDirReady) { fs.mkdirSync(path.join(launchDir, '.7coder'), { recursive: true }); auditDirReady = true; }
-    try { if (fs.existsSync(auditPath) && fs.statSync(auditPath).size > 5 * 1024 * 1024) fs.renameSync(auditPath, auditPath.replace(/\.jsonl$/, '.old.jsonl')); } catch (e) {}
+    const safeAuditPath = internalStatePath('.7coder', 'audit.jsonl');
+    if (!auditDirReady) { fs.mkdirSync(path.dirname(safeAuditPath), { recursive: true }); auditDirReady = true; }
+    try { const safeAuditPath = internalStatePath('.7coder', 'audit.jsonl'); if (fs.existsSync(safeAuditPath) && fs.statSync(safeAuditPath).size > 5 * 1024 * 1024) fs.renameSync(safeAuditPath, safeAuditPath.replace(/\.jsonl$/, '.old.jsonl')); } catch (e) {}
     if (entry.args) entry.args = sanitizeAuditArgs(entry.args);
-    fs.appendFileSync(auditPath, JSON.stringify(entry) + '\n');
+    fs.appendFileSync(safeAuditPath, JSON.stringify(entry) + '\n');
   } catch (e) {}
 }
 
@@ -1020,9 +1025,11 @@ function realPathSafe(p) {
   throw new Error('Security: path resolution depth exceeded');
 }
 
-let launchDirRealCache = null;
+// var is intentional: startup config loading can call internalStatePath before
+// the helper section is evaluated; let would trigger a temporal-dead-zone error.
+var launchDirRealCache = null;
 function getLaunchDirReal() {
-  if (launchDirRealCache === null) launchDirRealCache = realPathSafe(launchDir);
+  if (launchDirRealCache == null) launchDirRealCache = realPathSafe(launchDir);
   return launchDirRealCache;
 }
 
@@ -1036,6 +1043,29 @@ function linkStaysInside(full) {
   } catch (e) {
     return false;
   }
+}
+
+// OPT-14: all product-owned state paths pass through one real-path gate. The
+// lexical path is returned for normal IO so missing leaf files can be created,
+// while every existing prefix and the resolved target must remain inside the
+// intended state directory and workspace. This closes junction/symlink aliases
+// for built-in state without changing ordinary user-file path handling.
+function internalStatePath(rootRelative, childRelative) {
+  const rootLex = path.resolve(launchDir, rootRelative);
+  const targetLex = childRelative === undefined ? rootLex : path.resolve(rootLex, childRelative);
+  const workspace = getLaunchDirReal();
+  const rootReal = realPathSafe(rootLex);
+  const targetReal = realPathSafe(targetLex);
+  if (!isInsideDir(workspace, rootReal)) throw new Error('Security: internal state root resolves outside workspace');
+  if (!isInsideDir(rootReal, targetReal)) throw new Error('Security: internal state path resolves outside its state root');
+  return targetLex;
+}
+
+function managedWorkspacePath(relativePath) {
+  const lexical = path.resolve(launchDir, relativePath);
+  const real = realPathSafe(lexical);
+  if (!isInsideDir(getLaunchDirReal(), real)) throw new Error('Security: managed workspace path resolves outside workspace');
+  return lexical;
 }
 
 function sanitizePath(userPath) {
@@ -1114,7 +1144,8 @@ function compilePermRule(raw, bucket) {
 function loadPermRules() {
   permRules.allow = []; permRules.deny = []; permRules.protectedExtra = [];
   const seen = {};
-  const files = [path.join(appDir, 'permissions.json'), path.join(launchDir, '.7coder', 'permissions.json')];
+  const files = [path.join(appDir, 'permissions.json')];
+  try { files.push(internalStatePath('.7coder', 'permissions.json')); } catch (e) { console.warn('[WARN] workspace permissions.json rejected: ' + e.message); }
   for (const f of files) {
     let j = null;
     try { if (fs.existsSync(f)) j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { console.warn('[WARN] failed to read ' + f + ': ' + e.message); }
@@ -1694,7 +1725,7 @@ function scheduleCronJob(jobId, schedule, command) {
 // place for all 7coder state). Read paths fall back to the legacy root
 // location once; migrateWorkspaceRootFiles() renames legacy files at startup.
 function getLastInteractionTime() {
-  const file = path.join(launchDir, '.7coder', 'last_interaction');
+  const file = internalStatePath('.7coder', 'last_interaction');
   try {
     const content = fs.readFileSync(file, 'utf8').trim();
     return parseInt(content, 10) || 0;
@@ -1711,7 +1742,7 @@ function getLastInteractionTime() {
 
 function updateLastInteractionTime() {
   try {
-    const dir = path.join(launchDir, '.7coder');
+    const dir = internalStatePath('.7coder');
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, 'last_interaction'), Date.now().toString());
   } catch (e) {}
@@ -1722,7 +1753,7 @@ function updateLastInteractionTime() {
 // dream.lock: and the new one does not; BTW.md: appended into the new file so
 // nothing is lost, then removed). Called once at the top of main().
 function migrateWorkspaceRootFiles() {
-  const dotDir = path.join(launchDir, '.7coder');
+  const dotDir = internalStatePath('.7coder');
   const ensureDot = () => { try { fs.mkdirSync(dotDir, { recursive: true }); } catch (e) {} };
   try {
     const oldLast = path.join(launchDir, '.7coder_last_interaction');
@@ -1754,7 +1785,7 @@ function migrateWorkspaceRootFiles() {
 async function triggerDreamIfNeeded() {
   const lastTime = getLastInteractionTime();
   const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60);
-  const lockPath = path.join(launchDir, '.7coder', 'dream.lock');
+  const lockPath = internalStatePath('.7coder', 'dream.lock');
   if (!DREAM_ALLOW || hoursSince < 5) return false;
   // Clear stale locks left behind by a crashed session (older than 4 hours).
   try {
@@ -1777,7 +1808,7 @@ async function triggerDreamIfNeeded() {
 }
 
 async function runDreamSession() {
-  const mdPath = path.join(launchDir, '7CODER.md');
+  const mdPath = managedWorkspacePath('7CODER.md');
   let currentContent = 'No prior content.';
   try {
     if (fs.existsSync(mdPath)) currentContent = fs.readFileSync(mdPath, 'utf8') || currentContent;
@@ -2112,7 +2143,7 @@ Reply ONLY with compact JSON: {"safe": true, "reason": "one short sentence"} or 
 // list and rebuilt by the next write - the store never blocks a task.
 const TODO_STATUSES = ['pending', 'doing', 'done'];
 const TODO_STORE_MAX = 500; // safety cap so a looping model cannot grow the file forever
-function todosFilePath() { return path.join(launchDir, '.7coder', 'todos.json'); }
+function todosFilePath() { return internalStatePath('.7coder', 'todos.json'); }
 function loadTodos() {
   try {
     const j = JSON.parse(fs.readFileSync(todosFilePath(), 'utf8'));
@@ -2129,7 +2160,7 @@ function saveTodos(items) {
 // contract - suite A asserts TODO.md is created), one line per change.
 function appendTodoLog(entry) {
   try {
-    fs.appendFileSync(path.join(launchDir, 'TODO.md'), `\n## ${new Date().toISOString()}\n${entry}\n`, 'utf8');
+    fs.appendFileSync(managedWorkspacePath('TODO.md'), `\n## ${new Date().toISOString()}\n${entry}\n`, 'utf8');
   } catch (e) {}
 }
 function nextTodoId(items) {
@@ -2463,7 +2494,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'brief_tool') {
     try {
       const folderRel = sanitizePath(args.folder);
-      const summaryPath = path.join(launchDir, '.7coder', 'summaries', folderRel + '.summary');
+      const summaryPath = internalStatePath('.7coder/summaries', folderRel + '.summary');
       const files = recursiveReaddir(args.folder, '', { skipHeavy: true, maxDepth: 12, maxEntries: 1000 });
       const cap = 2000;
       let body = files.join('\n');
@@ -2650,19 +2681,19 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
   if (name === 'list_mcp_resources_tool') {
     try {
-      fs.mkdirSync(mcpResourcesDir, { recursive: true });
-      return fs.readdirSync(mcpResourcesDir).join('\n') || 'No MCP resources';
+      const safeDir = internalStatePath('.mcp');
+      fs.mkdirSync(safeDir, { recursive: true });
+      return fs.readdirSync(safeDir).join('\n') || 'No MCP resources';
     } catch (e) { return `MCP resource list error: ${e.message}`; }
   }
   if (name === 'read_mcp_resource_tool') {
     try {
-      const resPath = path.resolve(mcpResourcesDir, args.resource_id || '');
+      const resPath = internalStatePath('.mcp', args.resource_id || '');
       const resReal = realPathSafe(resPath);
-      // Compare the resolved resource path against the INTENDED (lexical) .mcp
-      // path, so a junction planted at .mcp itself cannot vacate the check.
-      if (!isInsideDir(path.resolve(mcpResourcesDir), resReal)) return 'Resource not found (paths outside the .mcp directory are blocked)';
+      // internalStatePath already verifies the .mcp root and every existing
+      // prefix before this final real-path read.
       return fs.readFileSync(resReal, 'utf8');
-    } catch (e) { return 'Resource not found'; }
+    } catch (e) { return 'Resource not found (paths outside the .mcp directory are blocked)'; }
   }
 
   if (name === 'mcp_tool') {
@@ -2795,7 +2826,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (!/^[a-zA-Z0-9._-]+$/.test(skillName)) {
       return 'Skill error: skill_name must be a simple name (letters, digits, dot, dash, underscore)';
     }
-    const skillPath = path.join(skillsDir, skillName + '.md');
+    const skillPath = internalStatePath('.7coder/skills', skillName + '.md');
     try {
       const content = fs.readFileSync(skillPath, 'utf8');
       const paramsJson = (args.params && Object.keys(args.params).length)
@@ -2805,7 +2836,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     } catch (e) {
       let available = 'none';
       try {
-        available = fs.readdirSync(skillsDir).filter(f => f.endsWith('.md')).join(', ') || 'none';
+        available = fs.readdirSync(internalStatePath('.7coder/skills')).filter(f => f.endsWith('.md')).join(', ') || 'none';
       } catch (e2) {}
       return `Skill "${skillName}" not found. Available skills: ${available}. Create skills as .7coder/skills/<name>.md files.`;
     }
@@ -2825,7 +2856,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (action === 'screenshot') {
       // P2-13: screenshots go under .7coder/screenshots/ instead of littering
       // the workspace root (shots are one-off, so no migration is needed).
-      const shotsDir = path.join(launchDir, '.7coder', 'screenshots');
+      const shotsDir = internalStatePath('.7coder/screenshots');
       try { fs.mkdirSync(shotsDir, { recursive: true }); } catch (e) {}
       const shotPath = path.join(shotsDir, `screenshot_${Date.now()}.png`);
       try {
@@ -2866,7 +2897,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
     // Real input injection (Windows): a temp .ps1 avoids triple-quoted command
     // strings; user32 mouse_event drives clicks, SendKeys drives typing/keys.
-    const inputDir = path.join(launchDir, '.7coder');
+    const inputDir = internalStatePath('.7coder');
     const runPsInput = (ps) => {
       try { fs.mkdirSync(inputDir, { recursive: true }); } catch (e) {}
       const file = path.join(inputDir, 'input.ps1');
@@ -3210,8 +3241,9 @@ function inGitRepo() {
       // Generate from the session audit log (most common tool verbs of this session)
       try {
         const verbs = {};
-        if (fs.existsSync(auditPath)) {
-          for (const line of fs.readFileSync(auditPath, "utf8").split("\n")) {
+        const safeAuditPath = internalStatePath('.7coder', 'audit.jsonl');
+        if (fs.existsSync(safeAuditPath)) {
+          for (const line of fs.readFileSync(safeAuditPath, "utf8").split("\n")) {
             try { const e = JSON.parse(line); if (e.type === "tool") verbs[e.tool] = (verbs[e.tool] || 0) + 1; } catch (er) {}
           }
         }
@@ -3950,7 +3982,7 @@ const MEMORY_DIR = path.join(launchDir, '.7coder', 'memory');
 const MEMORY_MAX_FILES = 20;
 const MEMORY_RECALL_UNITS = parseInt(process.env.MEMORY_RECALL_CHARS, 10) || 3000;
 function memoryTopicValid(t) { return /^[a-z0-9][a-z0-9_-]{0,39}$/i.test(String(t || '')); }
-function memoryFilePath(topic) { return path.join(MEMORY_DIR, topic + '.md'); }
+function memoryFilePath(topic) { return internalStatePath('.7coder/memory', topic + '.md'); }
 // A2-01: the memory store is INSIDE the workspace by construction - verify
 // that against the real filesystem, not the lexical path. A junction planted
 // at .7coder/memory (or a symlinked note file) must fail closed, never read
@@ -3959,7 +3991,7 @@ function memoryFilePath(topic) { return path.join(MEMORY_DIR, topic + '.md'); }
 function memoryPathGuard(topic) {
   try {
     const realNote = realPathSafe(memoryFilePath(topic));
-    const realStore = realPathSafe(MEMORY_DIR);
+    const realStore = realPathSafe(internalStatePath('.7coder/memory'));
     // The STORE must itself sit inside the workspace: a junction planted at
     // .7coder/memory redirects both note and store outside together, which
     // would pass a naive note-inside-store check.
@@ -3983,8 +4015,9 @@ function memoryPathGuard(topic) {
 }
 function listMemoryTopics() {
   try {
-    if (!fs.existsSync(MEMORY_DIR)) return [];
-    return fs.readdirSync(MEMORY_DIR)
+    const safeDir = internalStatePath('.7coder/memory');
+    if (!fs.existsSync(safeDir)) return [];
+    return fs.readdirSync(safeDir)
       .filter(f => f.endsWith('.md'))
       .slice(0, MEMORY_MAX_FILES)
       .map(f => f.slice(0, -3))
@@ -3995,7 +4028,8 @@ function readMemoryFile(topic) {
   try { return fs.readFileSync(memoryFilePath(topic), 'utf8'); } catch (e) { return null; }
 }
 function saveMemoryFile(topic, content) {
-  fs.mkdirSync(MEMORY_DIR, { recursive: true });
+  const safeDir = internalStatePath('.7coder/memory');
+  fs.mkdirSync(safeDir, { recursive: true });
   fs.writeFileSync(memoryFilePath(topic), String(content || ''), 'utf8');
 }
 // keyword-overlap score between the prompt and a note (deterministic recall)
@@ -4054,7 +4088,7 @@ function recallMemory(promptText) {
 }
 
 function buildTaskUserContent(rawPrompt) {
-  const mdPath = path.join(launchDir, '7CODER.md');
+  const mdPath = managedWorkspacePath('7CODER.md');
   let content = rawPrompt;
   if (fs.existsSync(mdPath)) {
     try {
@@ -4091,7 +4125,7 @@ function backupFile(fullPath) {
     if (!fs.existsSync(fullPath)) return null;
     const rel = path.relative(launchDir, fullPath);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupPath = path.join(backupsDir, rel + '.' + stamp + '.bak');
+    const backupPath = internalStatePath('.7coder/backups', rel + '.' + stamp + '.bak');
     fs.mkdirSync(path.dirname(backupPath), { recursive: true });
     fs.copyFileSync(fullPath, backupPath);
     // copyFileSync preserves the SOURCE mtime on Windows, which would make an
@@ -4202,7 +4236,7 @@ function simpleLineDiff(oldText, newText, contextLines = 2, maxLines = 40) {
 // The REPL conversation is auto-saved after every task so a later run can
 // continue it via --resume (CLI) or /resume (REPL command). Only user/
 // assistant turns are saved: tool messages would break API pairing on load.
-const sessionPath = path.join(launchDir, '.7coder', 'session.json');
+function sessionFilePath() { return internalStatePath('.7coder', 'session.json'); }
 function saveSession() {
   try {
     if (messages.length <= 1) return; // system only - nothing to save
@@ -4213,11 +4247,11 @@ function saveSession() {
       .map(m => (m.role === 'assistant' && m.tool_calls) ? { role: 'assistant', content: m.content || '' } : m);
     const body = JSON.stringify({ savedAt: new Date().toISOString(), messages: keep });
     if (body.length > 2 * 1024 * 1024) { console.warn('[WARN] session too large to save (>2MB)'); return; }
-    fs.mkdirSync(path.join(launchDir, '.7coder'), { recursive: true });
-    fs.writeFileSync(sessionPath, body, 'utf8');
+    fs.mkdirSync(internalStatePath('.7coder'), { recursive: true });
+    fs.writeFileSync(sessionFilePath(), body, 'utf8');
     // timestamped history copy for the web session browser (newest 20 kept)
     try {
-      const sdir = path.join(launchDir, '.7coder', 'sessions');
+      const sdir = internalStatePath('.7coder/sessions');
       fs.mkdirSync(sdir, { recursive: true });
       fs.writeFileSync(path.join(sdir, new Date().toISOString().replace(/[:.]/g, '-') + '.json'), body, 'utf8');
       const olds = fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort();
@@ -4227,6 +4261,7 @@ function saveSession() {
 }
 function loadSession() {
   try {
+    const sessionPath = sessionFilePath();
     if (!fs.existsSync(sessionPath)) return false;
     const j = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
     if (!Array.isArray(j.messages)) return false;
@@ -4270,7 +4305,7 @@ function updateCompleteSummary(newSummary) {
   // AST-R1: null means summarizeAction skipped the call (short reply) - leave
   // 7CODER.md untouched instead of appending "null".
   if (!newSummary) return;
-  const mdPath = path.join(launchDir, '7CODER.md');
+  const mdPath = managedWorkspacePath('7CODER.md');
   let existing = '';
   try {
     if (fs.existsSync(mdPath)) existing = fs.readFileSync(mdPath, 'utf8');
@@ -4507,7 +4542,7 @@ function startHttpServer() {
         return;
       }
       try {
-        const sdir = path.join(launchDir, '.7coder', 'sessions');
+        const sdir = internalStatePath('.7coder/sessions');
         const list = fs.existsSync(sdir)
           ? fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort().reverse().map(f => {
               try {
@@ -4536,7 +4571,7 @@ function startHttpServer() {
         try {
           const wanted = String(JSON.parse(body).file || "");
           if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
-          const f = path.join(launchDir, '.7coder', 'sessions', wanted);
+          const f = internalStatePath('.7coder/sessions', wanted);
           if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
           const j = JSON.parse(fs.readFileSync(f, "utf8"));
           const msgs = (j.messages || [])
@@ -4561,7 +4596,7 @@ function startHttpServer() {
         try {
           const wanted = String(JSON.parse(body).file || "");
           if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
-          const f = path.join(launchDir, '.7coder', 'sessions', wanted);
+          const f = internalStatePath('.7coder/sessions', wanted);
           if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
           fs.unlinkSync(f);
           audit({ ts: new Date().toISOString(), type: 'session_delete', file: wanted });
@@ -4611,7 +4646,7 @@ function startHttpServer() {
           const clean = msgs
             .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
             .map(m => ({ role: m.role, content: m.content }));
-          const sdir = path.join(launchDir, '.7coder', 'sessions');
+          const sdir = internalStatePath('.7coder/sessions');
           fs.mkdirSync(sdir, { recursive: true });
           const activities = Array.isArray(parsed.activities) ? parsed.activities.filter(a => a && typeof a.type === 'string')
             .slice(0, 200).map(a => ({ type: a.type, name: a.name ? String(a.name).substring(0, 80) : undefined,
@@ -4622,8 +4657,8 @@ function startHttpServer() {
           // 客户端可携带 file 名原地覆盖同一会话记录；否则生成新记录
           const wanted = String(JSON.parse(body).file || "");
           let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
-          if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && fs.existsSync(path.join(sdir, wanted))) name = wanted;
-          fs.writeFileSync(path.join(sdir, name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), "utf8");
+          if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && fs.existsSync(internalStatePath('.7coder/sessions', wanted))) name = wanted;
+          fs.writeFileSync(internalStatePath('.7coder/sessions', name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), "utf8");
           audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
@@ -4779,7 +4814,7 @@ function startHttpServer() {
             if (p.endpoint !== undefined && typeof p.endpoint !== 'string') throw new Error('profile "' + k + '" endpoint must be a string');
             if (p.apiKey !== undefined && typeof p.apiKey !== 'string') throw new Error('profile "' + k + '" apiKey must be a string');
           }
-          const wsCfgDir = path.join(launchDir, '.7coder');
+          const wsCfgDir = internalStatePath('.7coder');
           if (!fs.existsSync(wsCfgDir)) fs.mkdirSync(wsCfgDir, { recursive: true });
           fs.writeFileSync(path.join(wsCfgDir, 'models.json'), JSON.stringify(profiles, null, 2), 'utf8');
           loadModelProfiles();
@@ -5063,7 +5098,7 @@ async function main() {
     console.log('[LOOP] Starting background/daemon mode...');
     // Route the child's stdout/stderr into a log file instead of dropping
     // everything (A3): the log is the only observable trace besides 7CODER.md.
-    const logDir = path.join(launchDir, '.7coder');
+    const logDir = internalStatePath('.7coder');
     try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) {}
     const logPath = path.join(logDir, 'background.log');
     let logFd;
@@ -5162,7 +5197,7 @@ async function main() {
         disposePersistentShells(); // GAP-2: stop persistent bash sessions
         // P2-1: the dream lock lives at .7coder/dream.lock now; the legacy
         // root path is cleaned too so pre-migration stale locks never resurface.
-        try { const lock = path.join(launchDir, '.7coder', 'dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
+        try { const lock = internalStatePath('.7coder', 'dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
         try { const legacyLock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(legacyLock)) fs.unlinkSync(legacyLock); } catch (e) {}
         saveSession();
         console.log('Goodbye!');
@@ -5185,7 +5220,7 @@ async function main() {
       if (trimmed === '/clear') {
         if (taskRunning) { console.log('A task is running - wait before /clear.'); safePrompt(); return; }
         messages = [{ role: 'system', content: systemPrompt }];
-        try { if (fs.existsSync(sessionPath)) fs.unlinkSync(sessionPath); } catch (e) {}
+        try { const safeSession = sessionFilePath(); if (fs.existsSync(safeSession)) fs.unlinkSync(safeSession); } catch (e) {}
         currentPrompt = ''; // a half-typed draft should not survive a fresh conversation
         disposePersistentShells(); // A2-14: a fresh conversation must not inherit the old bash env/cwd
         console.log('[SHELL] persistent shell sessions cleared with /clear');
@@ -5237,7 +5272,7 @@ Make it read like a direct continuation of the user's task instructions for the 
             }
             // P2-1: BTW.md lives under .7coder/ now (dir created first - at
             // this point it may not exist yet, e.g. /btw then EOF, no task run).
-            const btwDir = path.join(launchDir, '.7coder');
+            const btwDir = internalStatePath('.7coder');
             try { fs.mkdirSync(btwDir, { recursive: true }); } catch (e) {}
             const btwPath = path.join(btwDir, 'BTW.md');
             fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
@@ -5330,7 +5365,7 @@ Make it read like a direct continuation of the user's task instructions for the 
         let expanded = null;
         if (slashCmd) {
           let raw = '';
-          try { raw = fs.readFileSync(path.join(launchDir, '.7coder', 'commands', slashCmd[1] + '.md'), 'utf8'); } catch (e) {}
+          try { raw = fs.readFileSync(internalStatePath('.7coder/commands', slashCmd[1] + '.md'), 'utf8'); } catch (e) {}
           if (raw) {
             if (raw.length > 64 * 1024) {
               raw = raw.substring(0, 64 * 1024);
