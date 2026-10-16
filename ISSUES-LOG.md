@@ -527,6 +527,35 @@
 
 ---
 
+## 2026-10-16 —— claude-opus5.5 审阅核对（OP5 系列）
+
+> 输入：docs/history/claudeopus5.5审阅.md（基线 67f1ada，运行于内网；安全类按既有决策不在范围）。
+> 核对方式：主会话逐条对当前代码验证。**六条全部属实，零不实**（连读三份审阅后首份一次通过的）。
+> 其测试观察与本地一致：test-all 12 目标全绿；单独 runner 会吃本地 .env —— 正是其第 1 条的实证。
+
+### 核对为真的问题
+
+| # | 位置 | 问题（核对结论） | 状态 |
+|---|------|------|------|
+| OP5-1 | test/_shared.js vs scripts/test-all.js | **runner 不隔离本地 .env**：loadBaseline()（.env.example 覆盖 + 强制 ENABLE_AUTO_DEBUG=false）只存在于 test-all.js；单独跑 runner 时本地 .env 的 PERMISSION_MODE=auto / ENABLE_AUTO_DEBUG=true / HEAVY_MODEL=qwen3.7-plus 泄入 → npm test 4 项失败（adv auto_debug 文案、editnet 连锁崩溃、/v1/models 键控断言），恢复默认值后 85/85。**审阅者自己完成了因果证明** | ⬇ P1：loadBaseline 逻辑移入 _shared.js 供所有 runner 统一使用 |
+| OP5-2 | index.js（现 5391 行） | 单文件过大（=OPT-3 暂缓项的复述，附具体建议：优先拆 startHttpServer ~4475 与 executeToolRaw ~2178，边界最清楚） | ⬜ 并入 OPT-3（用户既有暂缓决策不变，此建议留作重开时的切入点） |
+| OP5-3 | startHttpServer 路由链 | 连续 if(method&&url) 路由 + 鉴权行每路由复制一份（易漏，OP2-4 曾漏三个）；缩进层级不一致（/api/todos 前与 /v1/models 后不同）属实 | ⬜ P2：路由表 + 公共鉴权函数（与 OP2-4 的统一入口方向合并实施） |
+| OP5-4 | index.js:123 | LIGHT_MODEL 默认 'gpt-3.5-turbo' 过时（SUMMARY_MODEL 继承它）；建议未配置时回落 HEAVY_MODEL | ⬜ 小改：默认值改 HEAVY_MODEL 回落 |
+| OP5-5 | updateCompleteSummary | auto-log 只增不去重不限条数（机制核对属实——push 后原样重建）；本地根 7CODER.md 现仅 11 条 bullet 尚未膨胀，但"10 条近似条目"的场景在内网环境已出现 | ⬜ P2：追加前与最近 N 条做相似度去重（如新条目与上一条完全相同则跳过）+ 条数上限（如 60）截断最旧 |
+| OP5-6 | 仓库整洁 | 根目录空目录 '-p'（Windows 误用 mkdir -p 遗迹，核实存在）；.workbuddy/ 未跟踪也未 ignore（用户个人目录，此前刻意不动，ignore 是合理处置） | ⬜ 微：删 '-p' + .gitignore 加 .workbuddy/ |
+
+### 与既有项的关系
+
+- OP5-2 = OPT-3（暂缓决策不变）；OP5-3 与 OPT-17 后半（统一入口）同族；OP5-4 是 QUICK 新发现（此前无人提过 LIGHT_MODEL 默认值）；OP5-1 揭示的是**测试基础设施**缺陷——单独 runner 与 test-all 结果不一致直接侵蚀"npm test 可信度"，审阅者的修复方向（下沉到 _shared.js）正确。
+
+### 建议批次
+
+1. **小批**（OP5-1 + OP5-4 + OP5-6：半小时级，恢复 npm test 可信度）
+2. OP5-5（去重+上限，半天级）
+3. OP5-3（路由表，一天级）；OP5-2 维持暂缓
+
+---
+
 ## 维护约定
 
 1. **唯一事实来源**：本文件。修复某条后：改状态列 + 附提交号；新问题追加到当日期小节；跨日期的大问题可新建日期小节用 INC-/NEW- 编号。
