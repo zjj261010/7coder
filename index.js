@@ -4495,10 +4495,37 @@ function startHttpServer() {
   // P2-6: read the built-in UI once; a missing file keeps serving 404s.
   let webuiHtml = null;
   try { webuiHtml = fs.readFileSync(path.join(appDir, 'webui.html')); } catch (e) { webuiHtml = null; }
-  const server = http.createServer((req, res) => {
-  // Built-in chat UI (Chinese-friendly web frontend for the terminal-shy).
-  // P2-6: served from a Buffer read once at startup, not re-read per request.
-  if (req.method === 'GET' && (req.url === '/' || req.url === '/ui')) {
+
+  // ---------- OP5-3: shared helpers + per-route handlers ----------
+  // One auth gate for every keyed route (OP2-4 caught three routes that had
+  // silently missed their copy of the check; with the table below a new route
+  // declares auth:true instead of re-pasting the 401 block).
+  function hasAuth(req) {
+    return !HTTP_API_KEY || req.headers.authorization === 'Bearer ' + HTTP_API_KEY;
+  }
+  function writeWorkspaceEnv(updates) {
+    const wsEnv = path.join(launchDir, ".env");
+    // A2-16: ONLY the managed keys being updated are rewritten. The old code
+    // dotenv.parsed the WHOLE file and re-serialized every key - a multiline
+    // value like CUSTOM="first\nsecond" lost its quoting and got split into
+    // two broken lines. Unknown KEY= lines now pass through verbatim.
+    // (Managed values are endpoint/key/model - the settings route already
+    // rejects CR/LF/NUL in them, so no quoting is needed on write.)
+    const managed = {};
+    for (const k of Object.keys(updates)) managed[k] = updates[k];
+    const outLines = [];
+    const written = new Set();
+    if (fs.existsSync(wsEnv)) {
+      for (const line of fs.readFileSync(wsEnv, "utf8").split(/\r?\n/)) {
+        const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+        if (m && managed[m[1]] !== undefined) { outLines.push(m[1] + "=" + managed[m[1]]); written.add(m[1]); }
+        else outLines.push(line); // comments, blank lines, MULTILINE continuations, unknown keys - untouched
+      }
+    }
+    for (const k of Object.keys(managed)) { if (!written.has(k)) outLines.push(k + "=" + managed[k]); }
+    fs.writeFileSync(wsEnv, outLines.join("\n") + "\n", "utf8");
+  }
+  function hUi(req, res) {
     if (webuiHtml) {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(webuiHtml);
@@ -4506,58 +4533,30 @@ function startHttpServer() {
       res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('webui.html not found next to index.js');
     }
-    return;
   }
-  if (req.method === 'GET' && req.url === '/api/info') {
-    // OP2-4: same gate as /api/sessions - when HTTP_API_KEY is set, every
-    // read route answers 401 without the matching Bearer key.
-    if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-      return;
-    }
+  function hInfo(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(), usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
-    return;
   }
-  if (req.method === 'GET' && req.url === '/api/todos') {
-    // GAP-6: the structured task list for the webui sidebar. Auth style matches
-    // /api/info; the store is re-read per request so changes made by a CLI
-    // session in the same workspace show up immediately.
-    // OP2-4: same gate as /api/sessions.
-    if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-      res.writeHead(401, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-      return;
-    }
+  function hTodos(req, res) {
+    // GAP-6: the structured task list for the webui sidebar; re-read per
+    // request so changes made by a CLI session in the same workspace show
+    // up immediately.
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ todos: loadTodos() }));
-    return;
   }
-    if (req.method === 'GET' && req.url === '/v1/models') {
-      // OP2-4: same gate as /api/sessions.
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        object: 'list',
-        data: modelList().map(id => ({ id, object: 'model', owned_by: '7coder' }))
-      }));
-      return;
-    }
-    if (req.method === 'GET' && req.url === '/api/sessions') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      try {
-        const sdir = internalStatePath('.7coder/sessions');
-        const list = fs.existsSync(sdir)
-          ? fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort().reverse().map(f => {
+  function hModels(req, res) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      object: 'list',
+      data: modelList().map(id => ({ id, object: 'model', owned_by: '7coder' }))
+    }));
+  }
+  function hSessionsList(req, res) {
+    try {
+      const sdir = internalStatePath('.7coder/sessions');
+      const list = fs.existsSync(sdir)
+        ? fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort().reverse().map(f => {
               try {
                 const j = JSON.parse(fs.readFileSync(path.join(sdir, f), 'utf8'));
                 const firstUser = (j.messages || []).find(m => m.role === 'user');
@@ -4566,341 +4565,262 @@ function startHttpServer() {
               }
             })
           : [];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ sessions: list }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: e.message } }));
+    }
+  }
+  function hSessionLoad(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const wanted = String(JSON.parse(body).file || "");
+        if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
+        const f = internalStatePath('.7coder/sessions', wanted);
+        if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
+        const j = JSON.parse(fs.readFileSync(f, "utf8"));
+        const msgs = (j.messages || [])
+          .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+          .map(m => ({ role: m.role, content: m.content }));
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ sessions: list }));
+        res.end(JSON.stringify({ messages: msgs, activities: Array.isArray(j.activities) ? j.activities : [], savedAt: j.savedAt || "?" }));
       } catch (e) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: e.message } }));
       }
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/api/sessions/load') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
+    });
+  }
+  function hSessionDelete(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const wanted = String(JSON.parse(body).file || "");
+        if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
+        const f = internalStatePath('.7coder/sessions', wanted);
+        if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
+        fs.unlinkSync(f);
+        audit({ ts: new Date().toISOString(), type: 'session_delete', file: wanted });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, deleted: wanted }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
       }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const wanted = String(JSON.parse(body).file || "");
-          if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
-          const f = internalStatePath('.7coder/sessions', wanted);
-          if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
-          const j = JSON.parse(fs.readFileSync(f, "utf8"));
-          const msgs = (j.messages || [])
-            .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-            .map(m => ({ role: m.role, content: m.content }));
+    });
+  }
+  function hApprove(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const j = JSON.parse(body);
+        const id = String(j.id || '');
+        if (!pendingApprovals.has(id)) throw new Error('no pending approval with id: ' + id);
+        const resolve = pendingApprovals.get(id);
+        pendingApprovals.delete(id);
+        resolve(!!j.approved);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, approved: !!j.approved }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+    });
+  }
+  function hSessionSave(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const parsed = JSON.parse(body);
+        const msgs = parsed.messages;
+        if (!Array.isArray(msgs)) throw new Error("messages must be an array");
+        const clean = msgs
+          .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+          .map(m => ({ role: m.role, content: m.content }));
+        const sdir = internalStatePath('.7coder/sessions');
+        fs.mkdirSync(sdir, { recursive: true });
+        const activities = Array.isArray(parsed.activities) ? parsed.activities.filter(a => a && typeof a.type === 'string')
+          .slice(0, 200).map(a => ({ type: a.type, name: a.name ? String(a.name).substring(0, 80) : undefined,
+            status: a.status ? String(a.status).substring(0, 24) : undefined,
+            text: a.text ? String(a.text).substring(0, 12000) : undefined,
+            args: a.args && typeof a.args === 'object' ? sanitizeAuditArgs(a.args) : undefined,
+            result: a.result ? sanitizeAuditLine(String(a.result)).substring(0, 12000) : undefined })) : [];
+        // 客户端可携带 file 名原地覆盖同一会话记录；否则生成新记录
+        const wanted = String(JSON.parse(body).file || "");
+        let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
+        if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && fs.existsSync(internalStatePath('.7coder/sessions', wanted))) name = wanted;
+        fs.writeFileSync(internalStatePath('.7coder/sessions', name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), "utf8");
+        audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+    });
+  }
+  function hOpen(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const j = JSON.parse(body);
+        const target = j.target;
+        if (target !== "workspace" && target !== "config") throw new Error("target must be workspace or config");
+        if (j.dry) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ messages: msgs, activities: Array.isArray(j.activities) ? j.activities : [], savedAt: j.savedAt || "?" }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
-        }
-      });
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/api/sessions/delete') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const wanted = String(JSON.parse(body).file || "");
-          if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
-          const f = internalStatePath('.7coder/sessions', wanted);
-          if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
-          fs.unlinkSync(f);
-          audit({ ts: new Date().toISOString(), type: 'session_delete', file: wanted });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, deleted: wanted }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
-        }
-      });
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/api/approve') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const j = JSON.parse(body);
-          const id = String(j.id || '');
-          if (!pendingApprovals.has(id)) throw new Error('no pending approval with id: ' + id);
-          const resolve = pendingApprovals.get(id);
-          pendingApprovals.delete(id);
-          resolve(!!j.approved);
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, approved: !!j.approved }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
-        }
-      });
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/api/sessions/save') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const parsed = JSON.parse(body);
-          const msgs = parsed.messages;
-          if (!Array.isArray(msgs)) throw new Error("messages must be an array");
-          const clean = msgs
-            .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-            .map(m => ({ role: m.role, content: m.content }));
-          const sdir = internalStatePath('.7coder/sessions');
-          fs.mkdirSync(sdir, { recursive: true });
-          const activities = Array.isArray(parsed.activities) ? parsed.activities.filter(a => a && typeof a.type === 'string')
-            .slice(0, 200).map(a => ({ type: a.type, name: a.name ? String(a.name).substring(0, 80) : undefined,
-              status: a.status ? String(a.status).substring(0, 24) : undefined,
-              text: a.text ? String(a.text).substring(0, 12000) : undefined,
-              args: a.args && typeof a.args === 'object' ? sanitizeAuditArgs(a.args) : undefined,
-              result: a.result ? sanitizeAuditLine(String(a.result)).substring(0, 12000) : undefined })) : [];
-          // 客户端可携带 file 名原地覆盖同一会话记录；否则生成新记录
-          const wanted = String(JSON.parse(body).file || "");
-          let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
-          if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && fs.existsSync(internalStatePath('.7coder/sessions', wanted))) name = wanted;
-          fs.writeFileSync(internalStatePath('.7coder/sessions', name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), "utf8");
-          audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
-        }
-      });
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/api/open') {
-      const loopbackBind = ['127.0.0.1', 'localhost', '::1'].includes(HTTP_BIND);
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const j = JSON.parse(body);
-          const target = j.target;
-          if (target !== "workspace" && target !== "config") throw new Error("target must be workspace or config");
-          if (j.dry) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ ok: true, dry: true }));
-            return;
-          }
-          let openPath;
-          if (target === "workspace") {
-            openPath = launchDir;
-          } else {
-            const wsEnv = path.join(launchDir, ".env");
-            if (fs.existsSync(wsEnv)) openPath = wsEnv;
-            else {
-              const ex = path.join(appDir, ".env");
-              if (!fs.existsSync(ex)) {
-                try { fs.copyFileSync(path.join(appDir, ".env.example"), wsEnv); openPath = wsEnv; }
-                catch (e2) { openPath = ex; }
-              } else openPath = ex;
-            }
-          }
-          let cmd, cmdArgs;
-          if (process.platform === "win32") { cmd = "cmd.exe"; cmdArgs = ["/c", "start", "", openPath]; }
-          else if (process.platform === "darwin") { cmd = "open"; cmdArgs = [openPath]; }
-          else { cmd = "xdg-open"; cmdArgs = [openPath]; }
-          const c = child_process.spawn(cmd, cmdArgs, { detached: true, stdio: "ignore" });
-          c.on("error", () => {});
-          c.unref();
-          audit({ ts: new Date().toISOString(), type: 'open', target, path: openPath });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, target, path: openPath }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
-        }
-      });
-      return;
-    }
-
-    if (req.method === 'GET' && req.url === '/api/settings') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      const profiles = {};
-      for (const k of Object.keys(modelProfiles)) {
-        const p = modelProfiles[k] || {};
-        profiles[k] = { endpoint: p.endpoint || '', apiKey: (typeof p.apiKey === 'string') ? p.apiKey : '' };
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ endpoint: OPENAI_ENDPOINT, apiKey: OPENAI_API_KEY || '', model: HEAVY_MODEL, profiles }));
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/api/settings') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const j = JSON.parse(body);
-          const updates = {};
-          // AST-08: values land in .env as KEY=value lines, so CR/LF/NUL would
-          // inject attacker-controlled env vars. Validate before touching anything.
-          let newEndpoint = null, newKey = null, newModel = null;
-          if (typeof j.endpoint === 'string') {
-            if (/[\r\n\u0000]/.test(j.endpoint)) throw new Error('endpoint must not contain CR, LF or NUL characters');
-            const ep = j.endpoint.trim();
-            if (ep && !/^https?:\/\//i.test(ep)) throw new Error('endpoint must start with http:// or https://');
-            newEndpoint = ep || 'https://api.openai.com/v1'; // empty string resets to the default
-            updates.OPENAI_ENDPOINT = newEndpoint;
-          }
-          if (typeof j.apiKey === 'string') {
-            if (/[\r\n\u0000]/.test(j.apiKey)) throw new Error('apiKey must not contain CR, LF or NUL characters');
-            newKey = j.apiKey;
-            updates.OPENAI_API_KEY = newKey;
-          }
-          if (typeof j.model === 'string' && j.model.trim()) {
-            if (/[\r\n\u0000]/.test(j.model)) throw new Error('model must not contain CR, LF or NUL characters');
-            newModel = j.model.trim();
-            updates.HEAVY_MODEL = newModel;
-          }
-          // AST-08: persist BEFORE mutating the runtime globals - a failed disk
-          // write must leave the running configuration unchanged (500, no update).
-          if (Object.keys(updates).length) {
-            try {
-              writeWorkspaceEnv(updates);
-            } catch (e2) {
-              res.writeHead(500, { 'Content-Type': 'application/json' });
-              res.end(JSON.stringify({ error: { message: 'failed to persist settings: ' + e2.message } }));
-              return;
-            }
-          }
-          if (newEndpoint !== null) { OPENAI_ENDPOINT = newEndpoint; process.env.OPENAI_ENDPOINT = OPENAI_ENDPOINT; }
-          if (newKey !== null) { OPENAI_API_KEY = newKey; process.env.OPENAI_API_KEY = OPENAI_API_KEY; }
-          if (newModel !== null) { HEAVY_MODEL = newModel; process.env.HEAVY_MODEL = HEAVY_MODEL; }
-          audit({ ts: new Date().toISOString(), type: 'settings', keys: Object.keys(updates) });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, endpoint: OPENAI_ENDPOINT, model: HEAVY_MODEL, models: modelList() }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
-        }
-      });
-      return;
-    }
-    if (req.method === 'GET' && req.url === '/api/models-config') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ profiles: modelProfiles }));
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/api/models-config') {
-      if (HTTP_API_KEY && req.headers.authorization !== `Bearer ${HTTP_API_KEY}`) {
-        res.writeHead(401, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
-        return;
-      }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const j = JSON.parse(body);
-          const profiles = j.profiles;
-          if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) throw new Error('profiles must be an object');
-          for (const k of Object.keys(profiles)) {
-            const p = profiles[k];
-            if (!p || typeof p !== 'object' || Array.isArray(p)) throw new Error('profile "' + k + '" must be an object');
-            if (p.endpoint !== undefined && typeof p.endpoint !== 'string') throw new Error('profile "' + k + '" endpoint must be a string');
-            if (p.apiKey !== undefined && typeof p.apiKey !== 'string') throw new Error('profile "' + k + '" apiKey must be a string');
-          }
-          const wsCfgDir = internalStatePath('.7coder');
-          if (!fs.existsSync(wsCfgDir)) fs.mkdirSync(wsCfgDir, { recursive: true });
-          fs.writeFileSync(path.join(wsCfgDir, 'models.json'), JSON.stringify(profiles, null, 2), 'utf8');
-          loadModelProfiles();
-          audit({ ts: new Date().toISOString(), type: 'models-config', models: Object.keys(profiles) });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, models: modelList() }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
-        }
-      });
-      return;
-    }
-
-    if (req.method === 'POST' && req.url === '/api/mode') {
-      if (HTTP_API_KEY) {
-        const auth = req.headers.authorization || '';
-        if (auth !== `Bearer ${HTTP_API_KEY}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Unauthorized: invalid or missing API key' } }));
+          res.end(JSON.stringify({ ok: true, dry: true }));
           return;
         }
-      }
-      readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
-        try {
-          const wanted = (JSON.parse(body).mode || '').toLowerCase().trim();
-          if (!VALID_PERMISSION_MODES.includes(wanted)) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: 'Invalid mode. Valid: ' + VALID_PERMISSION_MODES.join(', ') } }));
-            return;
+        let openPath;
+        if (target === "workspace") {
+          openPath = launchDir;
+        } else {
+          const wsEnv = path.join(launchDir, ".env");
+          if (fs.existsSync(wsEnv)) openPath = wsEnv;
+          else {
+            const ex = path.join(appDir, ".env");
+            if (!fs.existsSync(ex)) {
+              try { fs.copyFileSync(path.join(appDir, ".env.example"), wsEnv); openPath = wsEnv; }
+              catch (e2) { openPath = ex; }
+            } else openPath = ex;
           }
-          const prev = PERMISSION_MODE;
-          PERMISSION_MODE = wanted;
-          console.log('[PERM] permission mode changed: ' + prev + ' -> ' + wanted);
-          audit({ ts: new Date().toISOString(), type: 'mode', from: prev, to: wanted });
-          res.writeHead(200, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, mode: PERMISSION_MODE }));
-        } catch (e) {
-          res.writeHead(400, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: e.message } }));
         }
-      });
-      return;
-    }
-
-    if (req.method === 'POST' && req.url === '/v1/chat/completions') {
-      if (HTTP_API_KEY) {
-        const auth = req.headers.authorization || '';
-        if (auth !== `Bearer ${HTTP_API_KEY}`) {
-          res.writeHead(401, { 'Content-Type': 'application/json' });
-          res.end(JSON.stringify({ error: { message: 'Unauthorized: invalid or missing API key' } }));
-          return;
-        }
+        let cmd, cmdArgs;
+        if (process.platform === "win32") { cmd = "cmd.exe"; cmdArgs = ["/c", "start", "", openPath]; }
+        else if (process.platform === "darwin") { cmd = "open"; cmdArgs = [openPath]; }
+        else { cmd = "xdg-open"; cmdArgs = [openPath]; }
+        const c = child_process.spawn(cmd, cmdArgs, { detached: true, stdio: "ignore" });
+        c.on("error", () => {});
+        c.unref();
+        audit({ ts: new Date().toISOString(), type: 'open', target, path: openPath });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, target, path: openPath }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
       }
-      // AST-10: bounded reader - bytes are counted as they arrive and the
-      // 413 goes out IMMEDIATELY on overflow (chunks keep draining so the
-      // client can finish and read the response, but nothing accumulates).
-      readJsonBody(req, res, 10 * 1024 * 1024, async body => {
-          let wantsStream = false;
+    });
+  }
+  function hSettingsGet(req, res) {
+    const profiles = {};
+    for (const k of Object.keys(modelProfiles)) {
+      const p = modelProfiles[k] || {};
+      profiles[k] = { endpoint: p.endpoint || '', apiKey: (typeof p.apiKey === 'string') ? p.apiKey : '' };
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ endpoint: OPENAI_ENDPOINT, apiKey: OPENAI_API_KEY || '', model: HEAVY_MODEL, profiles }));
+  }
+  function hSettingsPost(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const j = JSON.parse(body);
+        const updates = {};
+        // AST-08: values land in .env as KEY=value lines, so CR/LF/NUL would
+        // inject attacker-controlled env vars. Validate before touching anything.
+        let newEndpoint = null, newKey = null, newModel = null;
+        if (typeof j.endpoint === 'string') {
+          if (/[\r\n\u0000]/.test(j.endpoint)) throw new Error('endpoint must not contain CR, LF or NUL characters');
+          const ep = j.endpoint.trim();
+          if (ep && !/^https?:\/\//i.test(ep)) throw new Error('endpoint must start with http:// or https://');
+          newEndpoint = ep || 'https://api.openai.com/v1'; // empty string resets to the default
+          updates.OPENAI_ENDPOINT = newEndpoint;
+        }
+        if (typeof j.apiKey === 'string') {
+          if (/[\r\n\u0000]/.test(j.apiKey)) throw new Error('apiKey must not contain CR, LF or NUL characters');
+          newKey = j.apiKey;
+          updates.OPENAI_API_KEY = newKey;
+        }
+        if (typeof j.model === 'string' && j.model.trim()) {
+          if (/[\r\n\u0000]/.test(j.model)) throw new Error('model must not contain CR, LF or NUL characters');
+          newModel = j.model.trim();
+          updates.HEAVY_MODEL = newModel;
+        }
+        // AST-08: persist BEFORE mutating the runtime globals - a failed disk
+        // write must leave the running configuration unchanged (500, no update).
+        if (Object.keys(updates).length) {
           try {
-          const data = JSON.parse(body);
-          const reqModel = (typeof data.model === 'string' && data.model.trim()) ? data.model.trim().substring(0, 200) : HEAVY_MODEL;
-          wantsStream = data.stream === true;
-          const tempMessages = conversationFromClient(data.messages);
-          const rawPrompt = tempMessages.length > 1 && tempMessages[tempMessages.length - 1].role === 'user'
-            ? tempMessages[tempMessages.length - 1].content
-            : '';
+            writeWorkspaceEnv(updates);
+          } catch (e2) {
+            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { message: 'failed to persist settings: ' + e2.message } }));
+            return;
+          }
+        }
+        if (newEndpoint !== null) { OPENAI_ENDPOINT = newEndpoint; process.env.OPENAI_ENDPOINT = OPENAI_ENDPOINT; }
+        if (newKey !== null) { OPENAI_API_KEY = newKey; process.env.OPENAI_API_KEY = OPENAI_API_KEY; }
+        if (newModel !== null) { HEAVY_MODEL = newModel; process.env.HEAVY_MODEL = HEAVY_MODEL; }
+        audit({ ts: new Date().toISOString(), type: 'settings', keys: Object.keys(updates) });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, endpoint: OPENAI_ENDPOINT, model: HEAVY_MODEL, models: modelList() }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+    });
+  }
+  function hModelsConfigGet(req, res) {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ profiles: modelProfiles }));
+  }
+  function hModelsConfigPost(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const j = JSON.parse(body);
+        const profiles = j.profiles;
+        if (!profiles || typeof profiles !== 'object' || Array.isArray(profiles)) throw new Error('profiles must be an object');
+        for (const k of Object.keys(profiles)) {
+          const p = profiles[k];
+          if (!p || typeof p !== 'object' || Array.isArray(p)) throw new Error('profile "' + k + '" must be an object');
+          if (p.endpoint !== undefined && typeof p.endpoint !== 'string') throw new Error('profile "' + k + '" endpoint must be a string');
+          if (p.apiKey !== undefined && typeof p.apiKey !== 'string') throw new Error('profile "' + k + '" apiKey must be a string');
+        }
+        const wsCfgDir = internalStatePath('.7coder');
+        if (!fs.existsSync(wsCfgDir)) fs.mkdirSync(wsCfgDir, { recursive: true });
+        fs.writeFileSync(path.join(wsCfgDir, 'models.json'), JSON.stringify(profiles, null, 2), 'utf8');
+        loadModelProfiles();
+        audit({ ts: new Date().toISOString(), type: 'models-config', models: Object.keys(profiles) });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, models: modelList() }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+    });
+  }
+  function hMode(req, res) {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+      try {
+        const wanted = (JSON.parse(body).mode || '').toLowerCase().trim();
+        if (!VALID_PERMISSION_MODES.includes(wanted)) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { message: 'Invalid mode. Valid: ' + VALID_PERMISSION_MODES.join(', ') } }));
+          return;
+        }
+        const prev = PERMISSION_MODE;
+        PERMISSION_MODE = wanted;
+        console.log('[PERM] permission mode changed: ' + prev + ' -> ' + wanted);
+        audit({ ts: new Date().toISOString(), type: 'mode', from: prev, to: wanted });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, mode: PERMISSION_MODE }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message: e.message } }));
+      }
+    });
+  }
+  function hChat(req, res) {
+    readJsonBody(req, res, 10 * 1024 * 1024, async body => {
+        let wantsStream = false;
+        try {
+        const data = JSON.parse(body);
+        const reqModel = (typeof data.model === 'string' && data.model.trim()) ? data.model.trim().substring(0, 200) : HEAVY_MODEL;
+        wantsStream = data.stream === true;
+        const tempMessages = conversationFromClient(data.messages);
+        const rawPrompt = tempMessages.length > 1 && tempMessages[tempMessages.length - 1].role === 'user'
+          ? tempMessages[tempMessages.length - 1].content
+          : '';
 
-          console.log('[WEB] HTTP request received from UI');
-          const responseId = 'chatcmpl-' + Date.now();
-          const created = Math.floor(Date.now() / 1000);
+        console.log('[WEB] HTTP request received from UI');
+        const responseId = 'chatcmpl-' + Date.now();
+        const created = Math.floor(Date.now() / 1000);
 
-          if (wantsStream) {
+        if (wantsStream) {
             res.writeHead(200, {
               'Content-Type': 'text/event-stream',
               'Cache-Control': 'no-cache',
@@ -4916,10 +4836,10 @@ function startHttpServer() {
             const writeChunk = (delta, finishReason) => {
               if (clientGone || res.destroyed) return;
               try {
-                res.write(`data: ${JSON.stringify({
+                res.write('data: ' + JSON.stringify({
                   id: responseId, object: 'chat.completion.chunk', created, model: reqModel,
                   choices: [{ index: 0, delta, finish_reason: finishReason || null }]
-                })}\n\n`);
+                }) + '\n\n');
               } catch (e) {
                 clientGone = true;
               }
@@ -5030,7 +4950,7 @@ function startHttpServer() {
           console.error('HTTP error:', e);
           if (wantsStream && res.headersSent) {
             try {
-              res.write(`data: ${JSON.stringify({ error: { message: e.message } })}\n\n`);
+              res.write('data: ' + JSON.stringify({ error: { message: e.message } }) + '\n\n');
               res.write('data: [DONE]\n\n');
               res.end();
             } catch (e2) {}
@@ -5040,34 +4960,45 @@ function startHttpServer() {
           }
         }
       });
-    } else {
+  }
+
+  const ROUTES = [
+    { method: 'GET', url: '/', auth: false, handler: hUi },
+    { method: 'GET', url: '/ui', auth: false, handler: hUi },
+    { method: 'GET', url: '/api/info', auth: true, handler: hInfo },
+    { method: 'GET', url: '/api/todos', auth: true, handler: hTodos },
+    { method: 'GET', url: '/v1/models', auth: true, handler: hModels },
+    { method: 'GET', url: '/api/sessions', auth: true, handler: hSessionsList },
+    { method: 'POST', url: '/api/sessions/load', auth: true, handler: hSessionLoad },
+    { method: 'POST', url: '/api/sessions/delete', auth: true, handler: hSessionDelete },
+    { method: 'POST', url: '/api/approve', auth: true, handler: hApprove },
+    { method: 'POST', url: '/api/sessions/save', auth: true, handler: hSessionSave },
+    { method: 'POST', url: '/api/open', auth: true, handler: hOpen },
+    { method: 'GET', url: '/api/settings', auth: true, handler: hSettingsGet },
+    { method: 'POST', url: '/api/settings', auth: true, handler: hSettingsPost },
+    { method: 'GET', url: '/api/models-config', auth: true, handler: hModelsConfigGet },
+    { method: 'POST', url: '/api/models-config', auth: true, handler: hModelsConfigPost },
+    { method: 'POST', url: '/api/mode', auth: true, handler: hMode },
+    { method: 'POST', url: '/v1/chat/completions', auth: true, handler: hChat },
+  ];
+
+  const server = http.createServer((req, res) => {
+    // OP5-3: table-driven dispatch. The handler bodies are the verbatim
+    // former if-chain arms; auth is enforced here in ONE place for every
+    // auth:true route, so a new route cannot silently miss the 401 gate
+    // (OP2-4 caught three that had).
+    const route = ROUTES.find(r => r.method === req.method && r.url === req.url);
+    if (!route) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'Not found' } }));
+      return;
     }
-
-    function writeWorkspaceEnv(updates) {
-      const wsEnv = path.join(launchDir, ".env");
-      // A2-16: ONLY the managed keys being updated are rewritten. The old code
-      // dotenv.parsed the WHOLE file and re-serialized every key - a multiline
-      // value like CUSTOM="first\nsecond" lost its quoting and got split into
-      // two broken lines. Unknown KEY= lines now pass through verbatim.
-      // (Managed values are endpoint/key/model - the settings route already
-      // rejects CR/LF/NUL in them, so no quoting is needed on write.)
-      const managed = {};
-      for (const k of Object.keys(updates)) managed[k] = updates[k];
-      const outLines = [];
-      const written = new Set();
-      if (fs.existsSync(wsEnv)) {
-        for (const line of fs.readFileSync(wsEnv, "utf8").split(/\r?\n/)) {
-          const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
-          if (m && managed[m[1]] !== undefined) { outLines.push(m[1] + "=" + managed[m[1]]); written.add(m[1]); }
-          else outLines.push(line); // comments, blank lines, MULTILINE continuations, unknown keys - untouched
-        }
-      }
-      for (const k of Object.keys(managed)) { if (!written.has(k)) outLines.push(k + "=" + managed[k]); }
-      fs.writeFileSync(wsEnv, outLines.join("\n") + "\n", "utf8");
+    if (route.auth && !hasAuth(req)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'Unauthorized' } }));
+      return;
     }
-
+    route.handler(req, res);
   });
 
   // P2-6: fail loudly and exit nonzero when the port is taken (or the server
