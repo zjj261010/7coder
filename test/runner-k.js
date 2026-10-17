@@ -75,7 +75,7 @@ function startServer(cwd) {
   serverProc = spawn(NODE_BIN, [IDX, '--server'], {
     env: Object.assign({}, process.env, {
       OPENAI_API_KEY: KEY, OPENAI_ENDPOINT: ENDPOINT, HEAVY_MODEL: MODEL, LIGHT_MODEL: MODEL,
-      MAX_RETRIES: '2', MAX_TOKENS: '4000', PERMISSION_MODE: 'auto', HTTP_PORT: String(PORT)
+      MAX_RETRIES: '2', MAX_TOKENS: '4000', PERMISSION_MODE: process.env.REAL_PERM || 'auto', HTTP_PORT: String(PORT)
     }),
     cwd, stdio: 'ignore'
   });

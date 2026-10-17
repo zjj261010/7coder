@@ -8,7 +8,7 @@
 >
 > 当前状态（2026-10-13）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-13~16 及既有暂缓项仍保留；OPT-12 已完成统一元数据；GAP-8/12、OPT-17 与 P2-7 已按 10-13 补齐范围验收，不能称全部待办清零。详见文末清账与修复记录。
 > 历史发布快照（v2.18.0，`1f52a8a`）：离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、内置 Node 13.14.0 冒烟通过）。该产物早于后续 OP2/A2 修复，不能据此宣称包含修复；本轮未重新打包。
-> 本轮回归（2026-10-17，**v2.19.0 发布轮**）：test-all 12 目标全绿（A 88/B 314/C 35/D 32/E 22/F 23/G 29/H 32/I 51/J 16 = 609 离线断言，另有 ui-sim 43 + dom-sim + 可选真实 Chrome）；Node 13.14.0 目标运行时 A 88/88；真实端点 kimi-k2.7-code（用户指定，网关探针通过、reasoning 正常）：**R 9/10、K 5/9**——失败均为 auto 审批保守（verdict 探针：JSON 解析正常、AST-R2 拒绝理由正常浮现；qwen3.7-plus 同代码曾 10/10 与 9/9，属模型气质差异非产品缺陷）；离线包 dist/7coder-v2.19.0-offline-win64.zip（21.7MB、457 条目、零残渣零 .env、runtime 冒烟通过）。
+> 本轮回归（2026-10-17，**v2.19.0 发布轮**）：test-all 12 目标全绿（A 88/B 314/C 35/D 32/E 22/F 23/G 29/H 32/I 51/J 16 = 609 离线断言，另有 ui-sim 43 + dom-sim + 可选真实 Chrome）；Node 13.14.0 目标运行时 A 88/88；真实端点 kimi-k2.7-code（用户指定，网关探针通过、reasoning 正常）：**R 9/10、K 5/9**——失败均为 auto 审批保守（verdict 探针：JSON 解析正常、AST-R2 拒绝理由正常浮现；qwen3.7-plus 同代码曾 10/10 与 9/9，属模型气质差异非产品缺陷）；**bypass 复跑佐证**：新增 `REAL_PERM` 透传（test/runner-k.js、test/runner-r.js）后以 `REAL_PERM=bypass` 重跑，K 6/6（real-coding/real-workflow/real-fix 全过）、R **10/10**（含 R3 counter.txt）——确认失败根因确为审批保守；离线包 dist/7coder-v2.19.0-offline-win64.zip（21.7MB、457 条目、零残渣零 .env、runtime 冒烟通过）。
 > 本轮回归（2026-10-15，OPT-14）：A–J **635/635**（A85/B312/C35/D32/E22/F23/G29/H32/I51/J16）；UI mock 43/43、DOM 12/12、真实 Chrome 9/9，完整入口 13/13 targets 通过。状态路径专项 5/5；静态断言 **604**。
 
 <!-- assert-count:start -->
