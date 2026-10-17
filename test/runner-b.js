@@ -1315,6 +1315,39 @@ scenarios.push({
   }
 });
 
+// --- OP5-5: two consecutive identical summaries must dedup in the 7CODER.md
+// auto-log (one bullet, not two), and the source caps the section at the last
+// 60 bullets (grep-level; a 61-bullet end-to-end fixture is not built here) ---
+scenarios.push({
+  name: 'autolog-dedup',
+  fn: async () => {
+    const cwd = freshCwd('b-autolog-dedup');
+    const longReply = 'DEDUP-LONG-REPLY ' + 'detail paragraph '.repeat(20); // > 200 chars -> triggers the light summary call
+    const summaryText = 'DEDUP-SAME-SUMMARY-TASK-COMPLETE';
+    // One mock serves both runs in step order: main reply, light summary,
+    // main reply, light summary. Both runs share cwd, so run 2 sees run 1's bullet.
+    const m = startMock([
+      { role: 'assistant', content: longReply }, summaryText,
+      { role: 'assistant', content: longReply }, summaryText
+    ]);
+    await new Promise(r => setTimeout(r, 600));
+    const env = { PERMISSION_MODE: 'bypass' };
+    const r1 = await runCli({ port: m.port, args: ['--prompt', 't'], env, cwd, timeoutMs: 60000 });
+    const r2 = await runCli({ port: m.port, args: ['--prompt', 't'], env, cwd, timeoutMs: 60000 });
+    const md = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8');
+    const inner = md.substring(md.indexOf('auto-log:start'), md.indexOf('auto-log:end'));
+    const bullets = inner.split('\n').filter(l => l.indexOf('- ') === 0);
+    record('autolog-dedup: two identical consecutive summaries leave exactly one bullet',
+      bullets.length === 1 && bullets[0] === '- ' + summaryText && r2.out.indexOf('summary unchanged - dedup') >= 0,
+      'bullets=' + bullets.length + ' first=' + (bullets[0] || 'none') + ' dedupMsg=' + (r2.out.indexOf('summary unchanged - dedup') >= 0) + ' r1code=' + r1.code);
+    // Cap: source-level grep on the updateCompleteSummary cap line.
+    const src = fs.readFileSync(IDX, 'utf8');
+    record('autolog-dedup: auto-log capped at newest 60 via slice(-60) in updateCompleteSummary',
+      src.indexOf('summaries = summaries.slice(-60)') >= 0, 'note: 61-bullet end-to-end not constructed');
+    stopMock(m);
+  }
+});
+
 scenarios.push({
   name: 'eaddr',
   fn: async () => {

@@ -23,9 +23,32 @@ function delayCommand(ms) {
   return '"' + NODE_BIN + '" -e "setTimeout(function(){console.log(\'TASK-DELAY-DONE\')},' + ms + ')"';
 }
 
+// OP5-1: runners also run standalone (npm run test:b, RUN_ONLY=...), where a
+// developer's local .env (PERMISSION_MODE=auto, ENABLE_AUTO_DEBUG=true,
+// HEAVY_MODEL=...) used to leak into every spawned CLI/server process - the
+// spawns build their env from `Object.assign({}, process.env, ...)` here.
+// Same rules as scripts/test-all.js loadBaseline(): with REAL_TEST!==1 the
+// .env.example values win key-by-key, with REAL_TEST===1 only undefined keys
+// are filled; auto-debug is always forced off for the offline suites. Applied
+// in place on process.env, so create() callers need no per-spawn changes and
+// running under test-all (which baseline-ed the parent env already) is
+// idempotent.
+function applyBaselineEnv() {
+  const example = path.join(__dirname, '..', '.env.example');
+  if (fs.existsSync(example)) {
+    for (const line of fs.readFileSync(example, 'utf8').split(/\r?\n/)) {
+      const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+      if (m && (process.env.REAL_TEST !== '1' || process.env[m[1]] === undefined)) process.env[m[1]] = m[2];
+    }
+  }
+  // Offline suites must not depend on a developer's auto-debug setting.
+  process.env.ENABLE_AUTO_DEBUG = 'false';
+}
+
 function rmrf(p) { try { if (fs.rmSync) fs.rmSync(p, { recursive: true, force: true }); else fs.rmdirSync(p, { recursive: true, force: true }); } catch (e) {} }
 
 function create(opts) {
+  applyBaselineEnv(); // OP5-1: clean the inherited env before any spawn derives its env from process.env
   opts = opts || {};
   const suite = opts.suite || '';         // '' -> 'SUMMARY:', 'B' -> 'SUITE B SUMMARY:'
   const wsPrefix = opts.wsPrefix || 'w-'; // freshCwd directory prefix, keeps suites from clashing

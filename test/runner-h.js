@@ -124,7 +124,10 @@ scenarios.push({
     })().catch(() => {});
     await done;
     clearInterval(sampler);
-    const completed = (out.match(/7CODER\.md updated with complete summary/g) || []).length;
+    // OP5-5: clamped script steps repeat the same summary, so tasks past the
+    // 26-step mock now end with 'summary unchanged - dedup' instead of a fresh
+    // write - both lines prove the task's summary step ran, so count either.
+    const completed = (out.match(/7CODER\.md updated with complete summary|summary unchanged - dedup/g) || []).length;
     const first = samples[0];
     const last = samples[samples.length - 1];
     const max = Math.max.apply(null, samples);

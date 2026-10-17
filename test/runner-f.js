@@ -66,7 +66,10 @@ scenarios.push({
       const r20 = await runCli({
         port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd: freshCwd('f1b'), stdinSteps: steps, timeoutMs: 120000
       });
-      const done20 = (r20.out.match(/7CODER\.md updated with complete summary/g) || []).length;
+      // OP5-5: a task whose summary is identical to the previous one now ends
+      // with 'summary unchanged - dedup' instead of a fresh write - both lines
+      // prove the task's summary step ran, so count either.
+      const done20 = (r20.out.match(/7CODER\.md updated with complete summary|summary unchanged - dedup/g) || []).length;
       const total = Date.now() - t1;
       record('perf: 20 sequential REPL tasks all complete under 25s', done20 >= 20 && total < 25000, 'completed=' + done20 + ' total=' + Math.round(total / 1000) + 's');
     } finally {

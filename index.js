@@ -120,7 +120,10 @@ const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || process.env.MAX_ATTEMPT_
 // MAX_RETRIES for backward compatibility with existing .env files.
 const RALPH_ITERATIONS = Math.max(1, parseInt(process.env.RALPH_ITERATIONS, 10) || MAX_RETRIES);
 let HEAVY_MODEL = process.env.HEAVY_MODEL || 'gpt-4o-mini';
-const LIGHT_MODEL = process.env.LIGHT_MODEL || 'gpt-3.5-turbo';
+// OP5-4: no hardcoded light-model default any more (the old one named a
+// discontinued model) - when LIGHT_MODEL is unset, light traffic rides on
+// HEAVY_MODEL instead.
+const LIGHT_MODEL = process.env.LIGHT_MODEL || HEAVY_MODEL;
 const VISION_MODEL = process.env.VISION_MODEL || null;
 // parseFloat('0')||fallback would silently rewrite a legitimate TEMPERATURE=0;
 // only fall back when the value is missing or not a finite number.
@@ -4324,7 +4327,17 @@ function updateCompleteSummary(newSummary) {
       .map(l => l.slice(2).trim())
       .filter(Boolean);
   }
+  // OP5-5: a repeated task that produces the identical summary (retry, same
+  // output) must not grow the bullet log - if the last bullet already says
+  // exactly this, leave the file untouched.
+  if (summaries.length && summaries[summaries.length - 1] === newSummary) {
+    console.log('[OK] summary unchanged - dedup');
+    return;
+  }
   summaries.push(newSummary);
+  // OP5-5: cap the auto-log at the newest 60 bullets so a long-lived
+  // workspace's 7CODER.md cannot grow without bound.
+  if (summaries.length > 60) summaries = summaries.slice(-60);
   // Free-form content outside the markers survives (dream sessions, user notes)
   const outside = (startIdx >= 0 && endIdx > startIdx)
     ? (existing.substring(0, startIdx) + existing.substring(endIdx + LOG_END.length)).trim()

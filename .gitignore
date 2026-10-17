@@ -25,3 +25,6 @@ runtime/
 
 # scratch test workspace
 test1/
+
+# session workbuddy state
+.workbuddy/

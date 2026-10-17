@@ -13,7 +13,7 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 295 |
+| runner-b.js | 297 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -24,8 +24,8 @@
 | runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
-| runner.js | 57 |
-| **合计** | **604** |
+| runner.js | 60 |
+| **合计** | **609** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -537,12 +537,12 @@
 
 | # | 位置 | 问题（核对结论） | 状态 |
 |---|------|------|------|
-| OP5-1 | test/_shared.js vs scripts/test-all.js | **runner 不隔离本地 .env**：loadBaseline()（.env.example 覆盖 + 强制 ENABLE_AUTO_DEBUG=false）只存在于 test-all.js；单独跑 runner 时本地 .env 的 PERMISSION_MODE=auto / ENABLE_AUTO_DEBUG=true / HEAVY_MODEL=qwen3.7-plus 泄入 → npm test 4 项失败（adv auto_debug 文案、editnet 连锁崩溃、/v1/models 键控断言），恢复默认值后 85/85。**审阅者自己完成了因果证明** | ⬇ P1：loadBaseline 逻辑移入 _shared.js 供所有 runner 统一使用 |
+| OP5-1 | test/_shared.js vs scripts/test-all.js | **runner 不隔离本地 .env**：loadBaseline()（.env.example 覆盖 + 强制 ENABLE_AUTO_DEBUG=false）只存在于 test-all.js；单独跑 runner 时本地 .env 的 PERMISSION_MODE=auto / ENABLE_AUTO_DEBUG=true / HEAVY_MODEL=qwen3.7-plus 泄入 → npm test 4 项失败（adv auto_debug 文案、editnet 连锁崩溃、/v1/models 键控断言），恢复默认值后 85/85。**审阅者自己完成了因果证明** | ✅ OP5 快批（glm-5.3-flash 修复 + tierflow_pro 门禁 + 主会话终检）：applyBaselineEnv() 下沉 _shared.js create() 首行（与 test-all loadBaseline 同规则，幂等），58 处 process.env 泄入自动消失。主验收：npm test 红 78/82 → 绿 88/88（超 85 的差额自证：editnet 崩溃恢复 3 条 + 新增 3 条）；隔离探针注入四值后 create() 内全部归位 |
 | OP5-2 | index.js（现 5391 行） | 单文件过大（=OPT-3 暂缓项的复述，附具体建议：优先拆 startHttpServer ~4475 与 executeToolRaw ~2178，边界最清楚） | ⬜ 并入 OPT-3（用户既有暂缓决策不变，此建议留作重开时的切入点） |
 | OP5-3 | startHttpServer 路由链 | 连续 if(method&&url) 路由 + 鉴权行每路由复制一份（易漏，OP2-4 曾漏三个）；缩进层级不一致（/api/todos 前与 /v1/models 后不同）属实 | ⬜ P2：路由表 + 公共鉴权函数（与 OP2-4 的统一入口方向合并实施） |
-| OP5-4 | index.js:123 | LIGHT_MODEL 默认 'gpt-3.5-turbo' 过时（SUMMARY_MODEL 继承它）；建议未配置时回落 HEAVY_MODEL | ⬜ 小改：默认值改 HEAVY_MODEL 回落 |
-| OP5-5 | updateCompleteSummary | auto-log 只增不去重不限条数（机制核对属实——push 后原样重建）；本地根 7CODER.md 现仅 11 条 bullet 尚未膨胀，但"10 条近似条目"的场景在内网环境已出现 | ⬜ P2：追加前与最近 N 条做相似度去重（如新条目与上一条完全相同则跳过）+ 条数上限（如 60）截断最旧 |
-| OP5-6 | 仓库整洁 | 根目录空目录 '-p'（Windows 误用 mkdir -p 遗迹，核实存在）；.workbuddy/ 未跟踪也未 ignore（用户个人目录，此前刻意不动，ignore 是合理处置） | ⬜ 微：删 '-p' + .gitignore 加 .workbuddy/ |
+| OP5-4 | index.js:123 | LIGHT_MODEL 默认 'gpt-3.5-turbo' 过时（SUMMARY_MODEL 继承它）；建议未配置时回落 HEAVY_MODEL | ✅ 快批：LIGHT_MODEL 默认回落 HEAVY_MODEL；.env.example 的 gpt-3.5-turbo 残留一并清（会随基线泄入测试且抵消本项）；dist/.cache/历史文档按冻结件保留。light-model-default 场景 2 断言（字面量缺席 + light===model 回落） |
+| OP5-5 | updateCompleteSummary | auto-log 只增不去重不限条数（机制核对属实——push 后原样重建）；本地根 7CODER.md 现仅 11 条 bullet 尚未膨胀，但"10 条近似条目"的场景在内网环境已出现 | ✅ 快批：严格相等去重（连续相同摘要 bullet 数恰 1 + stdout 含 dedup 消息）+ 60 条上限（slice(-60)，源码断言；61 条端到端未构造，如实标注）。连带修复：runner-f perf / runner-h rss-soak 的完成计数正则同步接受 dedup 行（去重后旧正则漏计，门禁实抓红后修） |
+| OP5-6 | 仓库整洁 | 根目录空目录 '-p'（Windows 误用 mkdir -p 遗迹，核实存在）；.workbuddy/ 未跟踪也未 ignore（用户个人目录，此前刻意不动，ignore 是合理处置） | ✅ 快批：空目录 -p 已删（删前 ls -A 确认为空）；.gitignore 增 .workbuddy/（git check-ignore 验证）。repo-hygiene 场景 1 断言 |
 
 ### 与既有项的关系
 

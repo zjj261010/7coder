@@ -601,5 +601,42 @@ scenarios.push({
   }
 });
 
+// --- OP5-4: no hardcoded light-model default - an unset LIGHT_MODEL rides on
+// HEAVY_MODEL, so /api/info must report the same value for both fields ---
+scenarios.push({
+  name: 'light-model-default',
+  fn: async () => {
+    record('light-model: index.js no longer hardcodes the outdated gpt-3.5-turbo default',
+      fs.readFileSync(IDX, 'utf8').indexOf('gpt-3.5-turbo') < 0, '');
+    // HEAVY_MODEL=''/LIGHT_MODEL='' simulates "not configured": HEAVY_MODEL
+    // falls back to its built-in default and LIGHT_MODEL must ride along.
+    port += 50; const srvPort = port;
+    const srv = spawn(NODE_BIN, [IDX, '--server'], {
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:1/v1', MAX_RETRIES: '1', HEAVY_MODEL: '', LIGHT_MODEL: '', HTTP_PORT: String(srvPort) }),
+      cwd: freshCwd('light-model-info'), stdio: 'ignore'
+    });
+    await new Promise(r => setTimeout(r, 2500));
+    try {
+      const info = JSON.parse((await httpReq(srvPort, 'GET', '/api/info', null)).body);
+      record('light-model: /api/info light === model when LIGHT_MODEL/HEAVY_MODEL unset (same-value fallback)',
+        !!info.model && info.light === info.model, JSON.stringify({ model: info.model, light: info.light }));
+    } finally { try { srv.kill(); } catch (e) {} }
+  }
+});
+
+// --- OP5-6: repo hygiene guards - the stray empty "-p" directory at the repo
+// root stays gone and .gitignore covers the .workbuddy/ session state ---
+scenarios.push({
+  name: 'repo-hygiene',
+  fn: async () => {
+    const repoRoot = path.join(__dirname, '..');
+    const noDashP = !fs.existsSync(path.join(repoRoot, '-p'));
+    const gi = fs.readFileSync(path.join(repoRoot, '.gitignore'), 'utf8');
+    const wb = gi.split(/\r?\n/).some(l => l.trim() === '.workbuddy/');
+    record('repo-hygiene: no stray "-p" dir at repo root + .gitignore covers .workbuddy/',
+      noDashP && wb, '-p=' + (noDashP ? 'gone' : 'STILL THERE') + ' gitignore-workbuddy=' + wb);
+  }
+});
+
 // ====================== RUNNER ======================
 S.runAll(scenarios);
