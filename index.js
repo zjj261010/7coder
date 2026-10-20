@@ -2185,9 +2185,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       // GAP-3b: read as a Buffer first - a NUL byte in the first 4KB marks
       // binary content, which must not be decoded into the conversation as text.
       const buf = fs.readFileSync(fullPath);
-      if (buf.length === 0) return '(empty file)';
+      if (buf.length === 0) return makeToolResult('ok', '(empty file)');
       if (buf.slice(0, 4096).includes(0)) {
-        return `[BINARY] ${args.path} looks binary - refused to read as text. Use download_tool or a shell command instead.`;
+        return makeToolResult('ok', `[BINARY] ${args.path} looks binary - refused to read as text. Use download_tool or a shell command instead.`);
       }
       // GAP-3a: every read is line-numbered (`cat -n` style), full and windowed
       // alike - one shared formatter so the two branches cannot drift.
@@ -2196,14 +2196,14 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const start = windowed ? Math.max(0, (parseInt(args.offset, 10) || 1) - 1) : 0;
       // old P1-6 third half: a window fully past EOF must say so, not
       // silently return '' (indistinguishable from an empty file).
-      if (windowed && start >= lines.length) return `(offset ${args.offset} is beyond EOF - the file has ${lines.length} line(s))`;
+      if (windowed && start >= lines.length) return makeToolResult('ok', `(offset ${args.offset} is beyond EOF - the file has ${lines.length} line(s))`);
       const count = !windowed
         ? lines.length
         : ((typeof args.limit === 'number' && args.limit > 0) ? Math.floor(args.limit) : Math.max(0, lines.length - start));
-      return lines.slice(start, start + count)
+      return makeToolResult('ok', lines.slice(start, start + count)
         .map((l, i) => String(start + i + 1).padStart(6) + '\t' + l)
-        .join('\n');
-    } catch (e) { return `Read error: ${e.message}`; }
+        .join('\n'));
+    } catch (e) { return makeToolResult('error', `Read error: ${e.message}`); }
   }
   if (name === 'write_file') {
     try {
@@ -2310,16 +2310,20 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // P2-3: budgeted walk - heavy dirs skipped, depth/entry caps keep huge
     // workspaces from flooding the context (sentinel line marks truncation).
     const files = recursiveReaddir(args.directory, args.pattern, { skipHeavy: true, maxDepth: 12, maxEntries: 1000 });
-    return files.length ? files.join('\n') : 'No files matched';
+    return makeToolResult('ok', files.length ? files.join('\n') : 'No files matched');
   }
   if (name === 'grep_tool') {
-    return grepSearch(args.pattern, args.path, { skipHeavy: true });
+    const text = grepSearch(args.pattern, args.path, { skipHeavy: true });
+    // grepSearch signals its only validation failures ("pattern too long",
+    // "nested quantifiers") as 'Tool error:' text; everything else (matches,
+    // 'No matches') is a successful search.
+    return makeToolResult(text.startsWith('Tool error:') ? 'error' : 'ok', text);
   }
 
   if (name === 'list_dir') {
     try {
       const dirPath = args.path ? path.join(launchDir, sanitizePath(args.path)) : launchDir;
-      if (!fs.statSync(dirPath).isDirectory()) return 'List error: not a directory';
+      if (!fs.statSync(dirPath).isDirectory()) return makeToolResult('error', 'List error: not a directory');
       const entries = fs.readdirSync(dirPath);
       const lines = entries.map(e => {
         const full = path.join(dirPath, e);
@@ -2328,15 +2332,15 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
           return st.isDirectory() ? '[DIR]     ' + e : String(st.size).padStart(9) + '  ' + e;
         } catch (err) { return '[?]       ' + e; }
       });
-      return lines.length ? lines.join('\n') : '(empty directory)';
-    } catch (e) { return `List error: ${e.message}`; }
+      return makeToolResult('ok', lines.length ? lines.join('\n') : '(empty directory)');
+    } catch (e) { return makeToolResult('error', `List error: ${e.message}`); }
   }
 
   if (name === 'process_list_tool') {
     // AST-09: async - tasklist can take seconds on a busy system.
     const { r } = await awaitCommandCancellable(runCommandAsync({ cmd: withUtf8Codepage(process.platform === 'win32' ? 'tasklist' : 'ps -eo pid,comm') }), cancelled);
-    if (r.error) return `Process list error: ${r.error.message}`;
-    return r.stdout;
+    if (r.error) return makeToolResult('error', `Process list error: ${r.error.message}`);
+    return makeToolResult('ok', r.stdout);
   }
   if (name === 'process_kill_tool') {
     const pid = parseInt(args.pid, 10);
@@ -3205,7 +3209,7 @@ function inGitRepo() {
 }
 
   if (name === 'git_status_tool') {
-    if (!inGitRepo()) return "Not a git repository (no .git found in the workspace).";
+    if (!inGitRepo()) return makeToolResult('ok', "Not a git repository (no .git found in the workspace).");
     try {
       const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
       const last = git(["log", "-1", "--oneline"]).trim();
@@ -3220,21 +3224,21 @@ function inGitRepo() {
       }
       let out = "[GIT] branch " + branch + " | last: " + last + " | staged:" + counts.staged + " modified:" + counts.modified + " untracked:" + counts.untracked;
       if (status) out += "\n" + status.substring(0, 4000);
-      return out;
-    } catch (e) { return "Git status error: " + e.message; }
+      return makeToolResult('ok', out);
+    } catch (e) { return makeToolResult('error', "Git status error: " + e.message); }
   }
 
   if (name === 'git_diff_tool') {
-    if (!inGitRepo()) return "Not a git repository.";
+    if (!inGitRepo()) return makeToolResult('ok', "Not a git repository.");
     try {
       const diffArgs = ["diff"];
       if (args.staged) diffArgs.push("--cached");
       const hasPath = typeof args.path === "string" && args.path.trim();
       if (hasPath) { diffArgs.push("--", sanitizePath(args.path)); } // path is ONE argv entry - never shell-parsed
       const diff = git(diffArgs).trim();
-      if (!diff) return "[GIT] no changes" + (args.staged ? " (staged)" : "") + (hasPath ? " for " + args.path : "") + ".";
-      return "[GIT] diff" + (args.staged ? " (staged)" : "") + ":\n" + diff.substring(0, 8000);
-    } catch (e) { return "Git diff error: " + e.message; }
+      if (!diff) return makeToolResult('ok', "[GIT] no changes" + (args.staged ? " (staged)" : "") + (hasPath ? " for " + args.path : "") + ".");
+      return makeToolResult('ok', "[GIT] diff" + (args.staged ? " (staged)" : "") + ":\n" + diff.substring(0, 8000));
+    } catch (e) { return makeToolResult('error', "Git diff error: " + e.message); }
   }
 
   if (name === 'git_commit_tool') {
@@ -3712,9 +3716,11 @@ async function askApproval(question, approvalBridge) {
 // OPT-13: pilot tools carry authoritative status alongside legacy model text.
 // The symbol identifies internal results, so arbitrary returned objects are
 // never mistaken for status-bearing results. Data stays internal (not SSE).
+// Batch 2 (2026-10-20): read-only tools joined - status-only migration, texts unchanged.
 const TOOL_RESULT_MARKER = Symbol('7coder.ToolResult');
 const TOOL_RESULT_STATUSES = ['ok', 'error', 'blocked', 'declined', 'cancelled'];
-const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool']);
+const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool',
+  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'process_list_tool']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };

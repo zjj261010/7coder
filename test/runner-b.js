@@ -2919,6 +2919,59 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'tool-results-b2',
+  fn: async () => {
+    const cwd = freshCwd('tool-results-b2');
+    // OPT-13 batch 2: glob/grep emit workspace file NAMES as their first output
+    // line - a file whose name begins with a legacy failure prefix ("Read
+    // error...") flips the text-prefix inference to "failed" today. Structured
+    // status must make the name irrelevant to success/failure.
+    fs.writeFileSync(path.join(cwd, 'Read error fake.txt'), 'NEEDLE-B2-XYZ\n');
+    fs.writeFileSync(path.join(cwd, 'plain-b2.txt'), 'plain content\n');
+    const tc = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const calls = [
+      tc('b2g1','glob_tool',{directory:'.',pattern:'Read error*'}),
+      tc('b2g2','glob_tool',{directory:'.',pattern:'zzz-nothing*'}),
+      tc('b2r1','grep_tool',{pattern:'NEEDLE-B2-XYZ'}),
+      tc('b2r2','grep_tool',{pattern:'zzz-no-such-thing'}),
+      tc('b2rf1','read_file',{path:'missing-b2.txt'}),
+      tc('b2rf2','read_file',{path:'plain-b2.txt'}),
+      tc('b2ld1','list_dir',{path:'no-such-dir-b2'}),
+      tc('b2ld2','list_dir',{path:'.'}),
+      tc('b2gs','git_status_tool',{}),
+      tc('b2gd','git_diff_tool',{}),
+      tc('b2pl','process_list_tool',{}),
+      tc('b2wf','workflow_tool',{steps:[{tool:'glob_tool',args:{directory:'.',pattern:'Read error*'}},{tool:'write_file',args:{path:'wf-b2-continued.txt',content:'ok'}}]})
+    ];
+    const m = startMock([
+      {role:'assistant',content:null,tool_calls:calls}, {role:'assistant',content:'B2-DONE'}
+    ]);
+    let srv;
+    try {
+      await new Promise(r=>setTimeout(r,600));
+      const srvPort=port+595;
+      srv=spawn(NODE_BIN,[IDX,'--server'],{cwd,stdio:'ignore',env:Object.assign({},process.env,{OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',HTTP_PORT:String(srvPort),HTTP_API_KEY:'',PERMISSION_MODE:'bypass'})});
+      await new Promise(r=>setTimeout(r,1800));
+      const chat=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'b2'}]});
+      const events=chat.body.split('\n').filter(l=>l.startsWith('data: {')).map(l=>JSON.parse(l.slice(6)));
+      const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
+      const log=readLog(m.log);
+      const result=id=>tr(log,id);
+      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=r.c.substring(0,25);const o=outputs.find(e=>e.result&&e.result.substring(0,25)===key);return o&&o.status;};
+      record('ToolResult-b2: glob output naming an error-looking file stays ok', result('b2g1') && statusOf('b2g1')==='completed' && result('b2g1').c.startsWith('Read error fake.txt'), JSON.stringify(outputs.map(o=>o.status)));
+      record('ToolResult-b2: grep match inside an error-looking filename stays ok', result('b2r1') && statusOf('b2r1')==='completed' && result('b2r1').c.startsWith('Read error fake.txt'), '');
+      record('ToolResult-b2: workflow continues past error-looking glob result and writes', result('b2wf') && result('b2wf').c.startsWith('[OK] Workflow complete') && fs.existsSync(path.join(cwd,'wf-b2-continued.txt')), result('b2wf') ? result('b2wf').c.substring(0,120) : 'no result');
+      record('ToolResult-b2: read_file real failure is error and success is completed', result('b2rf1') && statusOf('b2rf1')==='error' && result('b2rf1').c.startsWith('Read error:') && statusOf('b2rf2')==='completed', '');
+      record('ToolResult-b2: list_dir failure is error and listing is completed', result('b2ld1') && statusOf('b2ld1')==='error' && result('b2ld1').c.startsWith('List error:') && statusOf('b2ld2')==='completed', '');
+      record('ToolResult-b2: git status and git diff of a dirty tree stay completed', statusOf('b2gs')==='completed' && statusOf('b2gd')==='completed', '');
+      record('ToolResult-b2: process list completes and grep no-match stays completed', statusOf('b2pl')==='completed' && statusOf('b2r2')==='completed' && result('b2r2') && result('b2r2').c.startsWith('No matches for pattern:'), '');
+      const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
+      record('ToolResult-b2: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+    } finally { if (srv) srv.kill(); stopMock(m); }
+  }
+});
+
 // ====================== RUNNER ======================
 scenarios.push({
   name: 'state-path-guards',

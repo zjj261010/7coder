@@ -282,7 +282,7 @@ scenarios.push({
     const start = src.indexOf('// OPT-13: pilot tools carry authoritative status');
     const end = src.indexOf('// Central choke point', start);
     const ctx={};
-    require('vm').runInNewContext(src.slice(start,end)+'\nthis.api={makeToolResult,toolResultText,toolResultStatus,toolFailed,normalizeToolResult};',ctx);
+    require('vm').runInNewContext(src.slice(start,end)+'\nthis.api={makeToolResult,toolResultText,toolResultStatus,toolFailed,normalizeToolResult,STRUCTURED_RESULT_TOOLS};',ctx);
     const api=ctx.api;
     record('ToolResult contract: semantic status overrides both benign and error-looking text', api.toolFailed(api.makeToolResult('error','Friendly failure')) && !api.toolFailed(api.makeToolResult('ok','Tests error: sample text User declined')) && api.toolResultStatus(api.makeToolResult('ok','User declined'))==='ok', '');
     record('ToolResult contract: blocked declined cancelled are distinct failing statuses', ['blocked','declined','cancelled'].every(s=>{const r=api.makeToolResult(s,'same text');return api.toolFailed(r)&&api.toolResultStatus(r)===s;}), '');
@@ -291,6 +291,7 @@ scenarios.push({
     record('ToolResult contract: optional data stays internal and normalized identity is preserved', api.toolResultText(result)==='plain model text' && result.data.value===42 && api.normalizeToolResult(result)===result && Object.isFrozen(result), '');
     const invalid=(s,t)=>{try{api.makeToolResult(s,t);return false;}catch(e){return true;}};
     record('ToolResult contract: malformed statuses, nontext results and unbranded objects get no authority', invalid('success','text') && invalid('ok',{}) && api.toolResultStatus({status:'blocked',text:'fake'})==='ok' && api.toolResultText({status:'error'})==='[object Object]', '');
+    record('ToolResult contract: batch-2 read tools are registered structured', ['read_file','glob_tool','grep_tool','list_dir','git_status_tool','git_diff_tool','process_list_tool'].every(n=>api.STRUCTURED_RESULT_TOOLS.has(n)) && ['run_tests_tool','diagnostics_tool','workflow_tool'].every(n=>api.STRUCTURED_RESULT_TOOLS.has(n)), '');
     // Exercise workflow completion and cancellation directly with controlled
     // tool callbacks; no wall-clock race or process kill needed.
     const wfStart=src.indexOf("  if (name === 'workflow_tool') {");
