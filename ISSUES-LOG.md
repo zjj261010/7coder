@@ -8,6 +8,7 @@
 >
 > 当前状态（2026-10-13）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-13~16 及既有暂缓项仍保留；OPT-12 已完成统一元数据；GAP-8/12、OPT-17 与 P2-7 已按 10-13 补齐范围验收，不能称全部待办清零。详见文末清账与修复记录。
 > 历史发布快照（v2.18.0，`1f52a8a`）：离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、内置 Node 13.14.0 冒烟通过）。该产物早于后续 OP2/A2 修复，不能据此宣称包含修复；本轮未重新打包。
+> 本轮回归（2026-10-20，**OPT-13 第三批**）：7 个状态读取/内容透传工具（task_get/task_list/task_output/memory_tool/list_mcp_resources/read_mcp_resource/prompt_from_file）迁移结构化 ToolResult（同批二分工：tierflow_pro 照规格执行＋门禁红绿，主会话终检）。先红后绿：实施前 runner-b 失败记录恰 4 条（任务输出/prompt 文件/MCP 资源的内容透传前缀误判×2、Task/File/Resource not found 三类推断缺口、workflow 跨错误样任务输出中断）、runner-i 恰 1 条。全绿门禁：node --check + runner-b **328/328** + runner-i **53/53** + runner(A) 88/88 + test-all 12 目标全绿；**Node 13.14.0 复验 B 328/328、I 53/53、A 88/88**。list_mcp_resources 的 catch 前缀 `MCP resource list error:` 不匹配 TO_FAIL_RE 的 `MCP error`（推断缺口）一并修复，活体反例不可构造由代码审查确认。**附带观察（不修）**：任务 id `task-<13位时间戳>-N` 含 `sk-<数字>` 子串，SSE/审计展示侧 sanitizeAuditLine（index.js:419）会把它掩码成 `task-***-1`——展示侧脱敏的预期副作用，模型侧文本未脱敏、功能无损；测试侧以同款归一化适配（b3 场景 norm 辅助）。
 > 本轮回归（2026-10-20，**OPT-13 第二批**）：7 个只读工具迁移结构化 ToolResult（弱模型 tierflow_pro 照规格执行＋门禁红绿，主会话终检）。先红后绿：实施前 runner-b 失败记录恰 4 条（glob/grep/workflow 三条内容驱动误判反例＋git_diff 脏树 declined 反例——第 4 条由红测试编写员实证发现：freshCwd 在仓库内、未提交 diff 文本含 declined 被 `/declined/i` 旧推断误判，恰是本批要修的误判类）、runner-i 恰 1 条。全绿门禁：node --check + runner-b **322/322** + runner-i **52/52** + runner(A) 88/88 + test-all 12 目标全绿；**Node 13.14.0 目标运行时复验 B 322/322、I 52/52、A 88/88**。过程中修正两处我方工件缺陷（红测试规格的文本身份匹配在 process_list >12000 字符被 SSE 截断时失配→前缀键匹配；门禁把 `FAILED:` 汇总行计入失败记录数）。process_list_tool 错误路径无法构造活体反例（tasklist 难以强制失败），由代码审查确认（r.error 分支显式 error）。
 > 本轮回归（2026-10-17，**v2.19.0 发布轮**）：test-all 12 目标全绿（A 88/B 314/C 35/D 32/E 22/F 23/G 29/H 32/I 51/J 16 = 609 离线断言，另有 ui-sim 43 + dom-sim + 可选真实 Chrome）；Node 13.14.0 目标运行时 A 88/88；真实端点 kimi-k2.7-code（用户指定，网关探针通过、reasoning 正常）：**R 9/10、K 5/9**——失败均为 auto 审批保守（verdict 探针：JSON 解析正常、AST-R2 拒绝理由正常浮现；qwen3.7-plus 同代码曾 10/10 与 9/9，属模型气质差异非产品缺陷）；**bypass 复跑佐证**：新增 `REAL_PERM` 透传（test/runner-k.js、test/runner-r.js）后以 `REAL_PERM=bypass` 重跑，K 6/6（real-coding/real-workflow/real-fix 全过）、R **10/10**（含 R3 counter.txt）——确认失败根因确为审批保守；离线包 dist/7coder-v2.19.0-offline-win64.zip（21.7MB、457 条目、零残渣零 .env、runtime 冒烟通过）。
 > 本轮回归（2026-10-15，OPT-14）：A–J **635/635**（A85/B312/C35/D32/E22/F23/G29/H32/I51/J16）；UI mock 43/43、DOM 12/12、真实 Chrome 9/9，完整入口 13/13 targets 通过。状态路径专项 5/5；静态断言 **604**。
@@ -15,19 +16,19 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 305 |
+| runner-b.js | 311 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 23 |
 | runner-g.js | 31 |
 | runner-h.js | 27 |
-| runner-i.js | 50 |
+| runner-i.js | 51 |
 | runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 60 |
-| **合计** | **618** |
+| **合计** | **625** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -406,7 +407,7 @@
 | # | 方向 | 状态 |
 |---|------|------|
 | OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ✅ 本轮统一为 index.js TOOL_METADATA：53 个工具逐一声明风险/审批说明/自动放行/只读并行/改动跟踪、执行性/资源/现有取消支持。初始化校验与旧策略基线对照见文末 OPT-12 记录；取消语义本身仍由 OPT-15 跟踪 |
-| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具（2026-10-20）**：read_file/glob_tool/grep_tool/list_dir/git_status_tool/git_diff_tool/process_list_tool 纯状态迁移，文本逐字节不变——glob/grep 输出不再因错误样文件名被误判失败（workflow 不再因此中断）、git_diff 文本含 declined 不再误判拒绝、process_list 错误路径获显式 error（修正 TO_FAIL_RE 推断缺口）。其余 43 工具仍走旧字符串兼容。实现与验收见文末 |
+| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob_tool/grep_tool/list_dir/git_status_tool/git_diff_tool/process_list_tool——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具（2026-10-20）**：task_get/task_list/task_output/memory_tool/list_mcp_resources/read_mcp_resource/prompt_from_file——任务输出/prompt/MCP 资源内容不再因错误样前缀误判、Task/File/Resource not found 与 MCP resource list error 三类推断缺口获显式 error。累计 17/53；其余 36 工具仍走旧字符串兼容。实现与验收见文末 |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ✅ internalStatePath/managedWorkspacePath 统一校验产品状态目录、会话、备份、MCP、skills、memory、todos、summaries、审计和工作区状态文件；junction/symlink 越界 fail-closed。普通用户文件仍走 sanitizePath，取消契约留 OPT-15 |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |

@@ -2556,24 +2556,24 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
   if (name === 'task_get_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
-    if (!t) return 'Task not found';
-    return JSON.stringify({ id: t.id, description: t.description, command: t.command, status: t.status, startedAt: t.startedAt, endedAt: t.endedAt }, null, 2);
+    if (!t) return makeToolResult('error', 'Task not found');
+    return makeToolResult('ok', JSON.stringify({ id: t.id, description: t.description, command: t.command, status: t.status, startedAt: t.startedAt, endedAt: t.endedAt }, null, 2));
   }
   if (name === 'task_list_tool') {
-    if (!backgroundTasks.size) return 'No tasks';
-    return Array.from(backgroundTasks.values())
+    if (!backgroundTasks.size) return makeToolResult('ok', 'No tasks');
+    return makeToolResult('ok', Array.from(backgroundTasks.values())
       .map(t => `${t.id} | ${t.status} | ${t.command.substring(0, 60)}`)
-      .join('\n');
+      .join('\n'));
   }
   if (name === 'task_output_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
-    if (!t) return 'Task not found';
+    if (!t) return makeToolResult('error', 'Task not found');
     const MAXSHOW = 8000;
     const out = t.output || '(no output yet)';
     if (out.length > MAXSHOW) {
-      return `...(output truncated, showing last ${MAXSHOW} chars)\n` + out.substring(out.length - MAXSHOW);
+      return makeToolResult('ok', `...(output truncated, showing last ${MAXSHOW} chars)\n` + out.substring(out.length - MAXSHOW));
     }
-    return out;
+    return makeToolResult('ok', out);
   }
   if (name === 'task_stop_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
@@ -2648,50 +2648,50 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (action === 'save') {
       const topic = String(args.topic || '').trim();
       const content = typeof args.content === 'string' ? args.content : '';
-      if (!memoryTopicValid(topic)) return 'Tool error: memory_tool save requires a topic of [a-z0-9][a-z0-9_-] (max 40 chars)';
-      if (!content.trim()) return 'Tool error: memory_tool save requires non-empty content';
+      if (!memoryTopicValid(topic)) return makeToolResult('error', 'Tool error: memory_tool save requires a topic of [a-z0-9][a-z0-9_-] (max 40 chars)');
+      if (!content.trim()) return makeToolResult('error', 'Tool error: memory_tool save requires non-empty content');
       const guard = memoryPathGuard(topic); // A2-01: junction/protected_extra fail closed
-      if (guard) return guard;
+      if (guard) return makeToolResult('error', guard);
       const existed = readMemoryFile(topic) !== null;
       const MAX = 32 * 1024;
       saveMemoryFile(topic, content.length > MAX ? content.substring(0, MAX) + '\n[truncated at 32KB]' : content);
-      return `[OK] Memory note ${existed ? 'updated' : 'saved'}: ${topic}.md (${content.length} chars)`;
+      return makeToolResult('ok', `[OK] Memory note ${existed ? 'updated' : 'saved'}: ${topic}.md (${content.length} chars)`);
     }
     if (action === 'read') {
       const topic = String(args.topic || '').trim();
-      if (!memoryTopicValid(topic)) return 'Tool error: invalid topic';
+      if (!memoryTopicValid(topic)) return makeToolResult('error', 'Tool error: invalid topic');
       const guard = memoryPathGuard(topic); // A2-01
-      if (guard) return guard;
+      if (guard) return makeToolResult('error', guard);
       const body = readMemoryFile(topic);
-      if (body === null) return `Tool error: no memory note named "${topic}"`;
-      return `## ${topic}\n${body}`;
+      if (body === null) return makeToolResult('error', `Tool error: no memory note named "${topic}"`);
+      return makeToolResult('ok', `## ${topic}\n${body}`);
     }
     if (action === 'list') {
       const topics = listMemoryTopics();
-      if (!topics.length) return 'No memory notes yet. Use action=save with a topic and content.';
-      return topics.map(t => {
+      if (!topics.length) return makeToolResult('ok', 'No memory notes yet. Use action=save with a topic and content.');
+      return makeToolResult('ok', topics.map(t => {
         const body = readMemoryFile(t) || '';
         const head = body.split('\n').find(l => l.trim()) || '';
         return `${t}\t${head.substring(0, 80)}`;
-      }).join('\n');
+      }).join('\n'));
     }
     if (action === 'delete') {
       const topic = String(args.topic || '').trim();
-      if (!memoryTopicValid(topic)) return 'Tool error: invalid topic';
+      if (!memoryTopicValid(topic)) return makeToolResult('error', 'Tool error: invalid topic');
       const guard = memoryPathGuard(topic); // A2-01
-      if (guard) return guard;
-      try { fs.unlinkSync(memoryFilePath(topic)); return `[OK] Memory note deleted: ${topic}.md`; }
-      catch (e) { return `Tool error: no memory note named "${topic}"`; }
+      if (guard) return makeToolResult('error', guard);
+      try { fs.unlinkSync(memoryFilePath(topic)); return makeToolResult('ok', `[OK] Memory note deleted: ${topic}.md`); }
+      catch (e) { return makeToolResult('error', `Tool error: no memory note named "${topic}"`); }
     }
-    return 'Tool error: memory_tool requires action=save|read|list|delete';
+    return makeToolResult('error', 'Tool error: memory_tool requires action=save|read|list|delete');
   }
 
   if (name === 'list_mcp_resources_tool') {
     try {
       const safeDir = internalStatePath('.mcp');
       fs.mkdirSync(safeDir, { recursive: true });
-      return fs.readdirSync(safeDir).join('\n') || 'No MCP resources';
-    } catch (e) { return `MCP resource list error: ${e.message}`; }
+      return makeToolResult('ok', fs.readdirSync(safeDir).join('\n') || 'No MCP resources');
+    } catch (e) { return makeToolResult('error', `MCP resource list error: ${e.message}`); }
   }
   if (name === 'read_mcp_resource_tool') {
     try {
@@ -2699,8 +2699,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const resReal = realPathSafe(resPath);
       // internalStatePath already verifies the .mcp root and every existing
       // prefix before this final real-path read.
-      return fs.readFileSync(resReal, 'utf8');
-    } catch (e) { return 'Resource not found (paths outside the .mcp directory are blocked)'; }
+      return makeToolResult('ok', fs.readFileSync(resReal, 'utf8'));
+    } catch (e) { return makeToolResult('error', 'Resource not found (paths outside the .mcp directory are blocked)'); }
   }
 
   if (name === 'mcp_tool') {
@@ -2850,7 +2850,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'prompt_from_file') {
-    try { return fs.readFileSync(path.join(launchDir, sanitizePath(args.file)), 'utf8'); } catch { return 'File not found'; }
+    try { return makeToolResult('ok', fs.readFileSync(path.join(launchDir, sanitizePath(args.file)), 'utf8')); } catch { return makeToolResult('error', 'File not found'); }
   }
 
   if (name === 'auto_approval_return') {
@@ -3717,10 +3717,12 @@ async function askApproval(question, approvalBridge) {
 // The symbol identifies internal results, so arbitrary returned objects are
 // never mistaken for status-bearing results. Data stays internal (not SSE).
 // Batch 2 (2026-10-20): read-only tools joined - status-only migration, texts unchanged.
+// Batch 3 (2026-10-20): state reads and content passthroughs - not-found texts become explicit errors.
 const TOOL_RESULT_MARKER = Symbol('7coder.ToolResult');
 const TOOL_RESULT_STATUSES = ['ok', 'error', 'blocked', 'declined', 'cancelled'];
 const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool',
-  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'process_list_tool']);
+  'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'process_list_tool',
+  'task_get_tool', 'task_list_tool', 'task_output_tool', 'memory_tool', 'list_mcp_resources_tool', 'read_mcp_resource_tool', 'prompt_from_file']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };

@@ -292,6 +292,7 @@ scenarios.push({
     const invalid=(s,t)=>{try{api.makeToolResult(s,t);return false;}catch(e){return true;}};
     record('ToolResult contract: malformed statuses, nontext results and unbranded objects get no authority', invalid('success','text') && invalid('ok',{}) && api.toolResultStatus({status:'blocked',text:'fake'})==='ok' && api.toolResultText({status:'error'})==='[object Object]', '');
     record('ToolResult contract: batch-2 read tools are registered structured', ['read_file','glob_tool','grep_tool','list_dir','git_status_tool','git_diff_tool','process_list_tool'].every(n=>api.STRUCTURED_RESULT_TOOLS.has(n)) && ['run_tests_tool','diagnostics_tool','workflow_tool'].every(n=>api.STRUCTURED_RESULT_TOOLS.has(n)), '');
+    record('ToolResult contract: batch-3 state and content tools are registered structured', ['task_get_tool','task_list_tool','task_output_tool','memory_tool','list_mcp_resources_tool','read_mcp_resource_tool','prompt_from_file'].every(n=>api.STRUCTURED_RESULT_TOOLS.has(n)) && ['run_tests_tool','diagnostics_tool','workflow_tool','read_file','glob_tool','grep_tool','list_dir','git_status_tool','git_diff_tool','process_list_tool'].every(n=>api.STRUCTURED_RESULT_TOOLS.has(n)), '');
     // Exercise workflow completion and cancellation directly with controlled
     // tool callbacks; no wall-clock race or process kill needed.
     const wfStart=src.indexOf("  if (name === 'workflow_tool') {");

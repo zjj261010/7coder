@@ -2972,6 +2972,67 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'tool-results-b3',
+  fn: async () => {
+    const cwd = freshCwd('tool-results-b3');
+    // OPT-13 batch 3: task_output / prompt_from_file / read_mcp_resource pass
+    // THROUGH file and command content - content beginning with a legacy
+    // failure prefix flips the text-prefix inference today; not-found texts
+    // ("Task/File/Resource not found") are not in TOOL_FAIL_RE and were
+    // inferred ok. Structured status fixes both classes.
+    fs.mkdirSync(path.join(cwd, '.mcp'), { recursive: true });
+    fs.writeFileSync(path.join(cwd, '.mcp', 'fake-res.txt'), '[ERROR] b3-fake-resource-content\nsecond line\n');
+    fs.writeFileSync(path.join(cwd, 'fake-prompt.txt'), '[ERROR] b3-fake-prompt-content\nsecond line\n');
+    const tc = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const calls = [
+      tc('b3tc','task_create_tool',{command:'echo [ERROR] b3-fake-task-output',description:'b3 red'}),
+      tc('b3sl','sleep_tool',{ms:2500}),
+      tc('b3to','task_output_tool',{task_id:'no-such-task'}),
+      tc('b3tg','task_get_tool',{task_id:'no-such-task'}),
+      tc('b3to2','task_output_tool',{}),
+      tc('b3tl','task_list_tool',{}),
+      tc('b3ms','memory_tool',{action:'save',topic:'fakemem',content:'memory body b3'}),
+      tc('b3mr','memory_tool',{action:'read',topic:'fakemem'}),
+      tc('b3ml','memory_tool',{action:'list'}),
+      tc('b3lr','list_mcp_resources_tool',{}),
+      tc('b3rr','read_mcp_resource_tool',{resource_id:'fake-res.txt'}),
+      tc('b3rm','read_mcp_resource_tool',{resource_id:'missing-res.txt'}),
+      tc('b3pf','prompt_from_file',{file:'fake-prompt.txt'}),
+      tc('b3pm','prompt_from_file',{file:'missing-prompt.txt'}),
+      tc('b3wf','workflow_tool',{steps:[{tool:'task_output_tool',args:{}},{tool:'write_file',args:{path:'wf-b3-continued.txt',content:'ok'}}]})
+    ];
+    const m = startMock([
+      {role:'assistant',content:null,tool_calls:calls}, {role:'assistant',content:'B3-DONE'}
+    ]);
+    let srv;
+    try {
+      await new Promise(r=>setTimeout(r,600));
+      const srvPort=port+597;
+      srv=spawn(NODE_BIN,[IDX,'--server'],{cwd,stdio:'ignore',env:Object.assign({},process.env,{OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',HTTP_PORT:String(srvPort),HTTP_API_KEY:'',PERMISSION_MODE:'bypass'})});
+      await new Promise(r=>setTimeout(r,1800));
+      const chat=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'b3'}]});
+      const events=chat.body.split('\n').filter(l=>l.startsWith('data: {')).map(l=>JSON.parse(l.slice(6)));
+      const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
+      const log=readLog(m.log);
+      const result=id=>tr(log,id);
+      // SSE display text passes sanitizeAuditLine, whose /sk-[A-Za-z0-9]{8,}/
+      // masking also hits "ta<sk-...>" inside task ids - normalize both sides
+      // the same way before keying (display-only masking; the model text keeps
+      // the full id).
+      const norm=s=>String(s).replace(/sk-[A-Za-z0-9]{8,}/g,'sk-***');
+      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=norm(r.c).substring(0,25);const o=outputs.find(e=>e.result&&norm(e.result).substring(0,25)===key);return o&&o.status;};
+      record('ToolResult-b3: task output that begins like an error prefix stays ok', result('b3to2') && statusOf('b3to2')==='completed' && result('b3to2').c.startsWith('[ERROR] b3-fake-task-output'), JSON.stringify(outputs.map(o=>o.status)));
+      record('ToolResult-b3: prompt and mcp resource content passthrough stays ok', result('b3pf') && statusOf('b3pf')==='completed' && result('b3rr') && statusOf('b3rr')==='completed' && result('b3rr').c.startsWith('[ERROR] b3-fake-resource'), '');
+      record('ToolResult-b3: not-found failures report explicit error status', ['b3to','b3tg','b3rm','b3pm'].every(id=>statusOf(id)==='error'), JSON.stringify({task:statusOf('b3to'),res:statusOf('b3rm'),file:statusOf('b3pm')}));
+      record('ToolResult-b3: workflow continues past error-looking task output and writes', result('b3wf') && result('b3wf').c.startsWith('[OK] Workflow complete') && fs.existsSync(path.join(cwd,'wf-b3-continued.txt')), result('b3wf') ? result('b3wf').c.substring(0,120) : 'no result');
+      record('ToolResult-b3: memory round-trip and listings stay completed', statusOf('b3ms')==='completed' && statusOf('b3mr')==='completed' && statusOf('b3ml')==='completed' && statusOf('b3tl')==='completed' && statusOf('b3lr')==='completed', '');
+      const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
+      record('ToolResult-b3: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+    } finally { if (srv) srv.kill(); stopMock(m); }
+  }
+});
+
 // ====================== RUNNER ======================
 scenarios.push({
   name: 'state-path-guards',
