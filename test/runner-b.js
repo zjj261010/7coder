@@ -3033,6 +3033,65 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'tool-results-b4',
+  fn: async () => {
+    const cwd = freshCwd('tool-results-b4');
+    // OPT-13 batch 4: validation and not-found failure texts ("Skill error:",
+    // 'Skill "x" not found', 'Task error:', 'Task not found', 'Cron job not
+    // found', 'Invalid PID', 'Agent error:') are not in TOOL_FAIL_RE and were
+    // inferred ok. Structured status makes them explicit errors; an
+    // already-finished task stays an idempotent ok stop.
+    const tc = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const calls = [
+      tc('b4sv','skill_tool',{skill_name:'bad name'}),
+      tc('b4sn','skill_tool',{skill_name:'nosuchskill'}),
+      tc('b4tc','task_create_tool',{}),
+      tc('b4ts','task_stop_tool',{task_id:'no-such-task'}),
+      tc('b4cd','cron_delete_tool',{job_id:'no-such'}),
+      tc('b4pk','process_kill_tool',{pid:1}),
+      tc('b4ag','agent_tool',{name:'b4agent',task:''}),
+      tc('b4ta','todo_write_tool',{action:'add',title:'b4 todo item'}),
+      tc('b4tl','todo_write_tool',{action:'list'}),
+      tc('b4tu','todo_write_tool',{action:'update',id:'no-such-id',status:'done'}),
+      tc('b4te','todo_write_tool',{action:'add',title:''}),
+      tc('b4tc2','task_create_tool',{command:'echo b4-ok'}),
+      tc('b4sl','sleep_tool',{ms:2000}),
+      tc('b4ts2','task_stop_tool',{}),
+      tc('b4pk2','process_kill_tool',{pid:4194303})
+    ];
+    const m = startMock([
+      {role:'assistant',content:null,tool_calls:calls}, {role:'assistant',content:'B4-DONE'}
+    ]);
+    let srv;
+    try {
+      await new Promise(r=>setTimeout(r,600));
+      const srvPort=port+598;
+      srv=spawn(NODE_BIN,[IDX,'--server'],{cwd,stdio:'ignore',env:Object.assign({},process.env,{OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',HTTP_PORT:String(srvPort),HTTP_API_KEY:'',PERMISSION_MODE:'bypass'})});
+      await new Promise(r=>setTimeout(r,1800));
+      const chat=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'b4'}]});
+      const events=chat.body.split('\n').filter(l=>l.startsWith('data: {')).map(l=>JSON.parse(l.slice(6)));
+      const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
+      const log=readLog(m.log);
+      const result=id=>tr(log,id);
+      // SSE display text passes sanitizeAuditLine, whose /sk-[A-Za-z0-9]{8,}/
+      // masking also hits "ta<sk-...>" inside task ids - normalize both sides
+      // the same way before keying (display-only masking; the model text keeps
+      // the full id).
+      const norm=s=>String(s).replace(/sk-[A-Za-z0-9]{8,}/g,'sk-***');
+      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=norm(r.c).substring(0,25);const o=outputs.find(e=>e.result&&norm(e.result).substring(0,25)===key);return o&&o.status;};
+      record('ToolResult-b4: skill validation and unknown-skill failures report error', statusOf('b4sv')==='error' && statusOf('b4sn')==='error' && result('b4sn') && result('b4sn').c.startsWith('Skill "nosuchskill" not found'), JSON.stringify({valid:statusOf('b4sv'),unknown:statusOf('b4sn')}));
+      record('ToolResult-b4: task creation validation and not-found stops report error', statusOf('b4tc')==='error' && result('b4tc').c.startsWith('Task error: command is required') && statusOf('b4ts')==='error', '');
+      record('ToolResult-b4: cron delete and pid validation failures report error', statusOf('b4cd')==='error' && result('b4cd').c.startsWith('Cron job not found') && statusOf('b4pk')==='error' && result('b4pk').c.startsWith('Invalid PID'), '');
+      record('ToolResult-b4: agent task validation failure reports error', statusOf('b4ag')==='error' && result('b4ag').c.startsWith('Agent error: task is required'), '');
+      record('ToolResult-b4: todo round-trip and valid task creation stay completed', statusOf('b4ta')==='completed' && statusOf('b4tl')==='completed' && statusOf('b4tu')==='error' && statusOf('b4te')==='error' && statusOf('b4tc2')==='completed' && statusOf('b4pk2')==='error' && result('b4pk2').c.startsWith('Kill error:'), '');
+      record('ToolResult-b4: stopping an already-finished task stays completed', statusOf('b4ts2')==='completed' && result('b4ts2').c.includes('already completed'), result('b4ts2') ? result('b4ts2').c.substring(0,100) : 'no result');
+      const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
+      record('ToolResult-b4: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+    } finally { if (srv) srv.kill(); stopMock(m); }
+  }
+});
+
 // ====================== RUNNER ======================
 scenarios.push({
   name: 'state-path-guards',

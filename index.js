@@ -2246,8 +2246,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'agent_tool') {
     const agentName = String(args.name || 'agent').substring(0, 60);
     const task = String(args.task || '').trim();
-    if (!task) return 'Agent error: task is required';
-    return await runSubAgent(agentName, task, cancelled);
+    if (!task) return makeToolResult('error', 'Agent error: task is required');
+    return makeToolResult('ok', await runSubAgent(agentName, task, cancelled));
   }
 
   if (name === 'run_command') {
@@ -2344,15 +2344,15 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
   if (name === 'process_kill_tool') {
     const pid = parseInt(args.pid, 10);
-    if (!pid || pid < 2) return 'Invalid PID (must be >= 2)';
+    if (!pid || pid < 2) return makeToolResult('error', 'Invalid PID (must be >= 2)');
     try {
       if (process.platform === 'win32') {
         child_process.execSync(`taskkill /PID ${pid} /T /F`, { encoding: 'utf8', timeout: 30000 });
       } else {
         process.kill(pid, 'SIGTERM');
       }
-      return `[OK] Killed process ${pid}`;
-    } catch (e) { return `Kill error: ${e.message}`; }
+      return makeToolResult('ok', `[OK] Killed process ${pid}`);
+    } catch (e) { return makeToolResult('error', `Kill error: ${e.message}`); }
   }
 
   if (name === 'web_fetch_tool') {
@@ -2516,9 +2516,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'task_create_tool') {
-    if (shuttingDown) return 'Task refused: 7coder is shutting down.';
+    if (shuttingDown) return makeToolResult('error', 'Task refused: 7coder is shutting down.');
     const command = String(args.command || '').trim();
-    if (!command) return 'Task error: command is required (e.g. "npm test")';
+    if (!command) return makeToolResult('error', 'Task error: command is required (e.g. "npm test")');
     const taskId = `task-${Date.now()}-${++taskSeq}`;
     const task = {
       id: taskId,
@@ -2552,7 +2552,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
     task.child = child;
     backgroundTasks.set(taskId, task);
-    return `[OK] Background task ${taskId} started: ${command}`;
+    return makeToolResult('ok', `[OK] Background task ${taskId} started: ${command}`);
   }
   if (name === 'task_get_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
@@ -2577,8 +2577,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
   if (name === 'task_stop_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
-    if (!t) return 'Task not found';
-    if (t.status !== 'running') return `Task ${t.id} already ${t.status}`;
+    if (!t) return makeToolResult('error', 'Task not found');
+    if (t.status !== 'running') return makeToolResult('ok', `Task ${t.id} already ${t.status}`);
     t.stopRequested = true;
     try {
       if (process.platform === 'win32' && t.child && t.child.pid) {
@@ -2590,7 +2590,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     t.status = 'stopped';
     t.endedAt = new Date().toISOString();
     pruneTasks();
-    return `[OK] Task ${t.id} stopped`;
+    return makeToolResult('ok', `[OK] Task ${t.id} stopped`);
   }
 
   if (name === 'todo_write_tool') {
@@ -2600,43 +2600,43 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (!action && typeof args.content === 'string' && args.content.trim()) {
       const items = loadTodos();
       const item = { id: nextTodoId(items), title: args.content.trim(), status: 'pending', updated: new Date().toISOString() };
-      if (items.length >= TODO_STORE_MAX) return 'Tool error: task list is full (' + TODO_STORE_MAX + ' items)';
+      if (items.length >= TODO_STORE_MAX) return makeToolResult('error', 'Tool error: task list is full (' + TODO_STORE_MAX + ' items)');
       items.push(item);
       saveTodos(items);
       appendTodoLog(item.title);
-      return `[OK] Task ${item.id} added (pending): ${item.title}`;
+      return makeToolResult('ok', `[OK] Task ${item.id} added (pending): ${item.title}`);
     }
     if (action === 'add') {
       const title = typeof args.title === 'string' ? args.title.trim() : '';
-      if (!title) return 'Tool error: todo_write_tool add requires a non-empty "title"';
+      if (!title) return makeToolResult('error', 'Tool error: todo_write_tool add requires a non-empty "title"');
       const items = loadTodos();
-      if (items.length >= TODO_STORE_MAX) return 'Tool error: task list is full (' + TODO_STORE_MAX + ' items)';
+      if (items.length >= TODO_STORE_MAX) return makeToolResult('error', 'Tool error: task list is full (' + TODO_STORE_MAX + ' items)');
       const item = { id: nextTodoId(items), title: title, status: TODO_STATUSES.indexOf(args.status) !== -1 ? args.status : 'pending', updated: new Date().toISOString() };
       items.push(item);
       saveTodos(items);
       appendTodoLog(item.title);
-      return `[OK] Task ${item.id} added (${item.status}): ${item.title}`;
+      return makeToolResult('ok', `[OK] Task ${item.id} added (${item.status}): ${item.title}`);
     }
     if (action === 'update') {
       const items = loadTodos();
       const it = items.find(x => x.id === args.id);
-      if (!it) return `Tool error: task id "${args.id}" not found`;
+      if (!it) return makeToolResult('error', `Tool error: task id "${args.id}" not found`);
       if (typeof args.title === 'string' && args.title.trim()) it.title = args.title.trim();
       if (args.status !== undefined && args.status !== null) {
-        if (TODO_STATUSES.indexOf(args.status) === -1) return `Tool error: invalid status "${args.status}" (pending/doing/done)`;
+        if (TODO_STATUSES.indexOf(args.status) === -1) return makeToolResult('error', `Tool error: invalid status "${args.status}" (pending/doing/done)`);
         it.status = args.status;
       }
       it.updated = new Date().toISOString(); // any update (incl. status change) refreshes updated
       saveTodos(items);
       appendTodoLog(`${it.id} -> [${it.status}] ${it.title}`);
-      return `[OK] Task ${it.id} updated (${it.status}): ${it.title}`;
+      return makeToolResult('ok', `[OK] Task ${it.id} updated (${it.status}): ${it.title}`);
     }
     if (action === 'list') {
       const items = loadTodos();
-      if (!items.length) return 'No tasks yet. Use action=add to create one.';
-      return items.map(it => `${it.id}\t[${it.status}]\t${it.title}`).join('\n');
+      if (!items.length) return makeToolResult('ok', 'No tasks yet. Use action=add to create one.');
+      return makeToolResult('ok', items.map(it => `${it.id}\t[${it.status}]\t${it.title}`).join('\n'));
     }
-    return 'Tool error: todo_write_tool requires action=add|update|list (or a legacy content string)';
+    return makeToolResult('error', 'Tool error: todo_write_tool requires action=add|update|list (or a legacy content string)');
   }
 
   if (name === 'memory_tool') {
@@ -2813,13 +2813,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
   if (name === 'cron_delete_tool') {
     if (!args.job_id || !cronJobs.has(args.job_id)) {
-      return 'Cron job not found: ' + (args.job_id || '(no job_id provided)');
+      return makeToolResult('error', 'Cron job not found: ' + (args.job_id || '(no job_id provided)'));
     }
     const job = cronJobs.get(args.job_id);
     job.stopped = true;
     clearTimeout(job.timer);
     cronJobs.delete(args.job_id);
-    return `[OK] Cron job deleted`;
+    return makeToolResult('ok', `[OK] Cron job deleted`);
   }
   if (name === 'cron_list_tool') {
     if (!cronJobs.size) return 'No cron jobs';
@@ -2831,7 +2831,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'skill_tool') {
     const skillName = String(args.skill_name || '').trim();
     if (!/^[a-zA-Z0-9._-]+$/.test(skillName)) {
-      return 'Skill error: skill_name must be a simple name (letters, digits, dot, dash, underscore)';
+      return makeToolResult('error', 'Skill error: skill_name must be a simple name (letters, digits, dot, dash, underscore)');
     }
     const skillPath = internalStatePath('.7coder/skills', skillName + '.md');
     try {
@@ -2839,13 +2839,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const paramsJson = (args.params && Object.keys(args.params).length)
         ? `\n\nCaller-provided params:\n${JSON.stringify(args.params, null, 2)}`
         : '';
-      return `Executing skill "${skillName}". Follow these instructions:\n\n${content}${paramsJson}`;
+      return makeToolResult('ok', `Executing skill "${skillName}". Follow these instructions:\n\n${content}${paramsJson}`);
     } catch (e) {
       let available = 'none';
       try {
         available = fs.readdirSync(internalStatePath('.7coder/skills')).filter(f => f.endsWith('.md')).join(', ') || 'none';
       } catch (e2) {}
-      return `Skill "${skillName}" not found. Available skills: ${available}. Create skills as .7coder/skills/<name>.md files.`;
+      return makeToolResult('error', `Skill "${skillName}" not found. Available skills: ${available}. Create skills as .7coder/skills/<name>.md files.`);
     }
   }
 
@@ -3718,11 +3718,13 @@ async function askApproval(question, approvalBridge) {
 // never mistaken for status-bearing results. Data stays internal (not SSE).
 // Batch 2 (2026-10-20): read-only tools joined - status-only migration, texts unchanged.
 // Batch 3 (2026-10-20): state reads and content passthroughs - not-found texts become explicit errors.
+// Batch 4 (2026-10-20): validation-gap tools - Skill/Task/Cron/PID/Agent failures become explicit errors.
 const TOOL_RESULT_MARKER = Symbol('7coder.ToolResult');
 const TOOL_RESULT_STATUSES = ['ok', 'error', 'blocked', 'declined', 'cancelled'];
 const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool',
   'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'process_list_tool',
-  'task_get_tool', 'task_list_tool', 'task_output_tool', 'memory_tool', 'list_mcp_resources_tool', 'read_mcp_resource_tool', 'prompt_from_file']);
+  'task_get_tool', 'task_list_tool', 'task_output_tool', 'memory_tool', 'list_mcp_resources_tool', 'read_mcp_resource_tool', 'prompt_from_file',
+  'skill_tool', 'todo_write_tool', 'task_create_tool', 'task_stop_tool', 'cron_delete_tool', 'process_kill_tool', 'agent_tool']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };
