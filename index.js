@@ -2667,9 +2667,12 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
     // AST-09: async exec - a long command no longer freezes the HTTP server.
     const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ cmd: withUtf8Codepage(cmd) }), cancelled);
-    if (aborted) return '[aborted: client disconnected]';
-    if (r.error) return `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`;
-    return `Command OK:\n${r.stdout}`;
+    if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
+    if (r.error) return makeToolResult('error', `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`);
+    // T22-20: a successful exit can still carry warnings on stderr - keep
+    // them instead of silently dropping the stream.
+    const okText = r.stderr.trim() ? `Command OK:\n${r.stdout}\n[STDERR]\n${r.stderr}` : `Command OK:\n${r.stdout}`;
+    return makeToolResult('ok', okText);
   }
 
   if (name === 'bash_tool') {
@@ -2682,29 +2685,30 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (args.persistent === true) {
       const sh = getPersistentShell(shellSessionKey());
       if (!sh) {
-        return 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.';
+        return makeToolResult('error', 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.');
       }
       const limit = Math.max(1000, Math.min(300000, parseInt(args.timeout_ms, 10) || 120000));
       const r = await sh.run(String(cmd), limit);
-      if (cancelled && cancelled()) return '[aborted: client disconnected]';
-      if (r.restarted) return `[ERROR] Command failed:\n${r.out}`;
-      if (r.code !== 0) return `[ERROR] Command failed (exit ${r.code}):\n${r.out}`;
-      return `Command OK (persistent shell, exit 0):\n${r.out}`;
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: client disconnected]');
+      if (r.restarted) return makeToolResult('error', `[ERROR] Command failed:\n${r.out}`);
+      if (r.code !== 0) return makeToolResult('error', `[ERROR] Command failed (exit ${r.code}):\n${r.out}`);
+      return makeToolResult('ok', `Command OK (persistent shell, exit 0):\n${r.out}`);
     }
 
     const bash = findBash();
     if (!bash) {
-      return 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.';
+      return makeToolResult('error', 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.');
     }
     const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: bash, args: ['-c', String(cmd)] }), cancelled);
-    if (aborted) return '[aborted: client disconnected]';
-    if (r.error) return `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`;
-    return `Command OK:\n${r.stdout}`;
+    if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
+    if (r.error) return makeToolResult('error', `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`);
+    const okText = r.stderr.trim() ? `Command OK:\n${r.stdout}\n[STDERR]\n${r.stderr}` : `Command OK:\n${r.stdout}`;
+    return makeToolResult('ok', okText);
   }
 
   if (name === 'powershell_tool') {
     if (process.platform !== 'win32') {
-      return 'powershell_tool is Windows-only - use bash_tool or run_command on this platform.';
+      return makeToolResult('error', 'powershell_tool is Windows-only - use bash_tool or run_command on this platform.');
     }
     let cmd = args.command || '';
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') console.log(`[WARN] Running (PowerShell): ${cmd.substring(0, 200)}`);
@@ -2712,9 +2716,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // and supported since PowerShell 2.0 (Windows 7).
     const encoded = Buffer.from(String(cmd), 'utf16le').toString('base64');
     const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: 'powershell', args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded] }), cancelled);
-    if (aborted) return '[aborted: client disconnected]';
-    if (r.error) return `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`;
-    return `Command OK:\n${r.stdout}`;
+    if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
+    if (r.error) return makeToolResult('error', `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`);
+    const okText = r.stderr.trim() ? `Command OK:\n${r.stdout}\n[STDERR]\n${r.stderr}` : `Command OK:\n${r.stdout}`;
+    return makeToolResult('ok', okText);
   }
 
   if (name === 'glob_tool') {
@@ -4195,13 +4200,16 @@ async function askApproval(question, approvalBridge, cancelled) {
 // Batch 4 (2026-10-20): validation-gap tools - Skill/Task/Cron/PID/Agent failures become explicit errors.
 // Batch 5 (2026-10-24): web/gap tools - runSubAgent failures, Fetch/Synthetic/Worktree/Screenshot
 // failures become explicit errors; fetched page content stays ok.
+// Batch 6 (2026-10-24): command tools - aborted commands become cancelled (was inferred ok);
+// successful commands retain a non-empty stderr tail; bash-missing/non-Windows gaps closed.
 const TOOL_RESULT_MARKER = Symbol('7coder.ToolResult');
 const TOOL_RESULT_STATUSES = ['ok', 'error', 'blocked', 'declined', 'cancelled'];
 const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool',
   'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'process_list_tool',
   'task_get_tool', 'task_list_tool', 'task_output_tool', 'memory_tool', 'list_mcp_resources_tool', 'read_mcp_resource_tool', 'prompt_from_file',
   'skill_tool', 'todo_write_tool', 'task_create_tool', 'task_stop_tool', 'cron_delete_tool', 'process_kill_tool', 'agent_tool',
-  'web_fetch_tool', 'synthetic_output_tool', 'enter_worktree_tool', 'computer_use', 'schedule_cron_tool', 'cron_create_tool']);
+  'web_fetch_tool', 'synthetic_output_tool', 'enter_worktree_tool', 'computer_use', 'schedule_cron_tool', 'cron_create_tool',
+  'run_command', 'bash_tool', 'powershell_tool']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };

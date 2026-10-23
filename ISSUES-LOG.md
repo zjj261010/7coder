@@ -23,19 +23,19 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 324 |
+| runner-b.js | 331 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 23 |
 | runner-g.js | 31 |
 | runner-h.js | 27 |
-| runner-i.js | 53 |
+| runner-i.js | 54 |
 | runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 60 |
-| **合计** | **640** |
+| **合计** | **648** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -416,7 +416,7 @@
 | # | 方向 | 状态 |
 |---|------|------|
 | OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ✅ 本轮统一为 index.js TOOL_METADATA：53 个工具逐一声明风险/审批说明/自动放行/只读并行/改动跟踪、执行性/资源/现有取消支持。初始化校验与旧策略基线对照见文末 OPT-12 记录；取消语义本身仍由 OPT-15 跟踪 |
-| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob/grep/list_dir/git_status/git_diff/process_list——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具**（task_get/task_list/task_output/memory/list_mcp_resources/read_mcp_resource/prompt_from_file——内容透传误判与 not-found 缺口）＋**第四批 7 个校验/查找缺口工具（2026-10-20）**：skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool——Skill/Task/Cron/PID/Agent 七类失败文本获显式 error、task_stop 幂等停止锁定为 ok＋**第五批 6 工具名（2026-10-24，T22-20 首片）**：web_fetch/synthetic_output/enter_worktree/computer_use/schedule_cron/cron_create——Fetch/Synthetic/Worktree/Screenshot/schedule 前缀缺口修复、抓取内容透传 ok、agent 返工（runSubAgent 失败不再被包成 ok）。累计 **30/53**；其余 23 工具仍走旧字符串兼容。实现与验收见文末 |
+| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob/grep/list_dir/git_status/git_diff/process_list——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具**（task_get/task_list/task_output/memory/list_mcp_resources/read_mcp_resource/prompt_from_file——内容透传误判与 not-found 缺口）＋**第四批 7 个校验/查找缺口工具（2026-10-20）**：skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool——Skill/Task/Cron/PID/Agent 七类失败文本获显式 error、task_stop 幂等停止锁定为 ok＋**第五批 6 工具名（2026-10-24，T22-20 首片）**：web_fetch/synthetic_output/enter_worktree/computer_use/schedule_cron/cron_create——Fetch/Synthetic/Worktree/Screenshot/schedule 前缀缺口修复、抓取内容透传 ok、agent 返工（runSubAgent 失败不再被包成 ok）＋**第六批命令族 3 工具（2026-10-24，T22-20）**：run_command/bash_tool/powershell_tool——aborted→cancelled（取消不再报 ok）、成功保留 stderr 尾巴（唯一有意文本变更）、bash 缺失/非 Windows 前缀缺口。累计 **33/53**；其余 20 工具仍走旧字符串兼容。实现与验收见文末 |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ✅ internalStatePath/managedWorkspacePath 统一校验产品状态目录、会话、备份、MCP、skills、memory、todos、summaries、审计和工作区状态文件；junction/symlink 越界 fail-closed。普通用户文件仍走 sanitizePath，取消契约留 OPT-15 |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
@@ -610,7 +610,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：shell 归属真实后端会话；新建/恢复/结束时正确释放，cwd/env 不跨对话或不同子代理串扰。身份协议未定义前可先禁用 HTTP persistent。 | R1 H05；OPT-16、GAP-2、A2-14；不要求取消请求门串行 |
 | ⬜ | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：记录 spawn/exit/close/code，避免按过期 PID 杀其它进程；失败不报 OK；桌面操作确认目标窗口与焦点；取消贯穿 fixer，限制递归再入。可靠前默认禁用/明确限制；静默 exit1、spawn失败、仍有错误、焦点丢失都有真实结果。 | R1 H11；R2 重大疑点4；A2-09、C1/C3 |
 | ⬜ | T22-19 | Medium／确认 | **会话保存与失败历史完整性**：保存有 dirty/最新快照补存、失败可见、容量一致；保存 failed/cancelled 回合、部分正文及已完成副作用；活动按回合保留，手动/自动恢复一致。慢保存、413/500、停止后刷新不能静默丢最新状态。 | R1 M03/M04；OPT-16、A2-12；不自动重开 OPT-6 多客户端保存设计 |
-| 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：首片完成（2026-10-24，主会话）：agent 失败仍为 ok 已修（runSubAgent 结构化返工）＋ Worktree/Fetch/Synthetic/Screenshot/schedule 前缀缺口全清、抓取内容透传显式 ok；OPT-13 推进至 30/53。剩余：MCP external 前缀缺口、成功命令保留 stderr/exitCode、余下工具分小批迁移（写入/命令族含 `[aborted:]`→cancelled 语义设计），保留内容透传语义。必选失败步骤不执行后续写入。 | R1 M05；A2-07；10-20 主动留下的 Worktree 缺口已随首片关闭 |
+| 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：首片＋命令族批完成（2026-10-24，主会话）：agent 失败仍为 ok 已修（runSubAgent 结构化返工）；Worktree/Fetch/Synthetic/Screenshot/schedule 前缀缺口全清、抓取内容透传显式 ok；命令族 aborted→cancelled（取消不再报 ok）、成功保留 stderr 尾巴、bash 缺失/非 Windows 缺口；OPT-13 推进至 33/53。剩余：MCP external 前缀缺口、余下 20 工具分小批迁移（写入类/模型面），保留内容透传语义。必选失败步骤不执行后续写入。 | R1 M05；A2-07；10-20 主动留下的 Worktree 缺口已随首片关闭 |
 | ⬜ | T22-21 | Medium／确认 | **统一有效权限、审批展示与生命周期**：执行前复核 mode/cancel；界面反映 --danger 强制项；收到成功审批响应才显示批准；工作流展示真实嵌套 steps/参数再继承批准；停止/切会话 dispose 审批倒计时。denial切换、迟到审批、400/401、具体命令预览均有验收。 | R1 M09/L05；R2 N05；P0-3/P2-12；取消实现复用 T22-06 |
 | 🔶 | T22-22 | Medium／确认＋风险 | **启动失败与 dream 恢复闭环**：T22-14已把配置恢复移到工作区独占之后、顶层执行异常改为非零退出；后台确认只代表持锁及同步初始化成功。dream仍可能阻塞ready，interaction覆盖HTTP、dream锁的owner/finally/陈旧恢复、模型离线/目录不可写全链路仍待修，不能据此关闭。 | R1 M12；A2-08、A10；10-23第九批仅启动门与catch局部 |
 
@@ -965,6 +965,15 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 遇到无响应owner或权限/命名端点冲突，程序拒绝启动而不是自动抢占；可恢复性以真正结束旧实例后重新启动为准。正常冲突也不自动排队重试；请用现有HTTP进程，或结束它后再启动CLI。运行身份用于核对诊断/交接，不是公网认证协议，不传输模型密钥。
 - 后台父释放到子取得独占之间允许其它启动者先取得；子/父将明确报告交接失败，不强抢其它实例。这保证互斥，不能保证交接一定胜出。accepted只代表持锁＋同步初始化，dream就绪阻塞、模型可用性及后代停止仍按T22-22/07处理。安装级损坏原件/旧版保持不动，需在确认无使用者后人工修复。
 - 本批未改变工具取消、HTTP对话shell身份、保存队列/字节预算和日志保留策略；非Windows loopback端口碰撞/运行分支尚未实测。V22-05/06仅补本地所有权与先后写入证据，仍为部分完成。本批源码已实施，未提交、未推送、未发布。
+
+---
+
+## 2026-10-24 —— T22-20 命令族 / OPT-13 第六批（主会话自做：aborted→cancelled + stderr 保留）
+
+- **范围**：run_command/bash_tool/powershell_tool 三工具。①`[aborted: client disconnected]`（四处，含 bash persistent）此前不在 TO_FAIL_RE——**被取消的命令被推断为 ok**，现显式 cancelled（workflow 对 cancelled 本就按失败停止，语义接通）；②**成功命令保留 stderr**（T22-20 条目）：`Command OK:\n${stdout}` 此前完全丢弃 stderr（编译警告/弃用提示消失），现非空时追加 `\n[STDERR]\n${stderr}`（唯一的有意文本变更，既有断言均为 includes 不受影响）；③`bash not found…`（两处）与非 Windows 的 `powershell_tool is Windows-only…` 前缀缺口补 error。OPT-13 累计 **33/53**。
+- **红测试**：aborted 路径无法经活体断连确定性驱动——命令分支 vm 源码抽取 + 桩 runner（同 b5 runSubAgent 模式）覆盖 cancelled×4、bash 缺失×2、非 Windows powershell、stderr 尾巴、干净成功无尾巴、失败/常驻 shell 兼容；活体半场经真实 server 管线验证 stderr 双流保留（`console.log`+`console.error` 同命令）与失败/常驻/PowerShell 兼容。
+- **门禁**：红恰 5+1（runner-b 5 条指定标签 + runner-i 1 条注册断言；2 条兼容记录本就绿）；绿：node --check、runner-b **348/348**、runner-i 50/50（input-escape 既有门槛跳过）、runner(A) 88/88、**test-all 20 目标全绿**；**Node 13.14.0 复验 B 348/348、I 50/50、A 88/88**。
+- bash-missing/非 Windows powershell 的活体红不可构造（本机有 bash 且为 Windows），由 vm 单元锁定（桩 findBash→null / platform→linux，比代码审查更强）。
 
 ---
 

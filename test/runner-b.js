@@ -3175,6 +3175,114 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'tool-results-b6',
+  fn: async () => {
+    // OPT-13 batch 6 (T22-20 command family): '[aborted: client disconnected]'
+    // is not in TOOL_FAIL_RE, so a cancelled command was inferred ok; success
+    // drops stderr entirely (compiler warnings vanish); 'bash not found' and
+    // non-Windows powershell texts are unclassified gaps. The branches are
+    // exercised by source extraction with stubbed command runners (aborted
+    // paths cannot be driven deterministically through a live disconnect);
+    // the live half covers stderr retention and failure/compat through the
+    // real server pipeline.
+    const src = fs.readFileSync(IDX, 'utf8');
+    const apiStart = src.indexOf('// OPT-13: pilot tools carry authoritative status');
+    const apiEnd = src.indexOf('// Central choke point', apiStart);
+    const apiCtx = {};
+    require('vm').runInNewContext(src.slice(apiStart, apiEnd) + '\nthis.api={makeToolResult,isToolResult,toolResultStatus};', apiCtx);
+    const api = apiCtx.api;
+    const bStart = src.indexOf("  if (name === 'run_command') {");
+    const bEnd = src.indexOf("  if (name === 'glob_tool') {", bStart);
+    const mkCtx = (over) => Object.assign({
+      DANGER_MODE: false, effectivePermissionMode: () => 'default', withUtf8Codepage: (c) => c,
+      runCommandAsync: (spec) => spec, awaitCommandCancellable: async () => outcomes.shift(),
+      findBash: () => 'C:\\fake-bash.exe', getPersistentShell: () => persistentShell, shellSessionKey: () => 'k',
+      process: { platform: 'win32' }, Buffer: Buffer, makeToolResult: api.makeToolResult, outcomes: [], persistentShell: null
+    }, over);
+    const runBranch = async (ctx, name, args, cancelled) => {
+      require('vm').runInNewContext('async function run(name,args,cancelled){\n' + src.slice(bStart, bEnd) + '\n}\nthis.run=run;', ctx);
+      return ctx.run(name, args, cancelled);
+    };
+    let outcomes, persistentShell, ctx;
+    const isStruct = (r, status, textHead) => api.isToolResult(r) && api.toolResultStatus(r) === status && r.text.startsWith(textHead);
+
+    outcomes = [{ r: { error: null, stdout: '', stderr: '' }, aborted: true }];
+    ctx = mkCtx({}); const rcAb = await runBranch(ctx, 'run_command', { command: 'slow' }, null);
+    outcomes = [{ r: { error: null, stdout: '', stderr: '' }, aborted: true }];
+    ctx = mkCtx({}); const bashAb = await runBranch(ctx, 'bash_tool', { command: 'slow' }, null);
+    outcomes = [{ r: { error: null, stdout: '', stderr: '' }, aborted: true }];
+    ctx = mkCtx({}); const psAb = await runBranch(ctx, 'powershell_tool', { command: 'slow' }, null);
+    persistentShell = { run: async () => ({ code: 0, out: 'X', restarted: false }) };
+    ctx = mkCtx({}); const bpAb = await runBranch(ctx, 'bash_tool', { command: 'slow', persistent: true }, () => true);
+    record('ToolResult-b6: aborted command branches carry cancelled status',
+      isStruct(rcAb, 'cancelled', '[aborted: client disconnected]') && isStruct(bashAb, 'cancelled', '[aborted: client disconnected]') &&
+      isStruct(psAb, 'cancelled', '[aborted: client disconnected]') && isStruct(bpAb, 'cancelled', '[aborted: client disconnected]'),
+      JSON.stringify([typeof rcAb, typeof bashAb, typeof psAb, typeof bpAb]));
+
+    ctx = mkCtx({ findBash: () => null }); const bashMiss = await runBranch(ctx, 'bash_tool', { command: 'x' }, null);
+    persistentShell = null;
+    ctx = mkCtx({}); const bashMissP = await runBranch(ctx, 'bash_tool', { command: 'x', persistent: true }, null);
+    ctx = mkCtx({ process: { platform: 'linux' } }); const psNonWin = await runBranch(ctx, 'powershell_tool', { command: 'x' }, null);
+    record('ToolResult-b6: bash-missing and non-Windows powershell report error',
+      isStruct(bashMiss, 'error', 'bash not found.') && isStruct(bashMissP, 'error', 'bash not found.') && isStruct(psNonWin, 'error', 'powershell_tool is Windows-only'),
+      JSON.stringify([typeof bashMiss, typeof bashMissP, typeof psNonWin]));
+
+    outcomes = [{ r: { error: null, stdout: 'OUT-VM', stderr: 'ERR-VM \n' } }];
+    ctx = mkCtx({}); const stderrOk = await runBranch(ctx, 'run_command', { command: 'build' }, null);
+    record('ToolResult-b6: successful command retains a non-empty stderr tail',
+      isStruct(stderrOk, 'ok', 'Command OK:') && stderrOk.text.includes('OUT-VM') && stderrOk.text.includes('[STDERR]') && stderrOk.text.includes('ERR-VM'),
+      JSON.stringify(stderrOk && stderrOk.text));
+    outcomes = [{ r: { error: null, stdout: 'CLEAN-VM', stderr: '' } }];
+    ctx = mkCtx({}); const cleanOk = await runBranch(ctx, 'run_command', { command: 'clean' }, null);
+    outcomes = [{ r: { error: { message: 'Command failed with exit code 3', code: 3 }, stdout: '', stderr: 'boom' } }];
+    ctx = mkCtx({}); const fail = await runBranch(ctx, 'bash_tool', { command: 'x' }, null);
+    persistentShell = { run: async () => ({ code: 0, out: 'POK', restarted: false }) };
+    ctx = mkCtx({}); const pOk = await runBranch(ctx, 'bash_tool', { command: 'x', persistent: true }, null);
+    persistentShell = { run: async () => ({ code: 2, out: 'PFAIL', restarted: false }) };
+    ctx = mkCtx({}); const pFail = await runBranch(ctx, 'bash_tool', { command: 'x', persistent: true }, null);
+    record('ToolResult-b6: clean success stays tail-free; failures and persistent paths keep texts with explicit status',
+      isStruct(cleanOk, 'ok', 'Command OK:\nCLEAN-VM') && !cleanOk.text.includes('[STDERR]') &&
+      isStruct(fail, 'error', '[ERROR] Command failed:') && fail.text.includes('boom') &&
+      isStruct(pOk, 'ok', 'Command OK (persistent shell, exit 0):') && isStruct(pFail, 'error', '[ERROR] Command failed (exit 2):'),
+      '');
+
+    const cwd = freshCwd('tool-results-b6');
+    const tc = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const calls = [
+      tc('b6rc','run_command',{command:'"' + NODE_BIN + '" -e "console.log(\'OUT-B6-LIVE\');console.error(\'ERR-B6-LIVE\')"'}),
+      tc('b6rf','run_command',{command:'"' + NODE_BIN + '" -e "process.exit(3)"'}),
+      tc('b6bp','bash_tool',{command:'echo BP-B6-OK'}),
+      tc('b6bx','bash_tool',{command:'echo BP-B6-FAIL >&2; exit 2'}),
+      tc('b6ps','powershell_tool',{command:'Write-Output PS-B6-OK'})
+    ];
+    const m = startMock([
+      {role:'assistant',content:null,tool_calls:calls}, {role:'assistant',content:'B6-DONE'}
+    ]);
+    let srv;
+    try {
+      await new Promise(r=>setTimeout(r,600));
+      const srvPort=port+603;
+      srv=spawn(NODE_BIN,[IDX,'--server'],{cwd,stdio:'ignore',env:Object.assign({},process.env,{OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',HTTP_PORT:String(srvPort),HTTP_API_KEY:'',PERMISSION_MODE:'bypass'})});
+      await new Promise(r=>setTimeout(r,1800));
+      const chat=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'b6'}]});
+      const events=chat.body.split('\n').filter(l=>l.startsWith('data: {')).map(l=>JSON.parse(l.slice(6)));
+      const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
+      const log=readLog(m.log);
+      const result=id=>tr(log,id);
+      const statusOf=id=>{const r=result(id);if(!r)return undefined;const o=outputs.find(e=>e.result===r.c);return o&&o.status;};
+      record('ToolResult-b6: live success keeps both streams while failures stay errors',
+        result('b6rc') && statusOf('b6rc')==='completed' && result('b6rc').c.includes('OUT-B6-LIVE') && result('b6rc').c.includes('[STDERR]') && result('b6rc').c.includes('ERR-B6-LIVE') &&
+        result('b6rf') && statusOf('b6rf')==='error' && result('b6rf').c.startsWith('[ERROR] Command failed'),
+        result('b6rc') ? result('b6rc').c.substring(0, 120) : 'no result');
+      record('ToolResult-b6: bash and powershell live paths keep classified statuses',
+        statusOf('b6bp')==='completed' && result('b6bp').c.includes('BP-B6-OK') && statusOf('b6bx')==='error' && result('b6bx').c.includes('BP-B6-FAIL') && statusOf('b6ps')==='completed' && result('b6ps').c.includes('PS-B6-OK'), '');
+      const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
+      record('ToolResult-b6: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+    } finally { if (srv) srv.kill(); stopMock(m); }
+  }
+});
+
 
 // ====================== RUNNER ======================
 scenarios.push({
