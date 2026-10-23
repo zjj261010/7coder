@@ -2547,10 +2547,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // itself and surface the assumption instead of inventing a user reply.
     const userUnreachable = 'User is unreachable in this mode. Do NOT assume an answer - decide yourself, then state the assumption explicitly in your final answer.';
     if (subAgentModeOverride) return 'Question skipped (a sub-agent cannot ask the user questions).';
-    if (rlClosed) return userUnreachable;
+    if (!INTERACTIVE || rlClosed) return userUnreachable;
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') return userUnreachable;
-    const answer = await new Promise(resolve => rl.question(`${args.question}\nAnswer: `, resolve));
-    return `User answered: ${answer}`;
+    const answer = await cliQuestions.ask(`${args.question}\nAnswer: `, cancelled);
+    return answer === null ? userUnreachable : `User answered: ${answer}`;
   }
 
   if (name === 'brief_tool') {
@@ -3731,7 +3731,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       if (workflowStepDepth > 0 && !protectedWrite) {
         console.log('[PERM] workflow inner step inherits plan approval: ' + name);
       } else {
-      const approved = await askApproval(`Execute ${name}${protectedWrite ? ' (PROTECTED FILE - make sure you really want this)' : ''}? (y/n) `, approvalBridge);
+      const approved = await askApproval(`Execute ${name}${protectedWrite ? ' (PROTECTED FILE - make sure you really want this)' : ''}? (y/n) `, approvalBridge, cancelled);
       if (!approved) return 'User declined the tool action.';
       }
     }
@@ -3754,7 +3754,48 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
 var approvalSeq = 0;
 var pendingApprovals = new Map(); // id -> resolve
 
-async function askApproval(question, approvalBridge) {
+// One owner of stdin questions. Never overlap readline.question callbacks:
+// Node 13 retains only one callback, leaving the other Promise pending forever.
+// Input dispatch below routes answers here before ordinary REPL commands.
+function createCliQuestionQueue(write) {
+  const queue = [];
+  let closed = false;
+  let poll = null;
+  function isCancelled(item) { return item.cancelled && item.cancelled(); }
+  function finish(item, answer) { queue.splice(queue.indexOf(item), 1); item.resolve(answer); }
+  function advance() {
+    if (poll) { clearInterval(poll); poll = null; }
+    for (const item of queue.slice()) if (isCancelled(item)) finish(item, null);
+    if (queue.length) {
+      const first = queue[0];
+      if (!first.shown) { first.shown = true; write(first.question); }
+      if (queue.some(item => item.cancelled)) poll = setInterval(advance, 100);
+    }
+  }
+  return {
+    ask(question, cancelled) {
+      if (closed || (cancelled && cancelled())) return Promise.resolve(null);
+      return new Promise(resolve => { queue.push({ question, cancelled, resolve, shown: false }); advance(); });
+    },
+    answer(line) {
+      // Consume the line even if cancellation just won the race: an answer
+      // intended for a cancelled question must not become a task draft.
+      if (!queue.length) return false;
+      const item = queue[0];
+      finish(item, isCancelled(item) ? null : line);
+      advance();
+      return true;
+    },
+    close() {
+      closed = true;
+      if (poll) { clearInterval(poll); poll = null; }
+      for (const item of queue.splice(0)) item.resolve(null);
+    },
+    hasPending() { return queue.length > 0; }
+  };
+}
+
+async function askApproval(question, approvalBridge, cancelled) {
   if (approvalBridge) {
     return approvalBridge.ask(question);
   }
@@ -3762,9 +3803,8 @@ async function askApproval(question, approvalBridge) {
     console.log(`\n[PERM] ${question} (auto-skipped in non-interactive mode)`);
     return false;
   }
-  return new Promise(resolve => {
-    rl.question(question, answer => resolve(answer.toLowerCase().startsWith('y')));
-  });
+  const answer = await cliQuestions.ask(question, cancelled);
+  return answer !== null && answer.toLowerCase().startsWith('y');
 }
 
 // ====================== TOOL CALLING LOOP ======================
@@ -5113,7 +5153,17 @@ const rl = readline.createInterface({
 // NEVER invoked on Node 13 (permanent hang) and throw ERR_USE_AFTER_CLOSE on
 // modern Node. All question/prompt paths must check this.
 let rlClosed = false;
-rl.on('close', () => { rlClosed = true; });
+const cliQuestions = createCliQuestionQueue(question => { rl.setPrompt(question); rl.prompt(); });
+let replLineHandler = null;
+rl.on('close', () => { rlClosed = true; cliQuestions.close(); });
+rl.on('line', input => {
+  // /bye remains available while an approval is pending.
+  if (!(replLineHandler && input.trim().toLowerCase() === '/bye') && cliQuestions.answer(input)) {
+    if (!cliQuestions.hasPending()) rl.setPrompt('You: ');
+    return;
+  }
+  if (replLineHandler) Promise.resolve(replLineHandler(input)).catch(e => console.error(`[REPL] ${e.stack || e.message}`));
+});
 
 // ====================== GLOBAL MESSAGES ======================
 let messages = [{ role: 'system', content: systemPrompt }];
@@ -5174,18 +5224,21 @@ async function main() {
     console.log('The conversation is KEPT across tasks (compressed automatically when large).');
     console.log('Commands: /clear (fresh conversation), /undo <file> (restore newest backup), /fork <N> (rewind to user turn N), /bye (quit).\n');
 
-    let currentPrompt = '';
+    // Each execution takes ownership of one draft before its first await.
+    // Later input (including BTW) belongs to the next draft, even while the
+    // previous draft is still waiting for its own note summaries.
+    const newDraft = () => ({ text: '', pending: Promise.resolve() });
+    let currentDraft = newDraft();
     let taskRunning = false;
-    let btwPending = null;
     // After stdin EOF the readline interface is closed; calling prompt() on it
     // throws ERR_USE_AFTER_CLOSE on modern Node and would crash the process
     // with exit code 1 right after the task finished. Guard every re-prompt.
     // (rlClosed is tracked at module level next to the rl definition.)
-    const safePrompt = () => { if (!rlClosed) { try { rl.prompt(); } catch (e) {} } };
+    const safePrompt = () => { if (!rlClosed && !cliQuestions.hasPending()) { try { rl.setPrompt('You: '); rl.prompt(); } catch (e) {} } };
 
     safePrompt();
 
-    rl.on('line', async (input) => {
+    replLineHandler = async (input) => {
       const trimmed = input.trim();
 
       if (trimmed.toLowerCase() === '/bye') {
@@ -5193,6 +5246,7 @@ async function main() {
         // in-flight cron command, drop the dream lock, then exit. Their
         // handles would otherwise keep the event loop alive (hang) or leak.
         shuttingDown = true;
+        cliQuestions.close();
         for (const t of backgroundTasks.values()) {
           if (t.status === 'running') {
             t.stopRequested = true;
@@ -5248,7 +5302,7 @@ async function main() {
         if (taskRunning) { console.log('A task is running - wait before /clear.'); safePrompt(); return; }
         messages = [{ role: 'system', content: systemPrompt }];
         try { const safeSession = sessionFilePath(); if (fs.existsSync(safeSession)) fs.unlinkSync(safeSession); } catch (e) {}
-        currentPrompt = ''; // a half-typed draft should not survive a fresh conversation
+        currentDraft = newDraft(); // stale BTW callbacks retain only the discarded draft
         disposePersistentShells(); // A2-14: a fresh conversation must not inherit the old bash env/cwd
         console.log('[SHELL] persistent shell sessions cleared with /clear');
         console.log('[OK] Conversation cleared.');
@@ -5274,10 +5328,9 @@ async function main() {
         const note = trimmed.slice(5).trim();
         if (note) {
           console.log(`[BTW] /btw note received - small-model sub-agent summarizing for main task...`);
-          // Track the in-flight summarization so an immediately following
-          // /execute-task-now (e.g. pasted input) waits for the note to land
-          // instead of racing past it with an empty prompt.
-          const work = (async () => {
+          const draft = currentDraft;
+          // Preserve every note, in input order, and attach it to this draft.
+          const work = draft.pending.then(async () => {
             const btwPrompt = `You are 7coder's BTW sub-agent (light model only).
 The user just appended this note to the CURRENT heavy-model coding task WITHOUT interrupting it:
 
@@ -5289,23 +5342,26 @@ Make it read like a direct continuation of the user's task instructions for the 
             let summarized = note;
             try {
               const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: LIGHT_MODEL, useTools: false });
-              summarized = (resp.message.content || note).trim();
-              // Since we prune context, for /btw we can just append it to the currentPrompt
-              currentPrompt += '\n' + summarized + '\n';
-              console.log(`[BTW] BTW sub-agent injected into current task prompt:\n${summarized}`);
+              summarized = (resp.message.content || note).trim() || note;
             } catch (e) {
               console.log(`[BTW] BTW sub-agent error - injecting original note as fallback.`);
-              currentPrompt += '\n' + note + '\n';
             }
+            if (shuttingDown) return;
+            draft.text += '\n' + summarized + '\n';
+            console.log(`[BTW] BTW sub-agent injected into queued task prompt:\n${summarized}`);
             // P2-1: BTW.md lives under .7coder/ now (dir created first - at
             // this point it may not exist yet, e.g. /btw then EOF, no task run).
             const btwDir = internalStatePath('.7coder');
             try { fs.mkdirSync(btwDir, { recursive: true }); } catch (e) {}
             const btwPath = path.join(btwDir, 'BTW.md');
-            fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
-          })();
-          btwPending = work;
-          try { await work; } finally { if (btwPending === work) btwPending = null; }
+            try {
+              fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
+            } catch (e) { console.error(`[BTW] Cannot persist note to ${btwPath}: ${e.message}`); }
+          });
+          // A failed note must neither reject the next note's chain nor leave
+          // an unhandled rejection before /execute starts waiting for it.
+          draft.pending = work.catch(e => console.error(`[BTW] ${e.stack || e.message}`));
+          await draft.pending;
         } else {
           console.log('Usage: /btw your note here');
         }
@@ -5349,15 +5405,14 @@ Make it read like a direct continuation of the user's task instructions for the 
           safePrompt();
           return;
         }
-        if (btwPending) { try { await btwPending; } catch (e) {} }
-        if (currentPrompt.trim()) {
-          taskRunning = true;
-          // Consume the prompt NOW; lines typed while the task runs accumulate
-          // in currentPrompt for the NEXT task (clearing after the run would
-          // race with the concurrent line handler and silently drop them).
-          const taskText = currentPrompt.trim();
-          currentPrompt = '';
-          try {
+        taskRunning = true;
+        const draft = currentDraft;
+        currentDraft = newDraft();
+        try {
+          await draft.pending;
+          if (shuttingDown) return;
+          const taskText = draft.text.trim();
+          if (taskText) {
             try {
               await triggerDreamIfNeeded();
             } catch (e) {
@@ -5375,11 +5430,11 @@ Make it read like a direct continuation of the user's task instructions for the 
             }
             await executeTask();
             saveSession();
-          } finally {
-            taskRunning = false;
+          } else {
+            console.log('No task entered.');
           }
-        } else {
-          console.log('No task entered.');
+        } finally {
+          taskRunning = false;
         }
       } else if (trimmed) {
         // GAP-7a: workspace slash commands. A line shaped "/name" with a
@@ -5404,14 +5459,14 @@ Make it read like a direct continuation of the user's task instructions for the 
         if (expanded) {
           console.log(`[CMD] ${slashCmd[1]} 展开为 ${expanded.length} 字符任务`);
           console.log(expanded); // echo the queued body (the typed-input equivalent)
-          currentPrompt += expanded + '\n';
+          currentDraft.text += expanded + '\n';
         } else {
-          currentPrompt += input + '\n';
+          currentDraft.text += input + '\n';
         }
       }
 
       safePrompt();
-    });
+    };
   }
 }
 
