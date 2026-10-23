@@ -7,6 +7,7 @@ const child_process = require('child_process');
 const http = require('http');
 const { pipeline, Transform } = require('stream');
 const crypto = require('crypto');
+const net = require('net');
 
 // ====================== CLI ARGUMENT PARSING (Node 13 safe) =====================
 // Two-pass parsing so flags work in any order: flags are consumed first, then
@@ -96,6 +97,114 @@ function flushExit(code) {
 // ====================== SETUP ======================
 const launchDir = process.cwd();
 const appDir = require.main ? path.dirname(require.main.filename) : __dirname;
+let workspaceLease = null;
+// Only the launcher can supply this before .env is loaded. It authorizes a
+// bounded wait for that exact parent's handoff, never bypasses OS exclusion.
+const leaseHandoffText = process.env._7CODER_LEASE_HANDOFF || '';
+delete process.env._7CODER_LEASE_HANDOFF;
+let leaseHandoff = null;
+try {
+  const j = JSON.parse(leaseHandoffText);
+  if (process.send && j && /^[a-f0-9]{48}$/.test(j.token) && Number.isInteger(j.pid)) leaseHandoff = j;
+} catch (e) {}
+
+function workspaceLeaseAddress(directory) {
+  const real = fs.realpathSync(directory);
+  const canonical = process.platform === 'win32' ? path.normalize(real).toLowerCase() : real;
+  const key = crypto.createHash('sha256').update(canonical).digest('hex');
+  // Windows libuv uses FIRST_PIPE_INSTANCE for the first bind; no persistent
+  // lock/PID file can be stranded by taskkill or machine shutdown.
+  const endpoint = process.platform === 'win32' ? '\\\\.\\pipe\\7coder-workspace-' + key :
+    { host: '127.0.0.1', port: 20000 + parseInt(key.slice(0, 8), 16) % 40000, exclusive: true };
+  return { canonical, key, endpoint };
+}
+function probeWorkspaceLease(address) {
+  return new Promise(resolve => {
+    const challenge = crypto.randomBytes(16).toString('hex');
+    let socket, bytes = Buffer.alloc(0), settled = false;
+    const finish = owner => { if (settled) return; settled = true; if (socket) socket.destroy(); resolve(owner); };
+    try { socket = net.createConnection(address.endpoint); } catch (e) { finish(null); return; }
+    socket.setTimeout(1000, () => finish(null));
+    socket.on('error', () => finish(null)); socket.on('close', () => finish(null));
+    socket.on('connect', () => socket.write(JSON.stringify({ kind: '7coder-lease-probe', key: address.key, challenge }) + '\n'));
+    socket.on('data', chunk => {
+      if (bytes.length + chunk.length > 4096) { finish(null); return; }
+      bytes = Buffer.concat([bytes, chunk]);
+      if (!bytes.includes(10)) return;
+      try {
+        const j = JSON.parse(bytes.toString('utf8').split('\n')[0]);
+        finish(j && j.kind === '7coder-workspace-lease' && j.key === address.key && j.challenge === challenge &&
+          Number.isInteger(j.pid) && /^[a-f0-9]{48}$/.test(j.token) && typeof j.startedAt === 'string' ? j : null);
+      } catch (e) { finish(null); }
+    });
+  });
+}
+async function acquireWorkspaceLease(directory, handoff) {
+  const address = workspaceLeaseAddress(directory);
+  const deadline = Date.now() + 6000;
+  while (true) {
+    const sockets = new Set();
+    const identity = { kind: '7coder-workspace-lease', key: address.key, pid: process.pid,
+      token: crypto.randomBytes(24).toString('hex'), startedAt: new Date().toISOString() };
+    let acquired = false, released = false;
+    const server = net.createServer(socket => {
+      sockets.add(socket); socket.unref();
+      let bytes = Buffer.alloc(0), answered = false;
+      socket.setTimeout(1000, () => socket.destroy());
+      socket.on('error', () => socket.destroy());
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('data', chunk => {
+        if (answered) return;
+        if (bytes.length + chunk.length > 4096) { socket.destroy(); return; }
+        bytes = Buffer.concat([bytes, chunk]);
+        if (!bytes.includes(10)) return;
+        answered = true;
+        try {
+          const j = JSON.parse(bytes.toString('utf8').split('\n')[0]);
+          if (j.kind !== '7coder-lease-probe' || j.key !== address.key || !/^[a-f0-9]{32}$/.test(j.challenge)) { socket.destroy(); return; }
+          socket.end(JSON.stringify(Object.assign({ challenge: j.challenge }, identity)) + '\n');
+        } catch (e) { socket.destroy(); }
+      });
+    });
+    server.maxConnections = 8;
+    const failure = await new Promise(resolve => {
+      server.on('error', e => {
+        if (!acquired) resolve(e);
+        else if (!released) { console.error('[ERROR] workspace lease failed: ' + e.message); flushExit(1); }
+      });
+      try {
+        server.listen(address.endpoint, () => { acquired = true; resolve(null); });
+      } catch (e) { resolve(e); }
+    });
+    if (!failure) {
+      server.unref();
+      return { address, identity, releaseForHandoff: () => new Promise((resolve, reject) => {
+        if (released) { reject(new Error('Workspace lease was already handed off')); return; }
+        released = true;
+        for (const socket of sockets) socket.destroy();
+        server.close(resolve);
+      }) };
+    }
+    // A failed bind owns no lease. It cannot unlink/kill anything associated
+    // with the endpoint, even when the current owner cannot answer a probe.
+    try { server.close(); } catch (e) {}
+    if (!['EADDRINUSE', 'EACCES'].includes(failure.code)) throw failure;
+    const owner = await probeWorkspaceLease(address);
+    if (handoff && (!owner || (owner.token === handoff.token && owner.pid === handoff.pid)) && Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      continue;
+    }
+    const detail = owner ? 'Agent PID ' + owner.pid + ', run ' + owner.token.slice(0, 12) + ', since ' + owner.startedAt :
+      'owner could not be verified (' + failure.code + ')';
+    throw new Error((owner ? 'Workspace is already in use: ' : 'Workspace ownership unavailable: ') + address.canonical + '; ' + detail +
+      '. Close that instance before starting another. No lock was removed and no process was killed.');
+  }
+}
+
+// Config reads may restore files, so OS ownership must precede ALL workspace
+// setup/recovery, not just main() or HTTP listen. --help stays outside the gate.
+async function initializeAgent() {
+workspaceLease = await acquireWorkspaceLease(launchDir, leaseHandoff);
 try {
   loadEnvState(path.join(appDir, '.env'), false);
   // Per-project overrides (D7): a .env in the workspace wins over the
@@ -174,7 +283,7 @@ function loadModelProfiles() {
   const files = [path.join(appDir, 'models.json')];
   files.push(internalStatePath('.7coder', 'models.json'));
   for (const f of files) {
-    const record = readStateRecord(f, parseModelState);
+    const record = readStateRecord(f, parseModelState, sharedInstallState(f));
     if (!record) continue;
     for (const k of Object.keys(record.value)) { if (k) next[k.toLowerCase()] = record.value[k]; }
   }
@@ -1217,13 +1326,22 @@ function quarantineState(file, bytes, owner = file) {
   } else replaceStateBytes(evidence, bytes, owner);
   console.warn('[STATE] invalid state preserved: ' + evidence);
 }
-function readStateRecord(file, parse = parseStateText) {
+function sharedInstallState(file) {
+  if (![path.join(appDir, '.env'), path.join(appDir, 'models.json')].includes(path.resolve(file))) return false;
+  const normalize = p => process.platform === 'win32' ? path.normalize(p).toLowerCase() : p;
+  return normalize(fs.realpathSync(appDir)) !== normalize(getLaunchDirReal());
+}
+function readStateRecord(file, parse = parseStateText, readOnly = false) {
   file = guardStateFile(file);
   let bytes, invalid = false;
   try { bytes = fs.readFileSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (bytes !== undefined) {
     try { return { bytes, value: parse(decodeUtf8Text(bytes)) }; }
-    catch (e) { invalid = true; quarantineState(file, bytes); }
+    catch (e) {
+      invalid = true;
+      if (readOnly) console.warn('[STATE] invalid shared install config retained in place: ' + file);
+      else quarantineState(file, bytes);
+    }
   }
   const previous = guardStateFile(file + '.7coder-prev', file);
   let saved;
@@ -1236,12 +1354,13 @@ function readStateRecord(file, parse = parseStateText) {
   let value;
   try { value = parse(decodeUtf8Text(saved)); }
   catch (e) {
-    quarantineState(previous, saved, file);
+    if (!readOnly) quarantineState(previous, saved, file);
     throw new Error('Previous state is also invalid; repair before retrying: ' + file);
   }
   // Restore without copying the corrupt primary over the valid previous copy.
-  replaceStateBytes(file, saved);
-  console.warn('[STATE] restored ' + file + ' from ' + previous + (invalid ? '; invalid bytes retained separately' : '; primary was missing'));
+  if (!readOnly) replaceStateBytes(file, saved);
+  console.warn('[STATE] ' + (readOnly ? 'using validated previous shared config without modifying installation: ' : 'restored ') + file +
+    ' from ' + previous + (invalid ? '; invalid bytes retained' : '; primary was missing'));
   return { bytes: saved, value };
 }
 function writeStateFile(file, text, parse = parseStateText) {
@@ -1262,7 +1381,7 @@ function deleteStateFile(file) {
   try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT' || !removedPrevious) throw e; }
 }
 function loadEnvState(file, override) {
-  const record = readStateRecord(file);
+  const record = readStateRecord(file, parseStateText, sharedInstallState(file));
   if (!record) return;
   const parsed = require('dotenv').parse(record.value);
   for (const key of Object.keys(parsed)) {
@@ -5522,26 +5641,54 @@ let messages = [{ role: 'system', content: systemPrompt }];
 // ====================== MAIN ======================
 async function main() {
   migrateWorkspaceRootFiles(); // P2-1: legacy root files -> .7coder/ (one-time)
+  if (leaseHandoff && process.connected) {
+    // Parent reports acceptance only after this child owns the workspace and
+    // synchronous config/setup succeeded. This is not task completion.
+    await new Promise((resolve, reject) => process.send({ kind: '7coder-background-owned',
+      handoffToken: leaseHandoff.token, owner: workspaceLease.identity }, e => e ? reject(e) : resolve()));
+    process.disconnect();
+  }
   if (backgroundMode && promptArg) {
     console.log('[LOOP] Starting background/daemon mode...');
-    // Route the child's stdout/stderr into a log file instead of dropping
-    // everything (A3): the log is the only observable trace besides 7CODER.md.
+    // The launcher owns all writes until the explicit handoff. It performs no
+    // workspace IO after release; the child must acquire the same OS lease.
     const logDir = internalStatePath('.7coder');
-    try { fs.mkdirSync(logDir, { recursive: true }); } catch (e) {}
-    const logPath = path.join(logDir, 'background.log');
-    let logFd;
+    fs.mkdirSync(logDir, { recursive: true });
+    const logPath = internalStatePath('.7coder', 'background.log');
+    const logFd = fs.openSync(logPath, 'a');
+    let child;
     try {
-      logFd = fs.openSync(logPath, 'a');
       fs.writeSync(logFd, '\n[' + new Date().toISOString() + '] background run: ' + process.argv.slice(1).join(' ') + '\n');
-    } catch (e) { logFd = undefined; }
-    const child = child_process.spawn(process.argv[0], process.argv.slice(1).filter(a => a !== '--background'), {
-      detached: true,
-      stdio: ['ignore', logFd !== undefined ? logFd : 'ignore', logFd !== undefined ? logFd : 'ignore'],
-      cwd: launchDir
+      child = child_process.spawn(process.execPath, process.argv.slice(1).filter(a => a !== '--background'), {
+        detached: true, stdio: ['ignore', logFd, logFd, 'ipc'], cwd: launchDir,
+        env: Object.assign({}, process.env, { _7CODER_LEASE_HANDOFF: JSON.stringify({ token: workspaceLease.identity.token, pid: process.pid }) })
+      });
+    } finally { fs.closeSync(logFd); }
+    let timer;
+    const ready = new Promise((resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('Background child did not acknowledge workspace ownership within 15s; inspect ' + logPath)), 15000);
+      child.once('error', reject);
+      child.once('exit', code => reject(new Error('Background child exited before ownership acknowledgement (exit ' + code + '); inspect ' + logPath)));
+      child.on('message', j => {
+        if (j && j.kind === '7coder-background-owned' && j.handoffToken === workspaceLease.identity.token && j.owner &&
+            j.owner.pid === child.pid && j.owner.key === workspaceLease.address.key && /^[a-f0-9]{48}$/.test(j.owner.token)) resolve();
+      });
     });
+    ready.catch(() => {}); // release can await while an early spawn error arrives
+    try {
+      if (!child.pid) throw new Error('Background child could not be spawned; inspect ' + logPath);
+      rl.close();
+      await workspaceLease.releaseForHandoff();
+      await ready;
+    } catch (e) {
+      try { child.kill(); } catch (e2) {}
+      throw e;
+    } finally { clearTimeout(timer); }
+    if (child.connected) child.disconnect();
     child.unref();
-    console.log('[OK] Background process started (terminal freed). Output: ' + (logFd !== undefined ? logPath : '(log file unavailable - falling back to /dev/null)'));
+    console.log('[OK] Background worker accepted (PID ' + child.pid + ', workspace owned; task outcome is in log). Output: ' + logPath);
     flushExit(0);
+    return;
   }
 
   if (ENABLE_HTTP_SERVER) {
@@ -5824,4 +5971,9 @@ Make it read like a direct continuation of the user's task instructions for the 
   }
 }
 
-main().catch(console.error);
+await main();
+}
+initializeAgent().catch(e => {
+  console.error('[ERROR] Agent startup/execution failed: ' + (e && e.message ? e.message : String(e)));
+  flushExit(1);
+});

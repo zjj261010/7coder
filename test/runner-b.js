@@ -1882,10 +1882,9 @@ scenarios.push({
 });
 
 // --- B27: GAP-6 structured todo list ---
-// The CLI drives todo_write_tool through add/add/update(list is checked from
-// the tool log); a --server process on the SAME workspace re-reads
-// .7coder/todos.json per request, so GET /api/todos must reflect the CLI's
-// writes without any restart.
+// The backend drives todo_write_tool through add/add/update(list is checked from
+// the tool log). T22-14 makes the backend the workspace's sole Agent owner;
+// execute the tool sequence through HTTP, then verify GET /api/todos.
 scenarios.push({
   name: 'todos-api',
   fn: async () => {
@@ -1900,18 +1899,18 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     const srvPort = port + 410;
     const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
+      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort), PERMISSION_MODE: 'bypass' }),
       cwd, stdio: 'ignore'
     });
     await new Promise(r => setTimeout(r, 2500));
     try {
-      await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+      const task = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 't' }] });
       const todoFile = path.join(cwd, '.7coder', 'todos.json');
       let items = [];
       try { items = (JSON.parse(fs.readFileSync(todoFile, 'utf8')).items) || []; } catch (e) {}
       const t1 = items.filter(x => x.id === 't1')[0];
       record('todos: .7coder/todos.json exists with two items, t1 status done',
-        fs.existsSync(todoFile) && items.length === 2 && t1 && t1.status === 'done' && items[1] && items[1].title === 'write-tests',
+        task.status === 200 && fs.existsSync(todoFile) && items.length === 2 && t1 && t1.status === 'done' && items[1] && items[1].title === 'write-tests',
         JSON.stringify(items).substring(0, 200));
       const r1 = await httpReq(srvPort, 'GET', '/api/todos', null);
       let apiTodos = [];

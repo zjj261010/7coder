@@ -37,6 +37,7 @@
     "test:model-routing": "node test/model-routing.js",
     "test:pipe-lifecycle": "node test/pipe-lifecycle.js",
     "test:state-store": "node test/state-store.js",
+    "test:workspace-lease": "node test/workspace-lease.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",
