@@ -167,7 +167,7 @@ async function unit() {
   check('settings survive dotenv8 restart exactly while preserving unrelated values/comments', require('dotenv').parse(envText).OPENAI_API_KEY === ' "fixture quoted" ' && require('dotenv').parse(envText).HEAVY_MODEL === 'new' && envText.includes('CUSTOM="first\\nsecond"') && same(envFile + '.7coder-prev', '# keep\r\nCUSTOM="first\\nsecond"\r\n HEAVY_MODEL = old\r\n'));
   const result = await notesCtx.invoke('write_file', { path: '.7coder/todos.json', content: next });
   const refused = await notesCtx.invoke('append_file', { path: '.7coder/todos.json', content: 'not JSON' });
-  check('generic writers route managed JSON through validation/replace and reject invalid append', String(result).startsWith('Written:') && String(refused).startsWith('Append error:') && same(path.join(notes, '.7coder', 'todos.json'), next));
+  check('generic writers route managed JSON through validation/replace and reject invalid append', result.text.startsWith('Written:') && refused.text.startsWith('Append error:') && same(path.join(notes, '.7coder', 'todos.json'), next));
 }
 
 function gitArtifacts() {

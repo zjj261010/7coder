@@ -2609,9 +2609,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       backupExistingFile(fullPath);
       if (stateParser) writeStateFile(fullPath, content, stateParser);
       else fs.writeFileSync(fullPath, content, 'utf8');
-      if (args.path && args.path.endsWith('7CODER.md')) return '[OK] 7CODER.md updated with findings';
-      return `Written: ${path.relative(launchDir, fullPath)}`;
-    } catch (e) { return `Write error: ${e.message}`; }
+      if (args.path && args.path.endsWith('7CODER.md')) return makeToolResult('ok', '[OK] 7CODER.md updated with findings');
+      return makeToolResult('ok', `Written: ${path.relative(launchDir, fullPath)}`);
+    } catch (e) { return makeToolResult('error', `Write error: ${e.message}`); }
   }
   if (name === 'append_file') {
     try {
@@ -2624,8 +2624,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       backupExistingFile(fullPath);
       if (stateParser) writeStateFile(fullPath, original.text + content, stateParser);
       else fs.appendFileSync(fullPath, content, 'utf8');
-      return `Appended: ${args.path}`;
-    } catch (e) { return `Append error: ${e.message}`; }
+      return makeToolResult('ok', `Appended: ${args.path}`);
+    } catch (e) { return makeToolResult('error', `Append error: ${e.message}`); }
   }
 
   if (name === 'edit_file') {
@@ -2636,20 +2636,20 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const original = readUtf8ForWrite(fullPath, false);
       const content = original.text;
       const oldStr = normalizeUtf8Input((args.old_string === undefined || args.old_string === null) ? '' : String(args.old_string), original.newline);
-      if (oldStr === '') return 'Edit error: old_string is required';
+      if (oldStr === '') return makeToolResult('error', 'Edit error: old_string is required');
       const newStr = normalizeUtf8Input((args.new_string === undefined || args.new_string === null) ? '' : String(args.new_string), original.newline);
       const count = content.split(oldStr).length - 1;
-      if (count === 0) return 'Edit error: old_string not found in file';
+      if (count === 0) return makeToolResult('error', 'Edit error: old_string not found in file');
       if (count > 1 && !args.replace_all) {
-        return `Edit error: old_string found ${count} times - add more surrounding context to make it unique, or set replace_all=true`;
+        return makeToolResult('error', `Edit error: old_string found ${count} times - add more surrounding context to make it unique, or set replace_all=true`);
       }
       // split/join (not String.replace) so $-patterns in new_string stay literal
       backupExistingFile(fullPath);
       const next = preserveTextBom(original, content.split(oldStr).join(newStr));
       if (stateParser) writeStateFile(fullPath, next, stateParser);
       else fs.writeFileSync(fullPath, next, 'utf8');
-      return `[OK] Edited ${path.relative(launchDir, fullPath)} (${args.replace_all ? count : 1} replacement(s))`;
-    } catch (e) { return `Edit error: ${e.message}`; }
+      return makeToolResult('ok', `[OK] Edited ${path.relative(launchDir, fullPath)} (${args.replace_all ? count : 1} replacement(s))`);
+    } catch (e) { return makeToolResult('error', `Edit error: ${e.message}`); }
   }
 
   if (name === 'agent_tool') {
@@ -2789,8 +2789,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     let response = null;
     try {
       const destRel = sanitizePath(args.path);
-      if (!destRel) return 'Download error: destination path required';
-      if (!args.url || !/^https?:\/\//i.test(args.url)) return 'Download error: url must start with http:// or https://';
+      if (!destRel) return makeToolResult('error', 'Download error: destination path required');
+      if (!args.url || !/^https?:\/\//i.test(args.url)) return makeToolResult('error', 'Download error: url must start with http:// or https://');
       const dest = path.join(launchDir, destRel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       const MAX_BYTES = 500 * 1024 * 1024;
@@ -2822,8 +2822,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const previous = backupExistingFile(dest);
       fs.renameSync(temp, dest);
       temp = null; // ownership transferred - the catch path must not delete it
-      return `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)` +
-        (previous ? `\nPrevious version: ${path.relative(launchDir, previous)} (restore with /undo ${destRel})` : '');
+      return makeToolResult('ok', `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)` +
+        (previous ? `\nPrevious version: ${path.relative(launchDir, previous)} (restore with /undo ${destRel})` : ''));
     } catch (e) {
       if (response && response.data) { try { response.data.destroy(); } catch (e2) {} }
       if (writer) {
@@ -2835,7 +2835,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         try { fs.unlinkSync(temp); }
         catch (e2) { if (e2.code !== 'ENOENT') residue = `; temporary file retained at ${temp}: ${e2.message}`; }
       }
-      return `Download error: ${e.message}${residue}`;
+      return makeToolResult('error', `Download error: ${e.message}${residue}`);
     }
   }
   if (name === 'web_search_tool') {
@@ -2843,31 +2843,31 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // legal list - never a silent network fallback.
     const validProviders = "'' (DuckDuckGo lite), ddg, searxng, brave, bing";
     if (SEARCH_PROVIDER !== '' && SEARCH_PROVIDER !== 'ddg' && SEARCH_PROVIDER !== 'searxng' && SEARCH_PROVIDER !== 'brave' && SEARCH_PROVIDER !== 'bing') {
-      return `Search error (provider): Unknown SEARCH_PROVIDER "${SEARCH_PROVIDER}". Valid values: ${validProviders}.`;
+      return makeToolResult('error', `Search error (provider): Unknown SEARCH_PROVIDER "${SEARCH_PROVIDER}". Valid values: ${validProviders}.`);
     }
     try {
       const q = encodeURIComponent(args.query);
       if (SEARCH_PROVIDER === 'searxng') {
         const base = SEARCH_ENDPOINT.replace(/\/+$/, '');
-        if (!base) return 'Search error (provider): SEARCH_ENDPOINT is required when SEARCH_PROVIDER=searxng (check SEARCH_* configuration)';
+        if (!base) return makeToolResult('error', 'Search error (provider): SEARCH_ENDPOINT is required when SEARCH_PROVIDER=searxng (check SEARCH_* configuration)');
         const res = await axios.get(`${base}/search?q=${q}&format=json`, { timeout: 10000 });
         const rows = (((res.data || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
-        return `Search results:\n${rows.join('\n')}`;
+        return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       if (SEARCH_PROVIDER === 'brave') {
         const res = await axios.get(`https://api.search.brave.com/res/v1/web/search?q=${q}`, { timeout: 10000, headers: SEARCH_API_KEY ? { 'X-Subscription-Token': SEARCH_API_KEY } : {} });
         const rows = ((((res.data || {}).web || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
-        return `Search results:\n${rows.join('\n')}`;
+        return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       if (SEARCH_PROVIDER === 'bing') {
         const res = await axios.get(`https://api.bing.microsoft.com/v7.0/search?q=${q}`, { timeout: 10000, headers: SEARCH_API_KEY ? { 'Ocp-Apim-Subscription-Key': SEARCH_API_KEY } : {} });
         const rows = ((((res.data || {}).webPages || {}).value) || []).slice(0, 10).map(r => `${r.name} -> ${r.url}`);
-        return `Search results:\n${rows.join('\n')}`;
+        return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       const res = await axios.get(`https://lite.duckduckgo.com/lite?q=${q}`, { timeout: 10000 });
       const links = [...res.data.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].slice(0, 10).map(m => `${m[2]} -> ${m[1]}`);
-      return `Search results:\n${links.join('\n')}`;
-    } catch (e) { return `Search error (provider): ${e.message} (check SEARCH_PROVIDER/SEARCH_ENDPOINT/SEARCH_API_KEY configuration)`; }
+      return makeToolResult('ok', `Search results:\n${links.join('\n')}`);
+    } catch (e) { return makeToolResult('error', `Search error (provider): ${e.message} (check SEARCH_PROVIDER/SEARCH_ENDPOINT/SEARCH_API_KEY configuration)`); }
   }
 
   if (name === 'web_browser_tool') {
@@ -2917,19 +2917,19 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const content = preserveTextBom(original, normalizeUtf8Input(JSON.stringify(notebook, null, 2), original.newline));
       backupExistingFile(nbPath);
       fs.writeFileSync(nbPath, content, 'utf8');
-      return 'Notebook edited successfully';
-    } catch (e) { return `Notebook error: ${e.message}`; }
+      return makeToolResult('ok', 'Notebook edited successfully');
+    } catch (e) { return makeToolResult('error', `Notebook error: ${e.message}`); }
   }
 
   if (name === 'ask_user_question_tool') {
     // P2-15: "skipped" reads like a silent answer - the model must decide for
     // itself and surface the assumption instead of inventing a user reply.
     const userUnreachable = 'User is unreachable in this mode. Do NOT assume an answer - decide yourself, then state the assumption explicitly in your final answer.';
-    if (subAgentModeOverride) return 'Question skipped (a sub-agent cannot ask the user questions).';
-    if (!INTERACTIVE || rlClosed) return userUnreachable;
-    if (DANGER_MODE || effectivePermissionMode() === 'bypass') return userUnreachable;
+    if (subAgentModeOverride) return makeToolResult('ok', 'Question skipped (a sub-agent cannot ask the user questions).');
+    if (!INTERACTIVE || rlClosed) return makeToolResult('ok', userUnreachable);
+    if (DANGER_MODE || effectivePermissionMode() === 'bypass') return makeToolResult('ok', userUnreachable);
     const answer = await cliQuestions.ask(`${args.question}\nAnswer: `, cancelled);
-    return answer === null ? userUnreachable : `User answered: ${answer}`;
+    return answer === null ? makeToolResult('ok', userUnreachable) : makeToolResult('ok', `User answered: ${answer}`);
   }
 
   if (name === 'brief_tool') {
@@ -2945,8 +2945,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const summary = `Summary of ${args.folder} (${files.length} files):\n${body}\n\nGenerated at ${new Date().toISOString()}`;
       fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
       writeStateFile(summaryPath, summary);
-      return `Summary written to ${summaryPath}`;
-    } catch (e) { return `Brief error: ${e.message}`; }
+      return makeToolResult('ok', `Summary written to ${summaryPath}`);
+    } catch (e) { return makeToolResult('error', `Brief error: ${e.message}`); }
   }
 
   if (name === 'task_create_tool') {
@@ -3218,18 +3218,18 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'sleep_tool') {
     const ms = parseInt(args.ms) || 1000;
     await new Promise(r => setTimeout(r, ms));
-    return `[OK] Slept ${ms}ms`;
+    return makeToolResult('ok', `[OK] Slept ${ms}ms`);
   }
 
   if (name === 'snip_tool') {
     const history = conversation || messages;
     const start = args.start || 0;
     const end = (typeof args.end === 'number') ? args.end : history.length;
-    return history.slice(start, end).map(m => JSON.stringify(m)).join('\n');
+    return makeToolResult('ok', history.slice(start, end).map(m => JSON.stringify(m)).join('\n'));
   }
 
   if (name === 'tool_search_tool') {
-    return tools.map(t => t.function.name).join('\n');
+    return makeToolResult('ok', tools.map(t => t.function.name).join('\n'));
   }
 
   if (name === 'enter_worktree_tool') {
@@ -3259,10 +3259,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     return makeToolResult('ok', `[OK] Cron job deleted`);
   }
   if (name === 'cron_list_tool') {
-    if (!cronJobs.size) return 'No cron jobs';
-    return Array.from(cronJobs.entries()).map(([id, j]) =>
+    if (!cronJobs.size) return makeToolResult('ok', 'No cron jobs');
+    return makeToolResult('ok', Array.from(cronJobs.entries()).map(([id, j]) =>
       `${id} | schedule: ${j.schedule} | runs: ${j.runs} | next: ${j.nextRun ? new Date(j.nextRun).toISOString() : 'n/a'}${j.lastError ? ` | lastError: ${j.lastError}` : ''}`
-    ).join('\n');
+    ).join('\n'));
   }
 
   if (name === 'skill_tool') {
@@ -3292,7 +3292,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'auto_approval_return') {
-    return args.description || 'Auto-approval handover complete';
+    return makeToolResult('ok', args.description || 'Auto-approval handover complete');
   }
 
   if (name === 'computer_use') {
@@ -3680,7 +3680,7 @@ function inGitRepo() {
   }
 
   if (name === 'git_commit_tool') {
-    if (!inGitRepo()) return "Not a git repository.";
+    if (!inGitRepo()) return makeToolResult('error', "Not a git repository.");
     let message = (typeof args.message === "string" && args.message.trim()) ? args.message.trim() : "";
     if (!message) {
       // Generate from the session audit log (most common tool verbs of this session)
@@ -3706,11 +3706,11 @@ function inGitRepo() {
       // add -A just cannot sweep .7coder/ in anymore.
       if (args.stage_all !== false) git(["add", "-A", "--", ":(exclude).7coder/", ":(exclude,glob)**/*.7coder-*"]);
       const staged = git(["diff", "--cached", "--name-only"]).trim();
-      if (!staged) return "[GIT] nothing to commit (no staged changes).";
+      if (!staged) return makeToolResult('ok', "[GIT] nothing to commit (no staged changes).");
       git(["commit", "-m", message]); // message is ONE argv entry - no shell quoting at all
       const last = git(["log", "-1", "--oneline"]).trim();
-      return "[OK] committed: " + last + (snapshot ? "\n(snapshot " + snapshot.substring(0, 12) + " recorded for recovery)" : "");
-    } catch (e) { return "Git commit error: " + e.message; }
+      return makeToolResult('ok', "[OK] committed: " + last + (snapshot ? "\n(snapshot " + snapshot.substring(0, 12) + " recorded for recovery)" : ""));
+    } catch (e) { return makeToolResult('error', "Git commit error: " + e.message); }
   }
 
   if (name === 'synthetic_output_tool') {
@@ -4202,6 +4202,8 @@ async function askApproval(question, approvalBridge, cancelled) {
 // failures become explicit errors; fetched page content stays ok.
 // Batch 6 (2026-10-24): command tools - aborted commands become cancelled (was inferred ok);
 // successful commands retain a non-empty stderr tail; bash-missing/non-Windows gaps closed.
+// Batch 7 (2026-10-24): sweep - write/edit + misc cluster; handover description passthrough
+// becomes explicitly ok; git_commit's not-a-repository (a failed WRITE intent) becomes error.
 const TOOL_RESULT_MARKER = Symbol('7coder.ToolResult');
 const TOOL_RESULT_STATUSES = ['ok', 'error', 'blocked', 'declined', 'cancelled'];
 const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool',
@@ -4209,7 +4211,10 @@ const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', '
   'task_get_tool', 'task_list_tool', 'task_output_tool', 'memory_tool', 'list_mcp_resources_tool', 'read_mcp_resource_tool', 'prompt_from_file',
   'skill_tool', 'todo_write_tool', 'task_create_tool', 'task_stop_tool', 'cron_delete_tool', 'process_kill_tool', 'agent_tool',
   'web_fetch_tool', 'synthetic_output_tool', 'enter_worktree_tool', 'computer_use', 'schedule_cron_tool', 'cron_create_tool',
-  'run_command', 'bash_tool', 'powershell_tool']);
+  'run_command', 'bash_tool', 'powershell_tool',
+  'write_file', 'append_file', 'edit_file', 'notebook_edit_tool', 'download_tool', 'brief_tool',
+  'sleep_tool', 'snip_tool', 'tool_search_tool', 'cron_list_tool', 'git_commit_tool',
+  'auto_approval_return', 'ask_user_question_tool', 'web_search_tool']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };

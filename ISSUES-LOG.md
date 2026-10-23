@@ -23,19 +23,19 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 331 |
+| runner-b.js | 337 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 23 |
 | runner-g.js | 31 |
 | runner-h.js | 27 |
-| runner-i.js | 54 |
+| runner-i.js | 55 |
 | runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 60 |
-| **合计** | **648** |
+| **合计** | **655** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -416,7 +416,7 @@
 | # | 方向 | 状态 |
 |---|------|------|
 | OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ✅ 本轮统一为 index.js TOOL_METADATA：53 个工具逐一声明风险/审批说明/自动放行/只读并行/改动跟踪、执行性/资源/现有取消支持。初始化校验与旧策略基线对照见文末 OPT-12 记录；取消语义本身仍由 OPT-15 跟踪 |
-| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob/grep/list_dir/git_status/git_diff/process_list——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具**（task_get/task_list/task_output/memory/list_mcp_resources/read_mcp_resource/prompt_from_file——内容透传误判与 not-found 缺口）＋**第四批 7 个校验/查找缺口工具（2026-10-20）**：skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool——Skill/Task/Cron/PID/Agent 七类失败文本获显式 error、task_stop 幂等停止锁定为 ok＋**第五批 6 工具名（2026-10-24，T22-20 首片）**：web_fetch/synthetic_output/enter_worktree/computer_use/schedule_cron/cron_create——Fetch/Synthetic/Worktree/Screenshot/schedule 前缀缺口修复、抓取内容透传 ok、agent 返工（runSubAgent 失败不再被包成 ok）＋**第六批命令族 3 工具（2026-10-24，T22-20）**：run_command/bash_tool/powershell_tool——aborted→cancelled（取消不再报 ok）、成功保留 stderr 尾巴（唯一有意文本变更）、bash 缺失/非 Windows 前缀缺口。累计 **33/53**；其余 20 工具仍走旧字符串兼容。实现与验收见文末 |
+| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob/grep/list_dir/git_status/git_diff/process_list——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具**（task_get/task_list/task_output/memory/list_mcp_resources/read_mcp_resource/prompt_from_file——内容透传误判与 not-found 缺口）＋**第四批 7 个校验/查找缺口工具（2026-10-20）**：skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool——Skill/Task/Cron/PID/Agent 七类失败文本获显式 error、task_stop 幂等停止锁定为 ok＋**第五批 6 工具名（2026-10-24，T22-20 首片）**：web_fetch/synthetic_output/enter_worktree/computer_use/schedule_cron/cron_create——Fetch/Synthetic/Worktree/Screenshot/schedule 前缀缺口修复、抓取内容透传 ok、agent 返工（runSubAgent 失败不再被包成 ok）＋**第六批命令族 3 工具（2026-10-24，T22-20）**：run_command/bash_tool/powershell_tool——aborted→cancelled（取消不再报 ok）、成功保留 stderr 尾巴（唯一有意文本变更）、bash 缺失/非 Windows 前缀缺口。累计 **47/53**（第七批清扫 14 工具：写入/编辑/杂项——handover 透传 ok、git_commit 非仓库 error）；其余 6 工具（MCP×2/web_browser/plan_mode/auto_debug/bickering）留末批。实现与验收见文末 |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ✅ internalStatePath/managedWorkspacePath 统一校验产品状态目录、会话、备份、MCP、skills、memory、todos、summaries、审计和工作区状态文件；junction/symlink 越界 fail-closed。普通用户文件仍走 sanitizePath，取消契约留 OPT-15 |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
@@ -965,6 +965,15 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 遇到无响应owner或权限/命名端点冲突，程序拒绝启动而不是自动抢占；可恢复性以真正结束旧实例后重新启动为准。正常冲突也不自动排队重试；请用现有HTTP进程，或结束它后再启动CLI。运行身份用于核对诊断/交接，不是公网认证协议，不传输模型密钥。
 - 后台父释放到子取得独占之间允许其它启动者先取得；子/父将明确报告交接失败，不强抢其它实例。这保证互斥，不能保证交接一定胜出。accepted只代表持锁＋同步初始化，dream就绪阻塞、模型可用性及后代停止仍按T22-22/07处理。安装级损坏原件/旧版保持不动，需在确认无使用者后人工修复。
 - 本批未改变工具取消、HTTP对话shell身份、保存队列/字节预算和日志保留策略；非Windows loopback端口碰撞/运行分支尚未实测。V22-05/06仅补本地所有权与先后写入证据，仍为部分完成。本批源码已实施，未提交、未推送、未发布。
+
+---
+
+## 2026-10-24 —— T22-20 清扫批 / OPT-13 第七批（主会话自做：14 工具一次过）
+
+- **范围**：write_file/append_file/edit_file/notebook_edit_tool/download_tool/brief_tool/sleep_tool/snip_tool/tool_search_tool/cron_list_tool/git_commit_tool/auto_approval_return/ask_user_question_tool/web_search_tool，共 14 个。两个红点：①`auto_approval_return` 把模型描述**原样透传**——描述以 `[ERROR]` 开头时成功的交接被推断为失败；②`git_commit_tool` 的 `Not a git repository.`（**写意图失败**）不在 RE、被推断 ok。其余为兼容锁（含 append 到错误样文件名的绿锁、7CODER.md 专文、download 本地假 HTTP 成功路径、brief 缺失目录=0 文件摘要照样写的真实行为、web_search 坏 provider）。语义决定：git_commit 的 `nothing to commit` 保持 ok（幂等 no-op）；ask_user 的跳过/不可达全 ok（有意行为）。OPT-13 累计 **47/53**。
+- **测试基建适配**：download-commit/state-store 两个 T22 专项用 vm 抽取 download/写入分支——沙箱缺 `makeToolResult` 报 ReferenceError、断言在裸字符串上。修法：loadContext 补 `{status,text}` 桩（state-store 原有）、6+1 处断言改 `.text`（先定向跑两专项 41/41、59/59 确认再全量）。b7 场景 statusOf 用 b3 的前缀键匹配（snip 输出整段系统提示 JSON 超 SSE 12000 截断）。
+- **门禁**：红恰 2+1；绿：node --check、runner-b **354/354**、runner-i 51/50+1 跳过、runner(A) 88/88、**test-all 20 目标全绿**（含适配后的两个专项）、**Node 13 复验 B 354/354、I 51/51、A 88/88**。web_search 成功路径需外网，离线不可测（代码审查）；notebook/brief 的 catch 活体已覆盖（ENOENT 路径）。
+- **剩余 6 工具**（末批）：mcp_tool/mcp_list_tools_tool（含 external 路径缺口待查证）、web_browser_tool、plan_mode、auto_debug_tool、bickering_tool。
 
 ---
 

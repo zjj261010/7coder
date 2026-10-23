@@ -3283,6 +3283,82 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'tool-results-b7',
+  fn: async () => {
+    // OPT-13 batch 7 (sweep): write/edit + misc cluster. Two red points:
+    // auto_approval_return passes the model's description through verbatim, so
+    // a description beginning with a legacy prefix flips the inferred status
+    // today; git_commit's "Not a git repository." is not in TOOL_FAIL_RE, so a
+    // failed WRITE intent reported ok. Everything else is a compat lock.
+    const cwd = freshCwd('tool-results-b7');
+    const webPort = port + 594;
+    const fakeWeb = spawn(NODE_BIN, ['-e', 'require("http").createServer(function(q,s){s.end("B7-BYTES")}).listen(process.env.FAKE_WEB_PORT)'],
+      { env: Object.assign({}, process.env, { FAKE_WEB_PORT: String(webPort) }), stdio: 'ignore' });
+    const tc = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const calls = [
+      tc('b7aa','auto_approval_return',{description:'[ERROR] b7-flip-description'}),
+      tc('b7gc','git_commit_tool',{}),
+      tc('b7wf','write_file',{path:'b7.txt',content:'W'}),
+      tc('b7wc','write_file',{path:'7CODER.md',content:'# b7'}),
+      tc('b7ap','append_file',{path:'Read error b7.txt',content:'A'}),
+      tc('b7ef','edit_file',{path:'b7.txt',old_string:'NOPE',new_string:'x'}),
+      tc('b7nb','notebook_edit_tool',{path:'no-b7.ipynb',edits:{}}),
+      tc('b7brf','brief_tool',{folder:'no-such-b7'}),
+      tc('b7dl','download_tool',{url:'http://127.0.0.1:'+webPort+'/f.bin',path:'dl-b7.bin'}),
+      tc('b7du','download_tool',{url:'notaurl',path:'x-b7'}),
+      tc('b7sl','sleep_tool',{ms:1}),
+      tc('b7sn','snip_tool',{start:0,end:1}),
+      tc('b7ts','tool_search_tool',{}),
+      tc('b7cl','cron_list_tool',{}),
+      tc('b7ws','web_search_tool',{query:'b7'})
+    ];
+    const m = startMock([
+      {role:'assistant',content:null,tool_calls:calls}, {role:'assistant',content:'B7-DONE'}
+    ]);
+    let srv;
+    try {
+      await new Promise(r=>setTimeout(r,800));
+      const srvPort=port+604;
+      srv=spawn(NODE_BIN,[IDX,'--server'],{cwd,stdio:'ignore',env:Object.assign({},process.env,{OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',HTTP_PORT:String(srvPort),HTTP_API_KEY:'',PERMISSION_MODE:'bypass',SEARCH_PROVIDER:'bogus-b7'})});
+      await new Promise(r=>setTimeout(r,1800));
+      const chat=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'b7'}]});
+      const events=chat.body.split('\n').filter(l=>l.startsWith('data: {')).map(l=>JSON.parse(l.slice(6)));
+      const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
+      const log=readLog(m.log);
+      const result=id=>tr(log,id);
+      // Prefix-key matching (b3 pattern): SSE display text is truncated at
+      // 12000 chars (snip emits the whole system prompt as JSON) and passes
+      // sanitizeAuditLine masking - exact equality would miss the pairing.
+      const norm=s=>String(s).replace(/sk-[A-Za-z0-9]{8,}/g,'sk-***');
+      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=norm(r.c).substring(0,25);const o=outputs.find(e=>e.result&&norm(e.result).substring(0,25)===key);return o&&o.status;};
+      record('ToolResult-b7: handover description passthrough stays ok despite error-looking text',
+        result('b7aa') && statusOf('b7aa')==='completed' && result('b7aa').c.startsWith('[ERROR] b7-flip-description'),
+        JSON.stringify({status:statusOf('b7aa'),text:result('b7aa') && result('b7aa').c.substring(0,40)}));
+      record('ToolResult-b7: git commit outside a repository reports error',
+        result('b7gc') && statusOf('b7gc')==='error' && result('b7gc').c==='Not a git repository.',
+        JSON.stringify({status:statusOf('b7gc')}));
+      record('ToolResult-b7: write family keeps texts and statuses with content-named files',
+        statusOf('b7wf')==='completed' && result('b7wf').c==='Written: b7.txt' &&
+        statusOf('b7wc')==='completed' && result('b7wc').c==='[OK] 7CODER.md updated with findings' &&
+        statusOf('b7ap')==='completed' && result('b7ap').c.startsWith('Appended: Read error b7.txt') &&
+        statusOf('b7ef')==='error' && result('b7ef').c.startsWith('Edit error: old_string not found'), '');
+      record('ToolResult-b7: notebook brief download and misc tools keep classified statuses',
+        statusOf('b7nb')==='error' && result('b7nb').c.startsWith('Notebook error:') &&
+        statusOf('b7brf')==='completed' && result('b7brf').c.startsWith('Summary written to') &&
+        statusOf('b7dl')==='completed' && result('b7dl').c.startsWith('[OK] Downloaded') && fs.readFileSync(path.join(cwd,'dl-b7.bin'),'utf8')==='B7-BYTES' &&
+        statusOf('b7du')==='error' && result('b7du').c.startsWith('Download error: url must start') &&
+        statusOf('b7sl')==='completed' && statusOf('b7sn')==='completed' &&
+        statusOf('b7ts')==='completed' && result('b7ts').c.includes('read_file') &&
+        statusOf('b7cl')==='completed' && result('b7cl').c==='No cron jobs', '');
+      record('ToolResult-b7: invalid search provider fails with provider error',
+        statusOf('b7ws')==='error' && result('b7ws').c.startsWith('Search error (provider): Unknown SEARCH_PROVIDER'), '');
+      const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
+      record('ToolResult-b7: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+    } finally { if (srv) srv.kill(); if (fakeWeb) fakeWeb.kill(); stopMock(m); }
+  }
+});
+
 
 // ====================== RUNNER ======================
 scenarios.push({

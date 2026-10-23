@@ -14,8 +14,11 @@ function cut(source, from, to) {
   return source.slice(start, end);
 }
 function loadContext(source, cwd, overrides, extra) {
+  // OPT-13: the extracted branches return structured ToolResults now - give
+  // the sandbox the constructor (plain object; the suites assert on .text).
   const ctx = Object.assign({ fs: Object.assign({}, fs, overrides), path, process, console,
-    crypto, pipeline, Transform, axios, launchDir: cwd }, extra || {});
+    crypto, pipeline, Transform, axios, launchDir: cwd,
+    makeToolResult: (status, text) => ({ status, text }) }, extra || {});
   vm.createContext(ctx);
   vm.runInContext(cut(source, 'function isInsideDir(', '// Files the AI must never edit') +
     cut(source, 'function recursiveReaddir(', '// P2-3: grep budgets') +
@@ -58,7 +61,7 @@ async function main() {
     overrides.unlinkSync = file => { if (file === f.dest) destUnlinked = true; return originalUnlink(file); };
     const ctx = loadContext(source, f.cwd, overrides, opts && opts.extra);
     const result = await ctx.download({ path: 'target.bin', url: base + (opts && opts.route || '/blob') });
-    check(name + ': error preserves original bytes without unlinking destination', /^Download error:/.test(result) && same(f.dest, old) && !destUnlinked);
+    check(name + ': error preserves original bytes without unlinking destination', /^Download error:/.test(result.text) && same(f.dest, old) && !destUnlinked);
     if (!(opts && opts.residue)) check(name + ': no owned part/staging residue', !files(f.cwd).some(file => file.includes('.part-') || file.endsWith('.bak.tmp')));
     check(name + ': every published backup is complete', backups(f.cwd).every(file => same(file, old)));
     return Object.assign(f, { result, ctx });
@@ -107,13 +110,13 @@ async function main() {
       unlinkSync(file) { assert.notStrictEqual(file, happy.dest, 'never unlink destination'); return fs.unlinkSync(file); }
     });
     const result = await happyCtx.download({ path: 'target.bin', url: base + '/blob' });
-    check('existing destination replaced byte-for-byte only after writer close', result.startsWith('[OK]') && same(happy.dest, fresh) && committedAfterClose);
-    check('previous binary version is a complete published backup', backups(happy.cwd).length === 1 && same(backups(happy.cwd)[0], old) && result.includes('Previous version:'));
+    check('existing destination replaced byte-for-byte only after writer close', result.text.startsWith('[OK]') && same(happy.dest, fresh) && committedAfterClose);
+    check('previous binary version is a complete published backup', backups(happy.cwd).length === 1 && same(backups(happy.cwd)[0], old) && result.text.includes('Previous version:'));
     check('success leaves no part or backup staging files', !files(happy.cwd).some(f => f.includes('.part-') || f.endsWith('.bak.tmp')));
     check('fresh recovery context restores previous version', loadContext(source, happy.cwd).restoreLatestBackup('target.bin') && same(happy.dest, old));
     const noOld = S.freshCwd('new');
     const noOldResult = await loadContext(source, noOld).download({ path: 'nested/new.bin', url: base + '/blob' });
-    check('new nested target needs no previous backup', noOldResult.startsWith('[OK]') && same(path.join(noOld, 'nested', 'new.bin'), fresh) && backups(noOld).length === 0);
+    check('new nested target needs no previous backup', noOldResult.text.startsWith('[OK]') && same(path.join(noOld, 'nested', 'new.bin'), fresh) && backups(noOld).length === 0);
 
     const denied = await fail('commit EPERM', f => ({ renameSync(from, to) { if (to === f.dest) throw ioError('commit denied'); return fs.renameSync(from, to); } }));
     check('commit failure retains a complete rollback copy', backups(denied.cwd).length === 1);
@@ -141,12 +144,12 @@ async function main() {
     const foreignPart = collided.dest + '.part-' + process.pid + '-' + '0'.repeat(16);
     fs.writeFileSync(foreignPart, 'FOREIGN_PART');
     const collisionResult = await loadContext(source, collided.cwd, {}, { crypto: { randomBytes: n => Buffer.alloc(n) } }).download({ path: 'target.bin', url: base + '/blob' });
-    check('exclusive temp collision neither overwrites nor deletes foreign file', collisionResult.startsWith('Download error:') && same(collided.dest, old) && fs.readFileSync(foreignPart, 'utf8') === 'FOREIGN_PART');
+    check('exclusive temp collision neither overwrites nor deletes foreign file', collisionResult.text.startsWith('Download error:') && same(collided.dest, old) && fs.readFileSync(foreignPart, 'utf8') === 'FOREIGN_PART');
     const residue = await fail('cleanup EPERM', () => ({
       renameSync(from, to) { if (from.includes('.part-')) throw ioError('commit denied'); return fs.renameSync(from, to); },
       unlinkSync(file) { if (file.includes('.part-')) throw ioError('cleanup denied'); return fs.unlinkSync(file); }
     }), { residue: true });
-    check('failed cleanup reports exact remaining temporary path', residue.result.includes('temporary file retained at ') && files(residue.cwd).filter(f => f.includes('.part-')).length === 1);
+    check('failed cleanup reports exact remaining temporary path', residue.result.text.includes('temporary file retained at ') && files(residue.cwd).filter(f => f.includes('.part-')).length === 1);
 
     const pruning = fixture('retention');
     const backupDir = path.join(pruning.cwd, '.7coder', 'backups'); fs.mkdirSync(backupDir, { recursive: true });
