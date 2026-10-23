@@ -154,7 +154,7 @@ async function main() {
       const file = path.join(backupDir, 'target.bin.2099-01-0' + i + 'T00-00-00-000Z.bak');
       fs.writeFileSync(file, 'older backup'); fs.utimesSync(file, new Date('2099-01-01'), new Date('2099-01-01'));
     }
-    const snapshot = loadContext(source, pruning.cwd).backupDownloadTarget(pruning.dest);
+    const snapshot = loadContext(source, pruning.cwd).backupExistingFile(pruning.dest);
     check('rollback copy survives clock skew while per-file retention stays bounded', backups(pruning.cwd).length === 5 && same(snapshot, old));
 
     // Abrupt exit at the two sides of the single commit operation. The worker

@@ -2248,7 +2248,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       }
       // GAP-3a: every read is line-numbered (`cat -n` style), full and windowed
       // alike - one shared formatter so the two branches cannot drift.
-      const lines = buf.toString('utf8').split('\n');
+      const lines = decodeUtf8Text(buf).split('\n');
       const windowed = typeof args.offset === 'number' || typeof args.limit === 'number';
       const start = windowed ? Math.max(0, (parseInt(args.offset, 10) || 1) - 1) : 0;
       // old P1-6 third half: a window fully past EOF must say so, not
@@ -2265,18 +2265,23 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'write_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path || ''));
+      const original = readUtf8ForWrite(fullPath, true);
+      const content = preserveTextBom(original, normalizeUtf8Input(args.content || '', original.newline));
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      backupFile(fullPath);
-      fs.writeFileSync(fullPath, args.content || '', 'utf8');
+      backupExistingFile(fullPath);
+      fs.writeFileSync(fullPath, content, 'utf8');
       if (args.path && args.path.endsWith('7CODER.md')) return '[OK] 7CODER.md updated with findings';
       return `Written: ${path.relative(launchDir, fullPath)}`;
     } catch (e) { return `Write error: ${e.message}`; }
   }
   if (name === 'append_file') {
-    const fullPath = path.join(launchDir, sanitizePath(args.path));
     try {
+      const fullPath = path.join(launchDir, sanitizePath(args.path));
+      const original = readUtf8ForWrite(fullPath, true);
+      const content = normalizeUtf8Input(args.content || '', original.newline);
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      fs.appendFileSync(fullPath, args.content || '', 'utf8');
+      backupExistingFile(fullPath);
+      fs.appendFileSync(fullPath, content, 'utf8');
       return `Appended: ${args.path}`;
     } catch (e) { return `Append error: ${e.message}`; }
   }
@@ -2284,18 +2289,19 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'edit_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path));
-      const content = fs.readFileSync(fullPath, 'utf8');
-      const oldStr = (args.old_string === undefined || args.old_string === null) ? '' : String(args.old_string);
+      const original = readUtf8ForWrite(fullPath, false);
+      const content = original.text;
+      const oldStr = normalizeUtf8Input((args.old_string === undefined || args.old_string === null) ? '' : String(args.old_string), original.newline);
       if (oldStr === '') return 'Edit error: old_string is required';
-      const newStr = (args.new_string === undefined || args.new_string === null) ? '' : String(args.new_string);
+      const newStr = normalizeUtf8Input((args.new_string === undefined || args.new_string === null) ? '' : String(args.new_string), original.newline);
       const count = content.split(oldStr).length - 1;
       if (count === 0) return 'Edit error: old_string not found in file';
       if (count > 1 && !args.replace_all) {
         return `Edit error: old_string found ${count} times - add more surrounding context to make it unique, or set replace_all=true`;
       }
       // split/join (not String.replace) so $-patterns in new_string stay literal
-      backupFile(fullPath);
-      fs.writeFileSync(fullPath, content.split(oldStr).join(newStr), 'utf8');
+      backupExistingFile(fullPath);
+      fs.writeFileSync(fullPath, preserveTextBom(original, content.split(oldStr).join(newStr)), 'utf8');
       return `[OK] Edited ${path.relative(launchDir, fullPath)} (${args.replace_all ? count : 1} replacement(s))`;
     } catch (e) { return `Edit error: ${e.message}`; }
   }
@@ -2458,7 +2464,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       await writerClosed;
       if (writerError) throw writerError;
       flushDownloadFile(temp);
-      const previous = backupDownloadTarget(dest);
+      const previous = backupExistingFile(dest);
       fs.renameSync(temp, dest);
       temp = null; // ownership transferred - the catch path must not delete it
       return `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)` +
@@ -2549,11 +2555,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'notebook_edit_tool') {
     try {
       const nbPath = path.join(launchDir, sanitizePath(args.path));
-      let notebook = JSON.parse(fs.readFileSync(nbPath, 'utf8'));
+      const original = readUtf8ForWrite(nbPath, false);
+      let notebook = JSON.parse(original.text.replace(/^\uFEFF/, ''));
       if (args.edits.cells) notebook.cells = args.edits.cells;
       if (args.edits.metadata) notebook.metadata = { ...notebook.metadata, ...args.edits.metadata };
-      backupFile(nbPath);
-      fs.writeFileSync(nbPath, JSON.stringify(notebook, null, 2));
+      const content = preserveTextBom(original, normalizeUtf8Input(JSON.stringify(notebook, null, 2), original.newline));
+      backupExistingFile(nbPath);
+      fs.writeFileSync(nbPath, content, 'utf8');
       return 'Notebook edited successfully';
     } catch (e) { return `Notebook error: ${e.message}`; }
   }
@@ -2921,7 +2929,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'prompt_from_file') {
-    try { return makeToolResult('ok', fs.readFileSync(path.join(launchDir, sanitizePath(args.file)), 'utf8')); } catch { return makeToolResult('error', 'File not found'); }
+    try { return makeToolResult('ok', decodeUtf8Text(fs.readFileSync(path.join(launchDir, sanitizePath(args.file))))); }
+    catch (e) { return makeToolResult('error', e.code === 'ENOENT' ? 'File not found' : `Read error: ${e.message}`); }
   }
 
   if (name === 'auto_approval_return') {
@@ -3721,17 +3730,18 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
         // Show the real diff instead of an LLM paraphrase - deterministic and cheaper.
         try {
           const fullPath = path.join(launchDir, sanitizePath(args.path));
-          let oldText = '';
-          try { oldText = fs.readFileSync(fullPath, 'utf8'); } catch (e) {}
+          const original = readUtf8ForWrite(fullPath, true);
+          const oldText = original.text;
           let newText = oldText;
           if (name === 'edit_file') {
-            const oldStr = String(args.old_string === undefined ? '' : args.old_string);
-            const newStr = String(args.new_string === undefined ? '' : args.new_string);
+            const oldStr = normalizeUtf8Input(String(args.old_string === undefined ? '' : args.old_string), original.newline);
+            const newStr = normalizeUtf8Input(String(args.new_string === undefined ? '' : args.new_string), original.newline);
             if (oldStr && oldText.split(oldStr).length > 1) newText = oldText.split(oldStr).join(newStr);
+            newText = preserveTextBom(original, newText);
           } else if (name === 'write_file') {
-            newText = String(args.content === undefined ? '' : args.content);
+            newText = preserveTextBom(original, normalizeUtf8Input(String(args.content === undefined ? '' : args.content), original.newline));
           } else {
-            newText = oldText + String(args.content === undefined ? '' : args.content);
+            newText = oldText + normalizeUtf8Input(String(args.content === undefined ? '' : args.content), original.newline);
           }
           preview = simpleLineDiff(oldText, newText);
         } catch (e) { preview = null; }
@@ -4262,16 +4272,52 @@ function prepareMessagesForPrompt(rawPrompt) {
 // ====================== EDIT SAFETY NET (backups + diff preview) ======================
 const backupsDir = path.join(launchDir, '.7coder', 'backups');
 
-// Download commit prerequisites are strict: an unflushed or partial backup
-// must never authorize replacing the old file or appear in /undo's .bak list.
+// T22-10: text tools must not turn Win7 legacy bytes into replacement chars.
+// Round-trip validation is deterministic; it does not guess GBK/UTF-16.
+function decodeUtf8Text(bytes) {
+  const text = bytes.toString('utf8');
+  if (bytes.includes(0) || !Buffer.from(text, 'utf8').equals(bytes)) {
+    throw new Error('Unsupported text encoding or binary data: only lossless UTF-8 is supported. Convert a copy explicitly; original bytes were not changed.');
+  }
+  return text;
+}
+
+function readUtf8ForWrite(fullPath, allowMissing) {
+  let text;
+  try { text = decodeUtf8Text(fs.readFileSync(fullPath)); }
+  catch (e) {
+    if (allowMissing && e.code === 'ENOENT') return { text: '', bom: false, newline: null };
+    throw e;
+  }
+  let newline = null;
+  if (text.includes('\r\n') && !/(^|[^\r])\n|\r(?!\n)/.test(text)) newline = '\r\n';
+  else if (text.includes('\n') && !text.includes('\r')) newline = '\n';
+  else if (text.includes('\r') && !text.includes('\n')) newline = '\r';
+  // Mixed/no line endings: keep caller input literal, preserving untouched bytes.
+  return { text, bom: text.charCodeAt(0) === 0xFEFF, newline };
+}
+
+function normalizeUtf8Input(text, newline) {
+  if (typeof text !== 'string' || text.includes('\0') || Buffer.from(text, 'utf8').toString('utf8') !== text) {
+    throw new Error('Text content must be a UTF-8 encodable string without NUL or unpaired surrogates.');
+  }
+  return newline ? text.replace(/\r\n|\r|\n/g, newline) : text;
+}
+
+function preserveTextBom(original, text) {
+  return original.bom && text.charCodeAt(0) !== 0xFEFF ? '\uFEFF' + text : text;
+}
+
+// Shared strict snapshot: an unflushed or partial backup must never authorize
+// a write or appear in /undo's .bak list.
 function flushDownloadFile(file) {
   const fd = fs.openSync(file, 'r+');
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
-function backupDownloadTarget(fullPath) {
+function backupExistingFile(fullPath) {
   try {
-    if (!fs.statSync(fullPath).isFile()) throw new Error('download destination is not a regular file');
+    if (!fs.statSync(fullPath).isFile()) throw new Error('destination is not a regular file');
   } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
   const rel = path.relative(launchDir, fullPath);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '-' + crypto.randomBytes(6).readUIntBE(0, 6) + 'Z');
@@ -4287,8 +4333,24 @@ function backupDownloadTarget(fullPath) {
     fs.copyFileSync(fullPath, staging);
     flushDownloadFile(staging);
     fs.renameSync(staging, backup);
-    const now = new Date();
-    try { fs.utimesSync(backup, now, now); } catch (e) {}
+    // /undo orders by mtime. Consecutive writes in the same millisecond (or
+    // after a clock rollback) must still make this snapshot the newest one.
+    let latest = 0;
+    for (const entry of fs.readdirSync(path.dirname(backup))) {
+      if (entry === path.basename(backup)) continue;
+      const match = entry.match(/^(.*)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/);
+      if (!match || match[1] !== path.basename(fullPath)) continue;
+      const stat = fs.lstatSync(path.join(path.dirname(backup), entry));
+      if (stat.isFile()) latest = Math.max(latest, stat.mtimeMs);
+    }
+    let now = new Date(Math.max(Date.now(), latest + 1));
+    fs.utimesSync(backup, now, now);
+    // Coarse timestamp filesystems may round a 1ms increment back down.
+    if (fs.statSync(backup).mtimeMs <= latest) {
+      now = new Date(latest + 2000);
+      fs.utimesSync(backup, now, now);
+      if (fs.statSync(backup).mtimeMs <= latest) throw new Error('cannot order backup recovery timestamps');
+    }
     pruneBackups(backup);
     return backup;
   } catch (e) {
@@ -4297,27 +4359,7 @@ function backupDownloadTarget(fullPath) {
       try { fs.unlinkSync(staging); }
       catch (e2) { if (e2.code !== 'ENOENT') residue = `; backup staging retained at ${staging}: ${e2.message}`; }
     }
-    throw new Error(`Cannot preserve previous download target ${rel}: ${e.message}${residue}`);
-  }
-}
-
-function backupFile(fullPath) {
-  try {
-    if (!fs.existsSync(fullPath)) return null;
-    const rel = path.relative(launchDir, fullPath);
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const backupPath = internalStatePath('.7coder/backups', rel + '.' + stamp + '.bak');
-    fs.mkdirSync(path.dirname(backupPath), { recursive: true });
-    fs.copyFileSync(fullPath, backupPath);
-    // copyFileSync preserves the SOURCE mtime on Windows, which would make an
-    // old file's brand-new backup look "oldest" to prune/restore ordering.
-    // Touch it so the backup's mtime is its creation time.
-    const now = new Date();
-    try { fs.utimesSync(backupPath, now, now); } catch (e) {}
-    pruneBackups();
-    return backupPath;
-  } catch (e) {
-    return null;
+    throw new Error(`Cannot preserve previous file ${rel}: ${e.message}${residue}`);
   }
 }
 

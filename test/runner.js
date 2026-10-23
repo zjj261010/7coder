@@ -519,9 +519,8 @@ scenarios.push({
   name: 'backup-cap',
   fn: async () => {
     const cwd = freshCwd('backup-cap');
-    // backupFile only snapshots files that already exist, so pre-create both
-    // targets; write_file (not append_file) is used because only write_file
-    // goes through backupFile.
+    // Strict backups snapshot existing files, so pre-create both targets.
+    // Use write_file here to exercise retention across repeated replacements.
     fs.writeFileSync(path.join(cwd, 'a.txt'), 'seed-a\n');
     fs.writeFileSync(path.join(cwd, 'b.txt'), 'seed-b\n');
     const steps = [];

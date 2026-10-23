@@ -18,6 +18,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'stream-context.js', args: [path.join(ROOT, 'test', 'stream-context.js')] },
     { name: 'repl-approval.js', args: [path.join(ROOT, 'test', 'repl-approval.js')] },
     { name: 'download-commit.js', args: [path.join(ROOT, 'test', 'download-commit.js')] },
+    { name: 'text-encoding.js', args: [path.join(ROOT, 'test', 'text-encoding.js')] },
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
