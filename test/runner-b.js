@@ -3,14 +3,14 @@
 // Usage: node test/runner-b.js
 //   RUN_ONLY=chaos,session ...  limit scenarios
 //   NODE_BIN=path\to\node.exe   run against another runtime (e.g. Node 13)
-const { spawn, spawnSync } = require('child_process');
+// Child processes use the isolated shared harness.
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'B', wsPrefix: 'w-b-' });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 17850;
 function startProcess(mockFile, scriptObj, extraEnv) { port += 1; return startProcessAt(port, mockFile, scriptObj, extraEnv); }
 const startMock = (s) => startProcess('mock-server.js', s);
@@ -2220,6 +2220,12 @@ scenarios.push({
 
     // OP2-2 + A2-17: cron / run_tests now hit the super-dangerous rail even in bypass
     const cwd2 = freshCwd('b-sec1b');
+    // The legacy bridge must exercise a local shim, never download npm pkg.
+    const npxShim = path.join(cwd2, 'shim');
+    fs.mkdirSync(npxShim);
+    fs.writeFileSync(path.join(npxShim, process.platform === 'win32' ? 'npx.cmd' : 'npx'),
+      process.platform === 'win32' ? '@echo off\r\necho LOCAL-NPX-FIXTURE\r\n' : '#!/bin/sh\necho LOCAL-NPX-FIXTURE\n');
+    if (process.platform !== 'win32') fs.chmodSync(path.join(npxShim, 'npx'), 0o755);
     const tc = (id, name, args) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: name, arguments: JSON.stringify(args) } }] });
     const m2 = startMock([
       tc('s1a', 'cron_create_tool', { schedule: '30s', command: 'echo mkfs REVIEW-NONEXEC-PROBE' }),
@@ -2228,7 +2234,7 @@ scenarios.push({
       { role: 'assistant', content: 'SEC1-DONE ' + 'sec1 scenario reply padded past the summary floor for the budget skip. '.repeat(5) }
     ]);
     await new Promise(r => setTimeout(r, 600));
-    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd2, timeoutMs: 60000 });
+    await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', PATH: npxShim + path.delimiter + (process.env.PATH || '') }, cwd: cwd2, timeoutMs: 60000 });
     const l2 = readLog(m2.log);
     const s1a = tr(l2, 's1a'), s1b = tr(l2, 's1b'), s1c = tr(l2, 's1c');
     record('sec1: cron_create with dangerous command BLOCKED in bypass', s1a && s1a.c.includes('BLOCKED: Super-dangerous'), s1a ? s1a.c.substring(0, 80) : 'no result');
@@ -2239,7 +2245,7 @@ scenarios.push({
 
     // A2-01: junction at .7coder/memory must fail closed on read/save/delete
     const cwd3 = freshCwd('b-sec1c');
-    const outsideDir = path.join(ROOT, 'sec1-outside-' + Date.now());
+    const outsideDir = path.join(S.runDir, 'sec1-outside-' + Date.now());
     fs.mkdirSync(path.join(cwd3, '.7coder'), { recursive: true });
     fs.mkdirSync(outsideDir, { recursive: true });
     fs.writeFileSync(path.join(outsideDir, 'review.md'), 'OUTSIDE-ONLY-FAKE-DATA');
@@ -2277,13 +2283,12 @@ scenarios.push({
     try { fs.rmSync(outsideDir, { recursive: true, force: true }); } catch (e) {}
 
     // A2-02: install-level allow must NOT swallow a workspace deny of the same text.
-    // The install dir is fixed, so simulate via the workspace file ONLY when the
-    // install file does not exist; otherwise this leg is not runnable - record skip.
+    // IDX is the private per-run install, never the real install directory.
     const installPerm = path.join(path.dirname(IDX), 'permissions.json');
     if (fs.existsSync(installPerm)) {
       record('sec1: cross-layer deny test (skipped - install permissions.json exists)', true, 'manual environment, not a failure');
     } else {
-      // Temporarily create an install-level allow, run, then remove it.
+      // Temporarily create an allow in the isolated install only.
       fs.writeFileSync(installPerm, JSON.stringify({ allow: ['write_file(blocked.txt)'] }));
       try {
         const cwd5 = freshCwd('b-sec1e');

@@ -3,13 +3,13 @@
 // binary backup fidelity, injection-surface purity, cron/task concurrency,
 // worktree-isolated edits.
 // Usage: node test/runner-g.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
-const { spawn, spawnSync } = require('child_process');
+// Child processes use the isolated shared harness.
 const fs = require('fs');
 const path = require('path');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18350;
 function startMock(scriptObj) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj); }
 const scenarios = [];

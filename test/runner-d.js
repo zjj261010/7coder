@@ -1,14 +1,14 @@
 // Suite D: sandbox torture, cross-process persistence, config edges, real
 // vision/web payloads, HTTP method matrix, approval casing, CLI arg forms.
 // Usage: node test/runner-d.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
-const { spawn, spawnSync } = require('child_process');
+// Child processes use the isolated shared harness.
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'D', wsPrefix: 'w-d-' });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18050;
 function startMock(scriptObj) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj); }
 // ====================== SCENARIOS ======================
@@ -19,7 +19,7 @@ scenarios.push({
   name: 'torture',
   fn: async () => {
     const cwd = freshCwd('d1');
-    const outsideDir = path.join(ROOT, 'd1-outside');
+    const outsideDir = path.join(S.runDir, 'd1-outside');
     rmrf(outsideDir, { recursive: true, force: true });
     fs.mkdirSync(outsideDir, { recursive: true });
     fs.writeFileSync(path.join(outsideDir, 'bait.txt'), 'OUTSIDE-BAIT');

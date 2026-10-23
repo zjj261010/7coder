@@ -272,6 +272,12 @@ Tool policy is declared once per tool in `index.js` (`TOOL_METADATA`): fixed ris
 
 `npm run test:all` runs A–J and the dependency-free UI simulations in sequence using fixed offline defaults. Scenario-specific settings still override them. Set `NODE_BIN` to test the backend with another runtime; UI simulations use the modern Node running the entry point. Set `REAL_TEST=1` to append K/R and preserve real-endpoint settings.
 
+The entry point also includes `test/stream-context.js` (`npm run test:stream-context`): malformed SSE isolation and next-request recovery, plus context compression failure/empty-summary handling, complete segmented input and verbatim active-instruction retention. A failed context summary stops the current task with its original history intact; it does not continue using a placeholder digest.
+
+A–J run a private copy of the application in a `7coder-test-*` system temporary directory, with workspaces outside the source repository. The real install `.env`, model profiles and permission files are not loaded. `npm run test:harness` checks the isolation and child ownership helpers. Real keyboard/mouse injection is excluded by default; explicitly set `DESKTOP_TEST=1` only in a controlled desktop session. Skipped desktop scenarios are reported separately from passed assertions. K/R remain explicit real-endpoint tests.
+
+Each run prints its temporary directory and records `owned-processes.tsv`. If interrupted, inspect only that run with `powershell -NoProfile -File test/kill-orphans.ps1 -Manifest "<run-directory>\owned-processes.tsv"`; it defaults to a dry run. Add `-Apply` to stop matching recorded PIDs whose command line still carries that run's identity. It does not search for or stop ordinary Agent servers. The temporary install and manifest are retained for diagnosis.
+
 `npm run test:browser` runs message editing, cancellation, session switching and token refresh in real headless Chrome against local fixtures. It requires modern Node, an installed Chrome and Playwright supplied by your development environment (or `PLAYWRIGHT_MODULE_PATH`). `BROWSER_BIN` selects another Chromium executable. Playwright is not a production dependency or required by the offline package. Set `BROWSER_TEST=1` to append this test to `test:all`; missing browser tooling is an explicit failure when requested.
 
 ## Compatibility

@@ -4,14 +4,14 @@
 // timing, marker-section isolation, SendKeys escaping, deterministic-table
 // consistency, RALPH_ITERATIONS bounds, cron tree-kill.
 // Usage: node test/runner-i.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
-const { spawn, spawnSync, execSync } = require('child_process');
+const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'I', wsPrefix: 'w-i-' });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18550;
 function startMock(scriptObj) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj); }
 // extract an inner function/const from index.js source for direct unit testing
@@ -196,6 +196,7 @@ scenarios.push({
 // --- I6: SendKeys escaping + real input ---
 scenarios.push({
   name: 'input-escape',
+  enabled: () => process.env.DESKTOP_TEST === '1',
   fn: async () => {
     const cwd = freshCwd('i6');
     const m = startMock([
@@ -430,11 +431,16 @@ scenarios.push({
 scenarios.push({
   name: 'cli-strict',
   fn: async () => {
-    const empty = spawnSync(NODE_BIN, [IDX, '--prompt', ''], { encoding: 'utf8' });
+    const cwd = freshCwd('cli-strict');
+    const options = { encoding: 'utf8', cwd, timeout: 10000, env: Object.assign({}, process.env, {
+      OPENAI_API_KEY: 'test', OPENAI_ENDPOINT: 'http://127.0.0.1:1/v1', MAX_RETRIES: '1'
+    }) };
+    const empty = spawnSync(NODE_BIN, [IDX, '--prompt', ''], options);
     record('strict: empty --prompt errors with exit 1', empty.status === 1 && empty.stderr.includes('empty value'), 'status=' + empty.status);
-    const warn = spawnSync(NODE_BIN, [IDX, '--prompt', 'real', '--what-is-this'], { encoding: 'utf8' });
-    record('strict: unknown flag warns while task text kept', warn.stderr.includes('Unknown argument'), warn.stderr.substring(0, 120));
-    record('strict: --help still exits 0', spawnSync(NODE_BIN, [IDX, '--help'], { encoding: 'utf8' }).status === 0, '');
+    // Parsing can be checked without sending a task to a model service.
+    const warn = spawnSync(NODE_BIN, [IDX, '--help', '--what-is-this'], options);
+    record('strict: unknown flag warns explicitly', warn.status === 0 && warn.stderr.includes('Unknown argument'), warn.stderr.substring(0, 120));
+    record('strict: --help still exits 0', spawnSync(NODE_BIN, [IDX, '--help'], options).status === 0, '');
   }
 });
 

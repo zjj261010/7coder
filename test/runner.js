@@ -1,14 +1,14 @@
 // Multi-dimension test runner for 7coder.
 // Each scenario: fresh cwd, fresh mock (own port + script), spawn 7coder,
 // feed stdin, assert on stdout + mock log + filesystem. Env NODE_BIN switches runtime.
-const { spawn, spawnSync } = require('child_process');
+// Child processes use the isolated shared harness.
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: '', wsPrefix: 'w-', cliBaseEnv: { MAX_RETRIES: '1' } });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 17600;
 function startMock(scriptObj) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj); }
 

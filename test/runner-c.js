@@ -1,14 +1,14 @@
 // Suite C: concurrency, protocol variants, escape attacks, real cron firing,
 // shutdown semantics, filesystem edges, edit boundaries, soak.
 // Usage: node test/runner-c.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
-const { spawn, spawnSync } = require('child_process');
+// Child processes use the isolated shared harness.
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'C', wsPrefix: 'w-c-' });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 17950;
 function startMock(scriptObj, mockFile) { port += 1; return startProcessAt(port, mockFile, scriptObj); }
 function assembleSSE(body) {
@@ -121,7 +121,7 @@ scenarios.push({
   name: 'escape',
   fn: async () => {
     const cwd = freshCwd('c3');
-    const outside = path.join(ROOT, 'c3-outside');
+    const outside = path.join(S.runDir, 'c3-outside');
     rmrf(outside, { recursive: true, force: true });
     fs.mkdirSync(outside, { recursive: true });
     fs.writeFileSync(path.join(outside, 'secret.txt'), 'TOP-SECRET-OUTSIDE');

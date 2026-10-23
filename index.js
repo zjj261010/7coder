@@ -1924,7 +1924,35 @@ function parseSSEStream(stream, onDelta, onReasoning) {
     let upstreamErrorSeen = false;
     let sawReasoning = false;
     let buffer = '';
-    stream.on('data', chunk => {
+    let settled = false;
+    function settle(error, choice) {
+      if (settled) return;
+      settled = true;
+      stream.removeListener('data', onData);
+      stream.removeListener('end', onEnd);
+      stream.removeListener('error', onError);
+      stream.removeListener('close', onClose);
+      stream.removeListener('aborted', onAborted);
+      buffer = '';
+      if (error) {
+        // destroy() can itself emit an asynchronous error before close.
+        if (typeof stream.destroy === 'function' && !stream.destroyed) {
+          const ignoreError = () => {};
+          stream.on('error', ignoreError);
+          stream.once('close', () => stream.removeListener('error', ignoreError));
+          stream.destroy();
+        }
+        reject(error);
+      } else resolve(choice);
+    }
+    function onError(error) { settle(error); }
+    function onClose() { settle(new Error('upstream error: stream closed before end')); }
+    function onAborted() { settle(new Error('upstream error: stream aborted')); }
+    function objectValue(value) { return value !== null && typeof value === 'object' && !Array.isArray(value); }
+    function invalid(detail) { throw new Error('upstream error: invalid SSE data (' + detail + ')'); }
+    function onData(chunk) {
+      if (settled) return;
+      try {
       buffer += chunk.toString('utf8');
       let nl;
       while ((nl = buffer.indexOf('\n')) >= 0) {
@@ -1949,24 +1977,31 @@ function parseSSEStream(stream, onDelta, onReasoning) {
 
           if (upstreamErrorSeen || payload.indexOf('"error"') >= 0) {
 
-            return reject(new Error('upstream error: ' + payload.substring(0, 300)));
+            throw new Error('upstream error: ' + payload.substring(0, 300));
 
           }
 
           continue;
 
         }
-        // Servers report errors mid-stream as {"error":{...}} data payloads
-// (LMStudio) - surface them instead of treating them as empty responses.
-if (parsed.error) {
-  const em = (parsed.error && parsed.error.message) ? parsed.error.message : String(parsed.error);
-  return reject(new Error('upstream error: ' + em));
-}
-const ch = parsed.choices && parsed.choices[0];
+        if (!objectValue(parsed)) invalid('expected object');
+        // LMStudio and other local endpoints can report errors inside SSE.
+        if (parsed.error) {
+          const em = parsed.error.message || String(parsed.error);
+          throw new Error('upstream error: ' + em);
+        }
+        if (parsed.choices !== undefined && !Array.isArray(parsed.choices)) invalid('choices must be an array');
+        const ch = parsed.choices && parsed.choices[0];
         if (parsed.usage) usage = parsed.usage; // GAP-8: capture before the no-choices gate (usage-only final chunks exist)
-        if (!ch) continue;
+        if (!parsed.choices || !parsed.choices.length) continue;
+        if (!objectValue(ch)) invalid('choice must be an object');
         sawAnything = true;
-        const delta = ch.delta || {};
+        const delta = ch.delta == null ? {} : ch.delta;
+        if (!objectValue(delta)) invalid('delta must be an object');
+        for (const field of ['content', 'reasoning_content']) {
+          if (delta[field] != null && typeof delta[field] !== 'string') invalid(field + ' must be a string');
+        }
+        if (ch.finish_reason != null && typeof ch.finish_reason !== 'string') invalid('finish_reason must be a string');
         if (delta.reasoning_content) {
           sawReasoning = true;
           message.reasoning = (message.reasoning || '') + delta.reasoning_content;
@@ -1976,9 +2011,19 @@ const ch = parsed.choices && parsed.choices[0];
           message.content += delta.content;
           if (onDelta) onDelta(delta.content);
         }
-        if (delta.tool_calls) {
+        if (delta.tool_calls != null) {
+          if (!Array.isArray(delta.tool_calls)) invalid('tool_calls must be an array');
           // Tool calls stream as fragments; merge them by index.
           for (const tc of delta.tool_calls) {
+            if (!objectValue(tc)) invalid('tool call must be an object');
+            if (tc.index !== undefined && (!Number.isInteger(tc.index) || tc.index < 0 || tc.index > 1023)) invalid('tool call index out of range');
+            if (tc.id != null && typeof tc.id !== 'string') invalid('tool call id must be a string');
+            if (tc.function != null && !objectValue(tc.function)) invalid('function must be an object');
+            if (tc.function) {
+              for (const field of ['name', 'arguments']) {
+                if (tc.function[field] != null && typeof tc.function[field] !== 'string') invalid('function ' + field + ' must be a string');
+              }
+            }
             const i = (typeof tc.index === 'number') ? tc.index : 0;
             if (!toolCalls[i]) toolCalls[i] = { id: '', type: 'function', function: { name: '', arguments: '' } };
             if (tc.id) toolCalls[i].id = tc.id;
@@ -1990,20 +2035,30 @@ const ch = parsed.choices && parsed.choices[0];
         }
         if (ch.finish_reason) finishReason = ch.finish_reason;
       }
-    });
-    stream.on('end', () => {
+      } catch (error) {
+        settle(new Error(/^upstream error:/.test(error.message) ? error.message : 'upstream error: SSE handler failed: ' + error.message));
+      }
+    }
+    function onEnd() {
+      if (settled) return;
+      try {
       const merged = toolCalls.filter(tc => tc && tc.function && tc.function.name);
       if (merged.length) message.tool_calls = merged;
       if (!message.content && !merged.length && sawReasoning) message.reasoning_only = true;
-      if (!sawAnything) return resolve(null);
+      if (!sawAnything) return settle(null, null);
       if (!sawDone && !finishReason) {
-        return reject(new Error('upstream error: stream ended without completion (no [DONE], no finish_reason) - partial reply discarded'));
+        return settle(new Error('upstream error: stream ended without completion (no [DONE], no finish_reason) - partial reply discarded'));
       }
       const out = { message, finish_reason: finishReason || 'stop' };
       if (usage) out.usage = usage; // GAP-8: attach upstream usage for callOpenAI to record
-      resolve(out);
-    });
-    stream.on('error', reject);
+      settle(null, out);
+      } catch (error) { settle(error); }
+    }
+    stream.on('data', onData);
+    stream.on('end', onEnd);
+    stream.on('error', onError);
+    stream.on('close', onClose);
+    stream.on('aborted', onAborted);
   });
 }
 
@@ -3802,18 +3857,30 @@ function messageSize(m) {
 async function summarizeConversation(oldMessages) {
   const transcript = oldMessages
     .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')}` +
-      (m.tool_calls ? ` [called: ${m.tool_calls.map(t => t.function.name).join(', ')}]` : ''))
-    .join('\n')
-    .substring(0, 20000);
-  try {
+      (m.tool_calls ? ` [called: ${JSON.stringify(m.tool_calls)}]` : ''))
+    .join('\n');
+  // Every removed character must reach the summarizer. Keep each request
+  // small for local models, but never truncate the unsent tail of history.
+  const parts = [];
+  for (let start = 0; start < transcript.length;) {
+    let end = Math.min(start + 20000, transcript.length);
+    const last = transcript.charCodeAt(end - 1);
+    if (end < transcript.length && last >= 0xD800 && last <= 0xDBFF) end--;
+    parts.push(transcript.slice(start, end));
+    start = end;
+  }
+  const summaries = [];
+  for (let i = 0; i < parts.length; i++) {
     const choice = await callOpenAI([{
       role: 'user',
-      content: `Summarize this coding conversation compactly. Keep: user goals, files touched, key decisions, errors hit and their fixes, open threads. Max 15 bullet lines.\n\n${transcript}`
+      content: `Summarize this coding conversation compactly. Keep: user goals, hard constraints, files touched, completed side effects (do not repeat them), key decisions, errors hit and their fixes, open threads. Max 15 bullet lines. Part ${i + 1}/${parts.length}.\n\n${parts[i]}`
     }], { model: LIGHT_MODEL, useTools: false, maxTokens: 600 });
-    return (choice.message.content || '').trim() || '(summary unavailable)';
-  } catch (e) {
-    return '(summary unavailable: ' + e.message + ')';
+    const content = choice && choice.message && choice.message.content;
+    if (typeof content !== 'string' || !content.trim()) throw new Error('empty context summary');
+    summaries.push(content.trim());
   }
+  if (!summaries.length) throw new Error('empty context transcript');
+  return summaries.join('\n\n');
 }
 
 // When the conversation exceeds CONTEXT_CHARS, summarize the oldest turns and
@@ -3857,7 +3924,10 @@ async function compressConversationIfNeeded(currentMessages) {
   const assistantAfterLastUser = currentMessages.slice(lastUserIdx + 1).some(m => m.role === 'assistant');
   if (splitIdx >= lastUserIdx && !assistantAfterLastUser) return;
 
-  const oldPart = currentMessages.slice(1, splitIdx);
+  // Keep the active user instruction verbatim, including when compressing a
+  // single long sub-agent task. Only historical/tool turns are summarized.
+  const activeUser = lastUserIdx >= 1 && lastUserIdx < splitIdx ? currentMessages[lastUserIdx] : null;
+  const oldPart = currentMessages.slice(1, splitIdx).filter(m => m !== activeUser);
   if (!oldPart.length) return;
   // Zero-progress guard: when the kept tail alone exceeds the budget, the only
   // summarizable message can be a previous summary - re-summarizing it forever
@@ -3866,12 +3936,15 @@ async function compressConversationIfNeeded(currentMessages) {
     console.warn('[CTX] Context still over budget after compression; a single large message dominates. Consider raising CONTEXT_CHARS.');
     return;
   }
-  const digest = await summarizeConversation(oldPart);
+  let digest;
+  try { digest = await summarizeConversation(oldPart); }
+  catch (error) { throw new Error('Context compression failed; original history preserved: ' + error.message); }
   const summaryMsg = {
     role: 'user',
     content: `[CONTEXT COMPRESSION] Earlier turns were summarized to fit the context window. Summary of everything before this point:\n${digest}`
   };
-  currentMessages.splice(1, splitIdx - 1, summaryMsg);
+  const replacement = activeUser ? [summaryMsg, activeUser] : [summaryMsg];
+  currentMessages.splice(1, splitIdx - 1, ...replacement);
   let newTotal = 0;
   for (const m of currentMessages) newTotal += messageSize(m);
   console.log(`[CTX] Context compressed: ${oldPart.length} messages summarized (${total} -> ${newTotal} chars).`);

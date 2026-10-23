@@ -14,13 +14,14 @@ if (-not $Node) {
   $Node = $NodeCommand.Definition
 }
 
-if ([string]::IsNullOrWhiteSpace($Workspace)) {
+if (-not $Workspace -or $Workspace.Trim().Length -eq 0) {
   $Workspace = $Repo
 }
 
 if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) { throw "Workspace directory not found: $Workspace" }
 $Workspace = (Resolve-Path -LiteralPath $Workspace).Path
 $Entry = Join-Path $Repo 'index.js'
+if (-not (Test-Path -LiteralPath $Entry -PathType Leaf)) { throw "Entry file not found: $Entry" }
 $HttpPort = 7103
 $WorkspaceEnv = Join-Path $Workspace '.env'
 if (Test-Path -LiteralPath $WorkspaceEnv -PathType Leaf) {

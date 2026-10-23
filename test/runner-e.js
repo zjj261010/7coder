@@ -2,14 +2,14 @@
 // downgrade, real MCP /invoke flow, real process kill, HTTP keep-alive and
 // 100-turn histories, 7CODER.md concurrent consistency, worktree spaces.
 // Usage: node test/runner-e.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
-const { spawn, spawnSync } = require('child_process');
+// Child processes use the isolated shared harness.
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'E', wsPrefix: 'w-e-' });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18150;
 function startMock(scriptObj, customFile, extraEnv) { port += 1; return startProcessAt(port, null, scriptObj, extraEnv, customFile); }
 function pairingValid(messages) {

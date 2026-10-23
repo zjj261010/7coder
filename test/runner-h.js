@@ -2,14 +2,14 @@
 // static consistency oracles (tools schema / env docs / README sync / markers /
 // secrets), deterministic artifacts, safety-net failure paths, HTTP body quirks.
 // Usage: node test/runner-h.js   (RUN_ONLY=..., NODE_BIN=... as in the other suites)
-const { spawn, spawnSync, execSync } = require('child_process');
+const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'H', wsPrefix: 'w-h-' });
-const { ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
+const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18450;
 function startMock(scriptObj) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj); }
 const REPO = path.join(ROOT, '..'); // used by static-audit (.env.example, README.md)
@@ -309,7 +309,7 @@ scenarios.push({
   fn: async () => {
     // 1) junction + 70-segment depth attack must fail closed (no silent fallback)
     const cwd = freshCwd('h8a');
-    const outside = path.join(ROOT, 'h8-outside');
+    const outside = path.join(S.runDir, 'h8-outside');
     rmrf(outside, { recursive: true, force: true });
     fs.mkdirSync(outside, { recursive: true });
     spawnSync('cmd', ['/c', 'mklink', '/J', path.join(cwd, 'jdeep'), outside]);
