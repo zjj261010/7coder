@@ -5,6 +5,8 @@ const path = require('path');
 const fs = require('fs');
 const child_process = require('child_process');
 const http = require('http');
+const { pipeline, Transform } = require('stream');
+const crypto = require('crypto');
 
 // ====================== CLI ARGUMENT PARSING (Node 13 safe) =====================
 // Two-pass parsing so flags work in any order: flags are consumed first, then
@@ -2417,11 +2419,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     } catch (e) { return `Fetch error: ${e.message}`; }
   }
   if (name === 'download_tool') {
-    // AST-05: transactional write. The body streams into a temporary sibling
-    // file; `dest` is replaced only after the stream completed. Any failure
-    // cleans up just the temp file and never touches an existing dest.
+    // T22-09: close and flush a unique sibling, snapshot the old version, then
+    // rename OVER the destination in one operation. Never unlink dest first.
     let temp = null;
+    let tempOwned = false;
     let writer = null;
+    let writerClosed = null;
+    let response = null;
     try {
       const destRel = sanitizePath(args.path);
       if (!destRel) return 'Download error: destination path required';
@@ -2429,36 +2433,48 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const dest = path.join(launchDir, destRel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       const MAX_BYTES = 500 * 1024 * 1024;
-      const response = await axios({ method: 'get', url: args.url, responseType: 'stream', timeout: 60000 });
-      temp = dest + '.part-' + Date.now();
-      writer = fs.createWriteStream(temp);
+      response = await axios({ method: 'get', url: args.url, responseType: 'stream', timeout: 60000 });
+      temp = dest + '.part-' + process.pid + '-' + crypto.randomBytes(8).toString('hex');
+      // Node 13 _destroy waits for 'open' when fd is null, even after open
+      // failed. Acquire exclusively first, so every created writer owns a
+      // real fd and its close can be awaited without that permanent wait.
+      const tempFd = fs.openSync(temp, 'wx');
+      tempOwned = true;
+      try { writer = fs.createWriteStream(temp, { fd: tempFd, autoClose: true, emitClose: true }); }
+      catch (e) { fs.closeSync(tempFd); throw e; }
+      writerClosed = new Promise(resolve => writer.once('close', resolve));
+      let writerError = null;
+      writer.on('error', error => { writerError = error; });
       let received = 0;
+      const limiter = new Transform({ transform(chunk, encoding, callback) {
+        received += chunk.length;
+        callback(received > MAX_BYTES ? new Error('download exceeds 500 MB cap') : null, chunk);
+      } });
       await new Promise((resolve, reject) => {
-        response.data.on('data', chunk => {
-          received += chunk.length;
-          if (received > MAX_BYTES) {
-            response.data.destroy();
-            reject(new Error('download exceeds 500 MB cap'));
-          }
-        });
-        response.data.on('error', reject);
-        writer.on('error', reject);
-        writer.on('finish', resolve);
-        response.data.pipe(writer);
+        pipeline(response.data, limiter, writer, error => error ? reject(error) : resolve());
       });
-      try { if (fs.existsSync(dest)) fs.unlinkSync(dest); } catch (e2) {}
+      // On Node 13 finish/pipeline completion can precede the file close.
+      // A close error must fail before backup/commit, especially on Windows.
+      await writerClosed;
+      if (writerError) throw writerError;
+      flushDownloadFile(temp);
+      const previous = backupDownloadTarget(dest);
       fs.renameSync(temp, dest);
       temp = null; // ownership transferred - the catch path must not delete it
-      return `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)`;
+      return `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)` +
+        (previous ? `\nPrevious version: ${path.relative(launchDir, previous)} (restore with /undo ${destRel})` : '');
     } catch (e) {
-      // Close the write handle first (Windows cannot unlink an open file),
-      // then remove ONLY the temp file. dest is never modified here.
+      if (response && response.data) { try { response.data.destroy(); } catch (e2) {} }
       if (writer) {
         try { writer.destroy(); } catch (e2) {}
-        await new Promise(r => { let done = false; const fin = () => { if (!done) { done = true; r(); } }; try { writer.once('close', fin); } catch (e3) {} setTimeout(fin, 500); });
+        if (writerClosed) await writerClosed;
       }
-      if (temp) { try { fs.unlinkSync(temp); } catch (e2) {} }
-      return `Download error: ${e.message}`;
+      let residue = '';
+      if (temp && tempOwned) {
+        try { fs.unlinkSync(temp); }
+        catch (e2) { if (e2.code !== 'ENOENT') residue = `; temporary file retained at ${temp}: ${e2.message}`; }
+      }
+      return `Download error: ${e.message}${residue}`;
     }
   }
   if (name === 'web_search_tool') {
@@ -4246,6 +4262,45 @@ function prepareMessagesForPrompt(rawPrompt) {
 // ====================== EDIT SAFETY NET (backups + diff preview) ======================
 const backupsDir = path.join(launchDir, '.7coder', 'backups');
 
+// Download commit prerequisites are strict: an unflushed or partial backup
+// must never authorize replacing the old file or appear in /undo's .bak list.
+function flushDownloadFile(file) {
+  const fd = fs.openSync(file, 'r+');
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
+function backupDownloadTarget(fullPath) {
+  try {
+    if (!fs.statSync(fullPath).isFile()) throw new Error('download destination is not a regular file');
+  } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  const rel = path.relative(launchDir, fullPath);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '-' + crypto.randomBytes(6).readUIntBE(0, 6) + 'Z');
+  const backup = internalStatePath('.7coder/backups', rel + '.' + stamp + '.bak');
+  const staging = backup + '.tmp';
+  let owned = false;
+  try {
+    fs.mkdirSync(path.dirname(backup), { recursive: true });
+    // Exclusive creation prevents a collision from overwriting another copy.
+    const fd = fs.openSync(staging, 'wx');
+    owned = true;
+    fs.closeSync(fd);
+    fs.copyFileSync(fullPath, staging);
+    flushDownloadFile(staging);
+    fs.renameSync(staging, backup);
+    const now = new Date();
+    try { fs.utimesSync(backup, now, now); } catch (e) {}
+    pruneBackups(backup);
+    return backup;
+  } catch (e) {
+    let residue = '';
+    if (owned) {
+      try { fs.unlinkSync(staging); }
+      catch (e2) { if (e2.code !== 'ENOENT') residue = `; backup staging retained at ${staging}: ${e2.message}`; }
+    }
+    throw new Error(`Cannot preserve previous download target ${rel}: ${e.message}${residue}`);
+  }
+}
+
 function backupFile(fullPath) {
   try {
     if (!fs.existsSync(fullPath)) return null;
@@ -4271,8 +4326,15 @@ function backupFile(fullPath) {
 // a global cap of 200 files across the whole backup dir (oldest removed first).
 // Files not named <prefix>.<timestamp>.bak are exempt from the per-file tier
 // but still count toward the global cap.
-function pruneBackups() {
+function pruneBackups(preservePath) {
   try {
+    // Treat the current transaction's rollback copy as newest even if the
+    // machine clock moved backwards. Other callers keep ordinary age order.
+    const oldestFirst = (a, b) => {
+      if (a.full === preservePath && b.full !== preservePath) return 1;
+      if (b.full === preservePath && a.full !== preservePath) return -1;
+      return a.mt - b.mt;
+    };
     // Greedy (.+) so the prefix runs up to the LAST timestamp: relative paths
     // may themselves contain dots (e.g. "lib.v2/util.2026-...T...Z.bak").
     const stampRe = /^(.+)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/;
@@ -4293,15 +4355,15 @@ function pruneBackups() {
     }
     const kept = [];
     for (const pfx in groups) {
-      const list = groups[pfx].sort((a, b) => a.mt - b.mt);
+      const list = groups[pfx].sort(oldestFirst);
       for (let i = 0; i < list.length - 5; i++) {
-        try { fs.unlinkSync(list[i].full); } catch (e) {}
+        if (list[i].full !== preservePath) { try { fs.unlinkSync(list[i].full); } catch (e) {} }
       }
       for (let i = Math.max(0, list.length - 5); i < list.length; i++) kept.push(list[i]);
     }
-    const all = kept.concat(loose).sort((a, b) => a.mt - b.mt);
+    const all = kept.concat(loose).sort(oldestFirst);
     for (let i = 0; i < all.length - 200; i++) {
-      try { fs.unlinkSync(all[i].full); } catch (e) {}
+      if (all[i].full !== preservePath) { try { fs.unlinkSync(all[i].full); } catch (e) {} }
     }
   } catch (e) {}
 }
