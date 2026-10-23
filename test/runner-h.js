@@ -187,9 +187,12 @@ scenarios.push({
     while ((mm = docRe.exec(envExample))) documented.add(mm[1]);
     const sysAllow = new Set(['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'PATH']); // PATH: Windows-provided like the others (findBash probes it), not 7coder config
     const legacyAllow = new Set(['MAX_ATTEMPT_RETRIES', 'ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE']);
+    // Internal parent->child lease handoff (set programmatically at spawn,
+    // consumed and deleted at startup) - process IPC, not user configuration.
+    const internalIpcAllow = new Set(['_7CODER_LEASE_HANDOFF']);
     const undocumented = [];
     for (const e of envReads) {
-      if (!documented.has(e) && !sysAllow.has(e) && !legacyAllow.has(e)) undocumented.push(e);
+      if (!documented.has(e) && !sysAllow.has(e) && !legacyAllow.has(e) && !internalIpcAllow.has(e)) undocumented.push(e);
     }
     record('static: every config env var is documented in .env.example', undocumented.length === 0, 'undocumented=' + JSON.stringify(undocumented));
     // README documents the core tools

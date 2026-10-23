@@ -3099,6 +3099,83 @@ scenarios.push({
   }
 });
 
+scenarios.push({
+  name: 'tool-results-b5',
+  fn: async () => {
+    // OPT-13 batch 5 (T22-20 first slice): runSubAgent failures ("Sub-agent
+    // x failed:", nested refusal) and 'Fetch error:'/'Synthetic output error:'
+    // were never in TOOL_FAIL_RE - inferred ok. web_fetch passes fetched page
+    // CONTENT through, so a body starting with a legacy prefix flipped the
+    // status. runSubAgent cannot be made to fail through the mock (script
+    // exhaustion repeats the last entry), so its mappings are exercised by
+    // source extraction with a stubbed processWithTools; the live half covers
+    // fetch/synthetic/agent through the real server pipeline.
+    const src = fs.readFileSync(IDX, 'utf8');
+    const apiStart = src.indexOf('// OPT-13: pilot tools carry authoritative status');
+    const apiEnd = src.indexOf('// Central choke point', apiStart);
+    const apiCtx = {};
+    require('vm').runInNewContext(src.slice(apiStart, apiEnd) + '\nthis.api={makeToolResult,isToolResult,toolResultStatus};', apiCtx);
+    const api = apiCtx.api;
+    const rsStart = src.indexOf('async function runSubAgent');
+    const rsEnd = src.indexOf('function pruneTasks()', rsStart);
+    const runSub = async (depth, behavior) => {
+      const ctx = { agentDepth: depth, subAgentModeOverride: '', PERMISSION_MODE: 'bypass', systemPrompt: 'SYS',
+        makeToolResult: api.makeToolResult, console: { log() {} }, processWithTools: behavior, modelContext: undefined };
+      require('vm').runInNewContext(src.slice(rsStart, rsEnd) + '\nthis.run=runSubAgent;', ctx);
+      return ctx.run('b5agent', 'task', null, undefined);
+    };
+    const failedSub = await runSub(0, async () => { throw new Error('model exploded'); });
+    const nestedSub = await runSub(1, async () => 'should not run');
+    const okSub = await runSub(0, async () => 'SUBAGENT-VM-ANSWER');
+    record('ToolResult-b5: runSubAgent failure and nested refusal carry error status',
+      api.isToolResult(failedSub) && api.toolResultStatus(failedSub) === 'error' && failedSub.text.startsWith('Sub-agent "b5agent" failed: model exploded') &&
+      api.isToolResult(nestedSub) && api.toolResultStatus(nestedSub) === 'error' && nestedSub.text.startsWith('Nested sub-agents are not allowed'),
+      JSON.stringify([failedSub && (failedSub.status || typeof failedSub), nestedSub && (nestedSub.status || typeof nestedSub)]));
+    record('ToolResult-b5: runSubAgent success carries ok status',
+      api.isToolResult(okSub) && api.toolResultStatus(okSub) === 'ok' && okSub.text === 'Sub-agent "b5agent" result:\nSUBAGENT-VM-ANSWER', '');
+
+    const cwd = freshCwd('tool-results-b5');
+    const webPort = port + 592;
+    const fakeWeb = spawn(NODE_BIN, ['-e', 'require("http").createServer(function(q,s){s.end("[ERROR] b5-fake-fetch-body\\nsecond line\\n")}).listen(process.env.FAKE_WEB_PORT)'],
+      { env: Object.assign({}, process.env, { FAKE_WEB_PORT: String(webPort) }), stdio: 'ignore' });
+    const tc = (id,name,args) => ({id,type:'function',function:{name,arguments:JSON.stringify(args)}});
+    const calls = [
+      tc('b5fe','web_fetch_tool',{url:'http://127.0.0.1:1/nope'}),
+      tc('b5fc','web_fetch_tool',{url:'http://127.0.0.1:'+webPort+'/fake'}),
+      tc('b5sy','synthetic_output_tool',{prompt:'x'}),
+      tc('b5ag','agent_tool',{name:'b5agent',task:'say hi'}),
+      tc('b5agv','agent_tool',{name:'x',task:''})
+    ];
+    const m = startMock([
+      {role:'assistant',content:null,tool_calls:calls}, {role:'assistant',content:'SUBAGENT-B5-ANSWER'}, {role:'assistant',content:'B5-DONE'}
+    ]);
+    let srv;
+    try {
+      await new Promise(r=>setTimeout(r,800));
+      const srvPort=port+599;
+      srv=spawn(NODE_BIN,[IDX,'--server'],{cwd,stdio:'ignore',env:Object.assign({},process.env,{OPENAI_API_KEY:'x',OPENAI_ENDPOINT:'http://127.0.0.1:'+m.port+'/v1',HTTP_PORT:String(srvPort),HTTP_API_KEY:'',PERMISSION_MODE:'bypass'})});
+      await new Promise(r=>setTimeout(r,1800));
+      const chat=await httpReq(srvPort,'POST','/v1/chat/completions',{stream:true,messages:[{role:'user',content:'b5'}]});
+      const events=chat.body.split('\n').filter(l=>l.startsWith('data: {')).map(l=>JSON.parse(l.slice(6)));
+      const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
+      const log=readLog(m.log);
+      const result=id=>tr(log,id);
+      const statusOf=id=>{const r=result(id);if(!r)return undefined;const o=outputs.find(e=>e.result===r.c);return o&&o.status;};
+      record('ToolResult-b5: fetch failures error while fetched page content stays ok',
+        result('b5fe') && statusOf('b5fe')==='error' && result('b5fe').c.startsWith('Fetch error:') &&
+        result('b5fc') && statusOf('b5fc')==='completed' && result('b5fc').c.startsWith('[ERROR] b5-fake-fetch-body'),
+        JSON.stringify({dead:statusOf('b5fe'),body:statusOf('b5fc')}));
+      record('ToolResult-b5: synthetic schema validation failure reports error',
+        result('b5sy') && statusOf('b5sy')==='error' && result('b5sy').c.startsWith('Synthetic output error: schema must be'), '');
+      record('ToolResult-b5: agent success round-trip and validation stay classified',
+        result('b5ag') && statusOf('b5ag')==='completed' && result('b5ag').c.startsWith('Sub-agent "b5agent" result:\nSUBAGENT-B5-ANSWER') && statusOf('b5agv')==='error', '');
+      const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
+      record('ToolResult-b5: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+    } finally { if (srv) srv.kill(); if (fakeWeb) fakeWeb.kill(); stopMock(m); }
+  }
+});
+
+
 // ====================== RUNNER ======================
 scenarios.push({
   name: 'state-path-guards',

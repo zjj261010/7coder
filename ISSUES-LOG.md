@@ -23,19 +23,19 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 318 |
+| runner-b.js | 324 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 23 |
 | runner-g.js | 31 |
 | runner-h.js | 27 |
-| runner-i.js | 52 |
+| runner-i.js | 53 |
 | runner-j.js | 17 |
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 60 |
-| **合计** | **633** |
+| **合计** | **640** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -416,7 +416,7 @@
 | # | 方向 | 状态 |
 |---|------|------|
 | OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ✅ 本轮统一为 index.js TOOL_METADATA：53 个工具逐一声明风险/审批说明/自动放行/只读并行/改动跟踪、执行性/资源/现有取消支持。初始化校验与旧策略基线对照见文末 OPT-12 记录；取消语义本身仍由 OPT-15 跟踪 |
-| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob/grep/list_dir/git_status/git_diff/process_list——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具**（task_get/task_list/task_output/memory/list_mcp_resources/read_mcp_resource/prompt_from_file——内容透传误判与 not-found 缺口）＋**第四批 7 个校验/查找缺口工具（2026-10-20）**：skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool——Skill/Task/Cron/PID/Agent 七类失败文本获显式 error、task_stop 幂等停止锁定为 ok。累计 **24/53**；其余 29 工具仍走旧字符串兼容。实现与验收见文末 |
+| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob/grep/list_dir/git_status/git_diff/process_list——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具**（task_get/task_list/task_output/memory/list_mcp_resources/read_mcp_resource/prompt_from_file——内容透传误判与 not-found 缺口）＋**第四批 7 个校验/查找缺口工具（2026-10-20）**：skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool——Skill/Task/Cron/PID/Agent 七类失败文本获显式 error、task_stop 幂等停止锁定为 ok＋**第五批 6 工具名（2026-10-24，T22-20 首片）**：web_fetch/synthetic_output/enter_worktree/computer_use/schedule_cron/cron_create——Fetch/Synthetic/Worktree/Screenshot/schedule 前缀缺口修复、抓取内容透传 ok、agent 返工（runSubAgent 失败不再被包成 ok）。累计 **30/53**；其余 23 工具仍走旧字符串兼容。实现与验收见文末 |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ✅ internalStatePath/managedWorkspacePath 统一校验产品状态目录、会话、备份、MCP、skills、memory、todos、summaries、审计和工作区状态文件；junction/symlink 越界 fail-closed。普通用户文件仍走 sanitizePath，取消契约留 OPT-15 |
 | OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
@@ -610,7 +610,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：shell 归属真实后端会话；新建/恢复/结束时正确释放，cwd/env 不跨对话或不同子代理串扰。身份协议未定义前可先禁用 HTTP persistent。 | R1 H05；OPT-16、GAP-2、A2-14；不要求取消请求门串行 |
 | ⬜ | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：记录 spawn/exit/close/code，避免按过期 PID 杀其它进程；失败不报 OK；桌面操作确认目标窗口与焦点；取消贯穿 fixer，限制递归再入。可靠前默认禁用/明确限制；静默 exit1、spawn失败、仍有错误、焦点丢失都有真实结果。 | R1 H11；R2 重大疑点4；A2-09、C1/C3 |
 | ⬜ | T22-19 | Medium／确认 | **会话保存与失败历史完整性**：保存有 dirty/最新快照补存、失败可见、容量一致；保存 failed/cancelled 回合、部分正文及已完成副作用；活动按回合保留，手动/自动恢复一致。慢保存、413/500、停止后刷新不能静默丢最新状态。 | R1 M03/M04；OPT-16、A2-12；不自动重开 OPT-6 多客户端保存设计 |
-| ⬜ | T22-20 | Medium／确认 | **继续收口权威工具状态**：先修 agent 失败仍为 ok，以及 Worktree/Fetch/MCP external/Synthetic/Screenshot/schedule 等已列前缀缺口；成功命令保留 stderr/exitCode；再分小批迁移余下工具，保留内容透传语义。必选失败步骤不执行后续写入。 | R1 M05；OPT-13 仍为24/53；A2-07、10-20 主动留下的 Worktree 缺口 |
+| 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：首片完成（2026-10-24，主会话）：agent 失败仍为 ok 已修（runSubAgent 结构化返工）＋ Worktree/Fetch/Synthetic/Screenshot/schedule 前缀缺口全清、抓取内容透传显式 ok；OPT-13 推进至 30/53。剩余：MCP external 前缀缺口、成功命令保留 stderr/exitCode、余下工具分小批迁移（写入/命令族含 `[aborted:]`→cancelled 语义设计），保留内容透传语义。必选失败步骤不执行后续写入。 | R1 M05；A2-07；10-20 主动留下的 Worktree 缺口已随首片关闭 |
 | ⬜ | T22-21 | Medium／确认 | **统一有效权限、审批展示与生命周期**：执行前复核 mode/cancel；界面反映 --danger 强制项；收到成功审批响应才显示批准；工作流展示真实嵌套 steps/参数再继承批准；停止/切会话 dispose 审批倒计时。denial切换、迟到审批、400/401、具体命令预览均有验收。 | R1 M09/L05；R2 N05；P0-3/P2-12；取消实现复用 T22-06 |
 | 🔶 | T22-22 | Medium／确认＋风险 | **启动失败与 dream 恢复闭环**：T22-14已把配置恢复移到工作区独占之后、顶层执行异常改为非零退出；后台确认只代表持锁及同步初始化成功。dream仍可能阻塞ready，interaction覆盖HTTP、dream锁的owner/finally/陈旧恢复、模型离线/目录不可写全链路仍待修，不能据此关闭。 | R1 M12；A2-08、A10；10-23第九批仅启动门与catch局部 |
 
@@ -968,7 +968,17 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 
 ---
 
-## 2026-10-24 —— 全套回归发现的第九批尾巴（dream 产品 bug + 两处测试适配）
+## 2026-10-24 —— T22-20 首片 / OPT-13 第五批（主会话自做：agent 返工 + web/gap 工具）
+
+- **范围**：agent_tool 返工（第四批把 runSubAgent 整体包成 ok 是错误终态——子代理失败被显式标成 ok；改为 runSubAgent 自身返回结构化：`Sub-agent "x" failed:` 与嵌套拒绝 → error、成功 → ok，agent_tool 直接透传）＋ web_fetch_tool（`Fetch error:` 缺口修复；抓取页面内容透传显式 ok，正文以 `[ERROR]` 开头不再误判）＋ synthetic_output_tool（`Synthetic output error:` 两处缺口）＋ enter_worktree_tool（`Worktree error:` 缺口，10-20 主动留下的）＋ computer_use 截图路径（`Screenshot failed` 两处）＋ schedule_cron_tool/cron_create_tool（`[ERROR] Unsupported schedule` 前缀映射）。OPT-13 累计 **30/53**。
+- **红测试设计**：runSubAgent 失败无法经 mock 活体构造（脚本耗尽后重复末条，子代理永远拿到合法回复）——用源码抽取 + 桩 processWithTools 做 vm 单元（fail/nested/ok 三态）；活体半场经真实 server 管线覆盖 fetch 死链/活体（本地假 HTTP 服务器返回 `[ERROR]` 开头正文）、synthetic 坏 schema、agent 成功往返与空 task 校验。
+- **门禁**：红恰 4+1（runner-b 4 条指定标签 + runner-i 1 条注册断言）；绿：node --check、runner-b **341/341**、runner-i 49/49（input-escape 为既有 DESKTOP_TEST=1 门槛跳过）、runner(A) 88/88、**test-all 20 目标全绿**（含 d/e/h 适配后）；**Node 13.14.0 复验 B 341/341、I 49/49、A 88/88**。
+- computer_use 输入路径（`[WARN]`/`[OK]`/`Input error:`）经推断分类全部正确（Input error 在 RE 内），未额外包装；Worktree 活体红测试仍不安全（git 对怪名照建 worktree），由代码审查确认。
+- T22-20 剩余：MCP external 前缀缺口、成功命令保留 stderr/exitCode、余下工具迁移（写入/命令族含 `[aborted:]`→cancelled 语义设计）。
+
+---
+
+## 2026-10-24 —— 全套回归发现的第九批尾巴（dream 产品 bug + 五处测试适配）
 
 第九批记录已如实注明"全套 A–J/UI 未运行"。本轮（2026-10-24，主会话自跑 OPT-13/T22-20 首片的红门禁）全套 runner-b 首跑暴露 4 条与其无关的失败；`git stash` 后在干净 HEAD（5fb6d38）上定向复跑归因确认均为既有问题。探针（.cache/probe-b9regress.js，复用 _shared 隔离安装）实证三条根因：
 
@@ -978,6 +988,13 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 勘误：T22-14 行提交号 b63bbdc → 5fb6d38（amend 改变哈希所致）。
 
 定向复跑 dream/ast04/state-path-guards：**11/11 通过**。
+
+后续完整 test-all 又暴露 d/e/h 三套件 5 条失败，同样 stash 归因为既有问题（探针 probe-fuzz.js / probe-mdcorrupt.js）：
+
+- **fuzz 测试适配（T22-01 语义，非产品缺陷）**：fuzz 转录在第 45 个调用左右越过 120k 压缩阈值，摘要请求打到 mock 拿到脚本中的 tool_call 条目（content null）→ T22-01 的 fail-closed 守卫（`empty context summary`→任务中止，历史保全）正确触发。fuzz 意图是测 60 个畸形工具调用存活，与压缩阈值解耦：场景内 `CONTEXT_CHARS: '5000000'`。压缩对 mock 的行为由其它场景覆盖。
+- **md-corrupt 测试适配（T22-13 有意语义，非产品缺陷）**：含 NUL 的 7CODER.md 且无有效旧版，新契约为任务正常完成、摘要拒绝追加并显式告警（`summary not written: Invalid state has no valid previous version`）、损坏字节原样保全待人工修复；旧断言（损坏文旁照样追加 auto-log）改为断言新契约（字节不变 + code 0 + 告警出现 + .env.local 保护不变）。
+- **runner-h 静态两项（第九/八批尾巴，小修）**：`_7CODER_LEASE_HANDOFF` 为父→子内部交接变量（spawn 时注入、启动即消费并删除），不应进 .env.example——runner-h 检查加 `internalIpcAllow` 豁免表；index.js 日志文案 "[WARN] TODO log save failed" 的 `TODO` 撞标记检查（e862a03 引入），改小写 "todo log"。
+- 检查确认 computer_use 输入类路径（`[WARN]`/`[OK]`/`Input error:`）推断分类全部正确，无新误判面。
 
 ---
 

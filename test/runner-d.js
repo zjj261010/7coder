@@ -240,7 +240,11 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
     const md = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8');
-    record('md: corrupted 7CODER.md survives; bullets in marker section; old content preserved', md.includes('auto-log:start') && md.includes('- MDCORRUPT-DONE') && md.includes('garbage') && r.out.includes('MDCORRUPT-DONE'), md.substring(0, 60));
+    // T22-13 durable-state contract: a corrupted 7CODER.md (NUL bytes) with no
+    // valid previous version is NOT appended to - the task completes, the
+    // summary is refused with an explicit warning, and the corrupted bytes
+    // stay byte-preserved for manual repair (no auto-log section appears).
+    record('md: corrupted 7CODER.md preserved byte-for-byte; summary refused with warning', md === '\u0000\u0001garbage\u0002\nnot a bullet list\n' && r.code === 0 && r.out.includes('MDCORRUPT-DONE') && /summary not written: Invalid state has no valid previous version/.test(r.out), md.substring(0, 60));
     record('md: .env.local (variant) write BLOCKED in bypass', tr(readLog(m.log), 'c1') && tr(readLog(m.log), 'c1').c.includes('BLOCKED: protected file') && !fs.existsSync(path.join(cwd, '.env.local')), '');
     stopMock(m);
   }

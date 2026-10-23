@@ -662,7 +662,7 @@ function effectivePermissionMode() {
 // the caller's message array (keeps assistant(tool_calls) -> tool pairing valid).
 async function runSubAgent(agentName, task, cancelled, modelContext) {
   if (agentDepth > 0) {
-    return 'Nested sub-agents are not allowed (a sub-agent cannot spawn further sub-agents).';
+    return makeToolResult('error', 'Nested sub-agents are not allowed (a sub-agent cannot spawn further sub-agents).');
   }
   const prevOverride = subAgentModeOverride;
   subAgentModeOverride = (PERMISSION_MODE === 'default') ? 'auto' : PERMISSION_MODE;
@@ -682,9 +682,9 @@ You are currently running as a SUB-AGENT named "${agentName}".
     // disconnect also stops a running sub-agent's model calls and tools.
     const answer = await processWithTools(agentMessages, { cancel: cancelled, modelContext });
     console.log(`[AGENT] Sub-agent "${agentName}" finished`);
-    return `Sub-agent "${agentName}" result:\n${answer || '(no output)'}`;
+    return makeToolResult('ok', `Sub-agent "${agentName}" result:\n${answer || '(no output)'}`);
   } catch (e) {
-    return `Sub-agent "${agentName}" failed: ${e.message}`;
+    return makeToolResult('error', `Sub-agent "${agentName}" failed: ${e.message}`);
   } finally {
     agentDepth--;
     subAgentModeOverride = prevOverride;
@@ -2557,7 +2557,7 @@ function appendTodoLog(entry) {
     const file = managedWorkspacePath('TODO.md');
     const current = readStateRecord(file);
     writeStateFile(file, (current ? current.value : '') + `\n## ${new Date().toISOString()}\n${entry}\n`);
-  } catch (e) { console.warn('[WARN] TODO log save failed (structured todo store is authoritative): ' + e.message); }
+  } catch (e) { console.warn('[WARN] todo log save failed (structured todo store is authoritative): ' + e.message); }
 }
 function nextTodoId(items) {
   let max = 0;
@@ -2656,7 +2656,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     const agentName = String(args.name || 'agent').substring(0, 60);
     const task = String(args.task || '').trim();
     if (!task) return makeToolResult('error', 'Agent error: task is required');
-    return makeToolResult('ok', await runSubAgent(agentName, task, cancelled, modelContext));
+    // runSubAgent itself returns a structured result (batch 5) - sub-agent
+    // failures carry error status instead of being blanket-wrapped as ok.
+    return await runSubAgent(agentName, task, cancelled, modelContext);
   }
 
   if (name === 'run_command') {
@@ -2767,8 +2769,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'web_fetch_tool') {
     try {
       const res = await axios.get(args.url, { timeout: 10000 });
-      return typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
-    } catch (e) { return `Fetch error: ${e.message}`; }
+      // Fetched page content passes through verbatim - its leading text must
+      // never decide the status, so success is marked explicitly.
+      return makeToolResult('ok', typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2));
+    } catch (e) { return makeToolResult('error', `Fetch error: ${e.message}`); }
   }
   if (name === 'download_tool') {
     // T22-09: close and flush a unique sibling, snapshot the old version, then
@@ -3228,13 +3232,16 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const rel = sanitizePath(args.path || 'worktree');
       const wtPath = quoteForShell(rel);
       child_process.execSync(`git worktree add ${wtPath}`, { cwd: launchDir, timeout: 60000 });
-      return `[OK] Entered worktree at ${args.path}`;
-    } catch (e) { return `Worktree error: ${e.message}`; }
+      return makeToolResult('ok', `[OK] Entered worktree at ${args.path}`);
+    } catch (e) { return makeToolResult('error', `Worktree error: ${e.message}`); }
   }
 
   if (name === 'schedule_cron_tool' || name === 'cron_create_tool') {
     const jobId = `cron-${Date.now()}`;
-    return scheduleCronJob(jobId, args.schedule, args.command);
+    // scheduleCronJob's only failure text is the '[ERROR] Unsupported
+    // schedule' form; the '[OK] Cron job ... scheduled' form is success.
+    const text = scheduleCronJob(jobId, args.schedule, args.command);
+    return makeToolResult(text.startsWith('[ERROR]') ? 'error' : 'ok', text);
   }
   if (name === 'cron_delete_tool') {
     if (!args.job_id || !cronJobs.has(args.job_id)) {
@@ -3309,7 +3316,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
           child_process.execSync(`import -window root "${shotPath}" || scrot "${shotPath}"`, { stdio: 'ignore' });
         }
       } catch (e) {
-        return `Screenshot failed: ${e.message}`;
+        return makeToolResult('error', `Screenshot failed: ${e.message}`);
       }
       if (fs.existsSync(shotPath)) {
         // GAP-4 visual loop: with VISION_MODEL configured, feed the fresh
@@ -3321,12 +3328,12 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
           const dataUrl = screenshotToDataUrl(shotPath);
           if (dataUrl) {
             const desc = await describeWithVision(dataUrl, modelContext);
-            return `Screenshot saved to ${shotPath}.\nVision: ${desc}`;
+            return makeToolResult('ok', `Screenshot saved to ${shotPath}.\nVision: ${desc}`);
           }
         }
-        return `Screenshot saved to ${shotPath}`;
+        return makeToolResult('ok', `Screenshot saved to ${shotPath}`);
       }
-      return 'Screenshot failed (file was not created - is a display/session available?)';
+      return makeToolResult('error', 'Screenshot failed (file was not created - is a display/session available?)');
     }
     // Real input injection (Windows): a temp .ps1 avoids triple-quoted command
     // strings; user32 mouse_event drives clicks, SendKeys drives typing/keys.
@@ -3704,7 +3711,7 @@ function inGitRepo() {
   if (name === 'synthetic_output_tool') {
     const schema = args.schema;
     if (!schema || typeof schema !== 'object' || Array.isArray(schema) || !schema.properties) {
-      return 'Synthetic output error: schema must be an object with a "properties" map';
+      return makeToolResult('error', 'Synthetic output error: schema must be an object with a "properties" map');
     }
     const required = Array.isArray(schema.required) ? schema.required.filter(k => typeof k === 'string') : [];
     const genPrompt = `Generate a JSON object that conforms EXACTLY to this schema:
@@ -3742,12 +3749,12 @@ Rules:
             }
           }
         }
-        return JSON.stringify(obj, null, 2);
+        return makeToolResult('ok', JSON.stringify(obj, null, 2));
       } catch (e) {
         lastError = e.message;
       }
     }
-    return `Synthetic output error: ${lastError}`;
+    return makeToolResult('error', `Synthetic output error: ${lastError}`);
   }
 
   if (name === 'plan_mode') {
@@ -4186,12 +4193,15 @@ async function askApproval(question, approvalBridge, cancelled) {
 // Batch 2 (2026-10-20): read-only tools joined - status-only migration, texts unchanged.
 // Batch 3 (2026-10-20): state reads and content passthroughs - not-found texts become explicit errors.
 // Batch 4 (2026-10-20): validation-gap tools - Skill/Task/Cron/PID/Agent failures become explicit errors.
+// Batch 5 (2026-10-24): web/gap tools - runSubAgent failures, Fetch/Synthetic/Worktree/Screenshot
+// failures become explicit errors; fetched page content stays ok.
 const TOOL_RESULT_MARKER = Symbol('7coder.ToolResult');
 const TOOL_RESULT_STATUSES = ['ok', 'error', 'blocked', 'declined', 'cancelled'];
 const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', 'workflow_tool',
   'read_file', 'glob_tool', 'grep_tool', 'list_dir', 'git_status_tool', 'git_diff_tool', 'process_list_tool',
   'task_get_tool', 'task_list_tool', 'task_output_tool', 'memory_tool', 'list_mcp_resources_tool', 'read_mcp_resource_tool', 'prompt_from_file',
-  'skill_tool', 'todo_write_tool', 'task_create_tool', 'task_stop_tool', 'cron_delete_tool', 'process_kill_tool', 'agent_tool']);
+  'skill_tool', 'todo_write_tool', 'task_create_tool', 'task_stop_tool', 'cron_delete_tool', 'process_kill_tool', 'agent_tool',
+  'web_fetch_tool', 'synthetic_output_tool', 'enter_worktree_tool', 'computer_use', 'schedule_cron_tool', 'cron_create_tool']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };

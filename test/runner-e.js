@@ -99,7 +99,12 @@ scenarios.push({
     const m = startMock(script);
     await new Promise(r => setTimeout(r, 600));
     const t0 = Date.now();
-    const r = await runCli({ port: m.port, args: ['--prompt', 'fuzz'], env: { PERMISSION_MODE: 'bypass', MAX_TOOL_STEPS: '80' }, cwd, timeoutMs: 120000 });
+    // CONTEXT_CHARS raised: the fuzz transcript crosses the 120k compression
+    // threshold around call 45, and a mid-script summary request gets the
+    // mock's next tool_call entry (content null) - T22-01's fail-closed guard
+    // then aborts the task. Compression-vs-mock is covered elsewhere; this
+    // scenario is about surviving 60 mutated tool calls.
+    const r = await runCli({ port: m.port, args: ['--prompt', 'fuzz'], env: { PERMISSION_MODE: 'bypass', MAX_TOOL_STEPS: '80', CONTEXT_CHARS: '5000000' }, cwd, timeoutMs: 120000 });
     const elapsed = Date.now() - t0;
     const log = readLog(m.log);
     const all = toolResults(log);
