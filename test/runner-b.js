@@ -1208,7 +1208,10 @@ scenarios.push({
     // AST-04a2: even bypass mode must not WRITE models.json (protected write).
     const cwd6b = freshCwd('b-ast6b');
     fs.mkdirSync(path.join(cwd6b, '.7coder'), { recursive: true });
-    fs.writeFileSync(path.join(cwd6b, '.7coder', 'models.json'), '{"keep":true}');
+    // T22-13 strict state validation refuses to start on a semantically
+    // invalid models.json - seed a VALID profile map (object of objects) so
+    // the CLI boots and the protected-write refusal is what gets exercised.
+    fs.writeFileSync(path.join(cwd6b, '.7coder', 'models.json'), '{"keep":{}}');
     const m6b = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'as8', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: '.7coder/models.json', content: '{"evil":true}' }) } }] },
       { role: 'assistant', content: 'AST4B-DONE' }
@@ -1216,7 +1219,7 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m6b.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: cwd6b, timeoutMs: 60000 });
     const as8 = tr(readLog(m6b.log), 'as8');
-    record('ast04: bypass-mode write to models.json is BLOCKED as protected', as8 && as8.c.includes('BLOCKED: protected file') && fs.readFileSync(path.join(cwd6b, '.7coder', 'models.json'), 'utf8') === '{"keep":true}', 'as8=' + (as8 ? as8.c.substring(0, 120) : 'none'));
+    record('ast04: bypass-mode write to models.json is BLOCKED as protected', as8 && as8.c.includes('BLOCKED: protected file') && fs.readFileSync(path.join(cwd6b, '.7coder', 'models.json'), 'utf8') === '{"keep":{}}', 'as8=' + (as8 ? as8.c.substring(0, 120) : 'none'));
     stopMock(m6b);
 
     // AST-04b: git_commit_tool (stage_all default) must never stage .7coder/
@@ -3139,7 +3142,11 @@ scenarios.push({
         const m = startMock([tcState('sg1','write_file',{path:'app.txt',content:'new'}),{role:'assistant',content:'DONE'}]);
         fs.writeFileSync(path.join(cwd,'app.txt'),'old');
         await new Promise(r=>setTimeout(r,500)); await runCli({port:m.port,args:['--prompt','t'],env:{PERMISSION_MODE:'bypass'},cwd,timeoutMs:60000});
-        record('state guard '+label+': junction backup root never receives workspace data', fs.readFileSync(path.join(cwd,'app.txt'),'utf8')==='new' && fs.readFileSync(path.join(outside,leaf),'utf8')==='OUTSIDE-STATE-DATA', '');
+        // T22-10/T22-13 semantics: an existing-file write REQUIRES a complete
+        // backup; a backup root redirected outside the workspace (junction)
+        // makes the whole write fail closed instead of skipping the backup.
+        const got=tr(readLog(m.log),'sg1');
+        record('state guard '+label+': junction backup root blocks the write, never leaks', got && /Security: internal state root resolves outside workspace/.test(got.c) && fs.readFileSync(path.join(cwd,'app.txt'),'utf8')==='old' && fs.readFileSync(path.join(outside,leaf),'utf8')==='OUTSIDE-STATE-DATA', got?got.c.substring(0,120):'none');
         stopMock(m);
       }
     }

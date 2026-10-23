@@ -2142,13 +2142,13 @@ async function triggerDreamIfNeeded(modelContext) {
   // not otherwise guarded, and triggerDreamIfNeeded has no try/catch around it).
   try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch (e) {}
   fs.writeFileSync(lockPath, new Date().toISOString());
-  await runDreamSession();
+  await runDreamSession(modelContext);
   fs.unlinkSync(lockPath);
   updateLastInteractionTime();
   return true;
 }
 
-async function runDreamSession() {
+async function runDreamSession(modelContext) {
   const mdPath = managedWorkspacePath('7CODER.md');
   let currentContent = 'No prior content.';
   try {
