@@ -253,6 +253,7 @@ function loadMcpServers() {
 }
 loadMcpServers();
 const MCP_CALL_TIMEOUT = parseInt(process.env.MCP_CALL_TIMEOUT, 10) || 120000;
+const MCP_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
 // One lazily-created client per configured server, kept alive for the
 // process lifetime and disposed at shutdown.
@@ -308,56 +309,99 @@ function createMcpStdioClient(name, cfg) {
     deadErr: ''
   };
   let buf = '';
+  function die(err) {
+    if (client.dead) return;
+    client.dead = true;
+    client.deadErr = String(err);
+    client.initialized = false;
+    client.toolsCache = null;
+    buf = '';
+    for (const p of client.pending.values()) {
+      clearTimeout(p.timer);
+      p.reject(new Error('MCP server "' + name + '" unavailable: ' + client.deadErr + '; result unknown for sent requests; check side effects before retrying.'));
+    }
+    client.pending.clear();
+    if (mcpClients[name] === client) delete mcpClients[name];
+    // Best effort for this direct child. Descendant ownership is T22-07;
+    // killing this handle is not proof that a remote side effect stopped.
+    try { child.stdin.destroy(); } catch (e) {}
+    try { child.kill(); } catch (e) {}
+  }
+  function send(message) {
+    if (client.dead) throw new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')');
+    const line = JSON.stringify(message) + '\n';
+    if (Buffer.byteLength(line, 'utf8') > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing frame exceeds 4 MB; request not sent');
+    if (child.stdin.destroyed || child.stdin.writableEnded) {
+      die('stdin is closed');
+      throw new Error(client.deadErr);
+    }
+    try { child.stdin.write(line, error => { if (error) die('stdin write: ' + error.message); }); }
+    catch (e) { die('stdin write: ' + e.message); throw e; }
+  }
+  client.dispose = function () { die('disposed'); };
+  // Node 13 returns early on EMFILE/ENFILE before constructing stdio, then
+  // emits the spawn error on nextTick. Bind before touching any pipe.
+  child.on('error', e => { console.warn('[MCP:' + name + '] spawn: ' + e.message); die(e.message); });
+  child.on('exit', code => die('exit code ' + code));
+  child.on('close', code => die('close code ' + code));
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    die('stdio unavailable during spawn');
+    const unavailable = () => Promise.reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
+    client.request = unavailable;
+    client.ensureInit = unavailable;
+    client.listTools = unavailable;
+    client.callTool = unavailable;
+    return client;
+  }
+  child.stdin.on('error', e => die('stdin: ' + e.message));
+  child.stdout.on('error', e => die('stdout: ' + e.message));
+  child.stdout.on('end', () => die('stdout ended'));
+  child.stdout.on('close', () => die('stdout closed'));
+  child.stderr.on('error', e => die('stderr: ' + e.message));
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', d => {
+    if (client.dead) return;
     buf += d;
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
       const line = buf.substring(0, nl).replace(/\r$/, '');
       buf = buf.substring(nl + 1);
+      if (Buffer.byteLength(line, 'utf8') > MCP_MAX_FRAME_BYTES) { die('incoming frame exceeds 4 MB'); return; }
       if (!line.trim()) continue;
       let msg;
       try { msg = JSON.parse(line); } catch (e) { continue; }
+      if (!msg || typeof msg !== 'object' || Array.isArray(msg)) continue;
       if (msg.id !== undefined && client.pending.has(msg.id)) {
         const p = client.pending.get(msg.id);
         client.pending.delete(msg.id);
         clearTimeout(p.timer);
-        if (msg.error) p.reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+        if (msg.error) p.reject(new Error(typeof msg.error.message === 'string' ? msg.error.message : JSON.stringify(msg.error)));
         else p.resolve(msg.result);
-      } else if (msg.method !== undefined && msg.id !== undefined) {
+      } else if (typeof msg.method === 'string' && msg.id !== undefined) {
         // server -> client request (roots/list etc). Answer what we can,
         // method-not-found for the rest; never leave the server hanging.
         const known = { 'roots/list': { roots: [] }, 'ping': {} };
-        const out = known[msg.method] !== undefined
+        const out = Object.prototype.hasOwnProperty.call(known, msg.method)
           ? { jsonrpc: '2.0', id: msg.id, result: known[msg.method] }
           : { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found: ' + msg.method } };
-        try { child.stdin.write(JSON.stringify(out) + '\n'); } catch (e2) {}
+        try { send(out); } catch (e2) { die(e2.message); }
       }
       // server notifications (logging etc): ignored
     }
+    if (Buffer.byteLength(buf, 'utf8') > MCP_MAX_FRAME_BYTES) die('unterminated incoming frame exceeds 4 MB');
   });
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', d => console.warn('[MCP:' + name + '] ' + String(d).trim()));
-  function die(err) {
-    client.dead = true;
-    client.deadErr = err;
-    for (const p of client.pending.values()) { clearTimeout(p.timer); p.reject(new Error('MCP server "' + name + '" exited: ' + err)); }
-    client.pending.clear();
-    delete mcpClients[name]; // a later call lazily respawns
-  }
-  child.on('error', e => die(e.message));
-  child.on('exit', code => die('exit code ' + code));
   client.request = function (method, params, timeoutMs) {
     return new Promise((resolve, reject) => {
       if (client.dead) return reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
       const id = client.nextId++;
       const timer = setTimeout(() => {
-        client.pending.delete(id);
-        reject(new Error('MCP ' + method + ' timed out after ' + timeoutMs + 'ms'));
+        die('MCP ' + method + ' timed out after ' + timeoutMs + 'ms; session retired, next call starts a new client');
       }, timeoutMs);
       client.pending.set(id, { resolve, reject, timer });
       try {
-        child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id: id, method: method, params: params || {} }) + '\n');
+        send({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
       } catch (e) {
         clearTimeout(timer);
         client.pending.delete(id);
@@ -373,7 +417,7 @@ function createMcpStdioClient(name, cfg) {
       capabilities: {},
       clientInfo: { name: '7coder', version: APP_VERSION }
     }, 15000).then(() => {
-      try { child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) + '\n'); } catch (e) {}
+      send({ jsonrpc: '2.0', method: 'notifications/initialized' });
       client.initialized = true;
     }).catch(e => { client.initPromise = null; throw e; });
     return client.initPromise;
@@ -396,16 +440,19 @@ function createMcpStdioClient(name, cfg) {
 }
 function getMcpClient(serverName) {
   if (!mcpServers[serverName]) return null;
-  if (!mcpClients[serverName]) {
+  if (!mcpClients[serverName] || mcpClients[serverName].dead) {
     console.log('[MCP] starting stdio server "' + serverName + '": ' + mcpServers[serverName].command);
-    mcpClients[serverName] = createMcpStdioClient(serverName, mcpServers[serverName]);
+    const previous = mcpClients[serverName];
+    const next = createMcpStdioClient(serverName, mcpServers[serverName]);
+    if (!next.dead) mcpClients[serverName] = next;
+    else if (mcpClients[serverName] === previous) delete mcpClients[serverName];
+    return next;
   }
   return mcpClients[serverName];
 }
 function disposeMcpClients() {
   for (const k of Object.keys(mcpClients)) {
-    try { mcpClients[k].child.kill(); } catch (e) {}
-    delete mcpClients[k];
+    mcpClients[k].dispose();
   }
 }
 
@@ -1338,6 +1385,7 @@ async function awaitCommandCancellable(runner, cancelled) {
 // enforcement done on OUR side: if the marker never arrives within the limit,
 // the whole shell is killed and restarted (state resets; the result says so).
 const persistentShells = new Map(); // key -> shell
+const SHELL_MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 function shellSessionKey() {
   // agentDepth/workflowStepDepth are the process globals guarded by the
   // request gate (AST-03); they distinguish sub-agent/workflow contexts.
@@ -1356,69 +1404,83 @@ function createPersistentShell(key) {
     env: Object.assign({}, process.env, { TERM: 'dumb', PS1: '' }),
     stdio: ['pipe', 'pipe', 'pipe']
   });
-  const shell = { key: key, child: child, dead: false, seq: 0 };
-  let out = '';
+  const shell = { key: key, child: child, dead: false, seq: 0, active: null, deadErr: '' };
+  function die(reason, code) {
+    if (shell.dead) return;
+    shell.dead = true;
+    shell.deadErr = String(reason);
+    if (persistentShells.get(key) === shell) persistentShells.delete(key);
+    if (shell.active) shell.active.finish({
+      out: '[SHELL] ' + reason + '; result unknown. Check side effects before retrying. Session retired; next call starts a fresh shell (cwd/env reset).\n' + shell.active.out,
+      code: code === undefined ? -1 : code, restarted: true
+    });
+    try { child.stdin.destroy(); } catch (e) {}
+    try { child.kill(); } catch (e) {}
+  }
+  function collect(d) {
+    const active = shell.active;
+    if (shell.dead || !active) return; // background/idle output is not retained
+    const bytes = Buffer.byteLength(d, 'utf8');
+    if (active.bytes + bytes > SHELL_MAX_OUTPUT_BYTES) { die('output exceeds 8 MB'); return; }
+    active.bytes += bytes;
+    active.out += d;
+    if (active.code === null) {
+      const probe = active.tail + d;
+      const match = probe.match(new RegExp(active.marker + ' (-?\\d+)(?:\\r?\\n)'));
+      active.tail = probe.slice(-(active.marker.length + 40));
+      if (match) active.code = parseInt(match[1], 10);
+    }
+    if (active.code !== null && !active.quiet) {
+      active.quiet = setTimeout(() => active.finish({
+        out: active.out.replace(new RegExp('\\n?' + active.marker + ' -?\\d+\\r?\\n'), ''),
+        code: active.code, restarted: false
+      }), 300);
+    }
+  }
+  child.on('error', e => { console.warn('[SHELL] spawn: ' + e.message); die('spawn: ' + e.message); });
+  child.on('exit', code => die('shell exited with code ' + code));
+  child.on('close', code => die('shell closed with code ' + code));
+  shell.dispose = function () { die('disposed'); };
+  if (!child.stdin || !child.stdout || !child.stderr) {
+    die('stdio unavailable during spawn');
+    shell.run = () => Promise.resolve({ out: '[SHELL] ' + shell.deadErr, code: -1, restarted: false });
+    return shell;
+  }
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
-  child.stdout.on('data', d => { out += d; });
-  child.stderr.on('data', d => { out += d; });
-  function die() {
-    shell.dead = true;
-    try { child.kill(); } catch (e) {}
-    persistentShells.delete(key);
-  }
-  child.on('error', () => die());
-  child.on('exit', () => die());
+  child.stdout.on('data', collect);
+  child.stderr.on('data', collect);
+  child.stdin.on('error', e => die('stdin: ' + e.message));
+  child.stdout.on('error', e => die('stdout: ' + e.message));
+  child.stderr.on('error', e => die('stderr: ' + e.message));
+  child.stdout.on('end', () => die('stdout ended'));
+  child.stdout.on('close', () => die('stdout closed'));
   shell.run = function (cmd, timeoutMs) {
+    if (shell.dead) return Promise.resolve({ out: '[SHELL] session is unavailable: ' + shell.deadErr, code: -1, restarted: false });
+    if (shell.active) return Promise.resolve({ out: '[SHELL] session is busy; command not sent.', code: -1, restarted: false });
     const marker = '7CODER-SHELL-END-' + (++shell.seq) + '-' + Date.now();
     // stdin line discipline: trailing newline required, marker echoes the
     // command's exit status so failures are visible. No `set -e`: each call
     // behaves like a fresh command line, only cwd/env persist.
-    const wrapped = cmd.replace(/\r?\n$/, '') + '\necho ' + marker + ' $?\n';
+    const wrapped = cmd.replace(/\r?\n$/, '') + '\nprintf "\\n' + marker + ' %s\\n" "$?"\n';
     return new Promise(resolve => {
-      if (shell.dead) return resolve({ out: '[SHELL] session died - it will restart on the next call.', code: -1, restarted: false });
-      const before = out.length;
       let done = false;
-      let quietTimer = null;
-      let poll = null;
-      let to = null;
-      const stopTimers = () => { if (poll) clearInterval(poll); if (to) clearTimeout(to); if (quietTimer) clearTimeout(quietTimer); poll = null; to = null; quietTimer = null; };
-      const finish = (code) => {
+      const active = { marker, out: '', tail: '', bytes: 0, code: null, quiet: null, timer: null, finish: null };
+      active.finish = result => {
         if (done) return;
         done = true;
-        stopTimers();
-        const text = out.substring(before);
-        // strip the marker line itself from the returned output
-        const cleaned = text.replace(new RegExp('\\n?' + marker + ' ?(-?\\d+)?\\s*$'), '');
-        out = out.substring(Math.max(0, out.length - 4096)); // keep the tail only
-        resolve({ out: cleaned, code: code, restarted: false });
+        if (active.quiet) clearTimeout(active.quiet);
+        clearTimeout(active.timer);
+        if (shell.active === active) shell.active = null;
+        resolve(result);
       };
-      to = setTimeout(() => {
-        // marker never came: the command hung the shell (interactive program).
-        // Kill the WHOLE shell; the next call lazily respawns fresh.
-        if (done) return;
-        done = true;
-        stopTimers();
-        resolve({ out: '[SHELL] timeout after ' + timeoutMs + 'ms - the persistent shell was hung and has been restarted (cwd/env reset).', code: 124, restarted: true });
-        die();
-      }, timeoutMs);
-      // poll for the marker; once seen, hold a 300ms quiet window for
-      // trailing bytes before finishing.
-      poll = setInterval(() => {
-        if (done) { stopTimers(); return; }
-        const text = out.substring(before);
-        const mm = text.match(new RegExp(marker + ' ?(-?\\d+)'));
-        if (mm && !quietTimer) {
-          const code = parseInt(mm[1], 10);
-          quietTimer = setTimeout(() => finish(code), 300);
-        }
-      }, 60);
+      shell.active = active;
+      active.timer = setTimeout(() => die('timeout after ' + timeoutMs + 'ms', 124), timeoutMs);
       try {
-        child.stdin.write(wrapped);
+        if (child.stdin.destroyed || child.stdin.writableEnded) { die('stdin is closed'); return; }
+        child.stdin.write(wrapped, error => { if (error) die('stdin write: ' + error.message); });
       } catch (e) {
-        done = true;
-        stopTimers();
-        resolve({ out: '[SHELL] write failed: ' + e.message, code: -1, restarted: false });
+        die('stdin write: ' + e.message);
       }
     });
   };
@@ -1427,16 +1489,17 @@ function createPersistentShell(key) {
 function getPersistentShell(key) {
   let sh = persistentShells.get(key);
   if (!sh || sh.dead) {
+    const previous = sh;
     sh = createPersistentShell(key);
     if (!sh) return null;
-    persistentShells.set(key, sh);
+    if (!sh.dead) persistentShells.set(key, sh);
+    else if (persistentShells.get(key) === previous) persistentShells.delete(key);
   }
   return sh;
 }
 function disposePersistentShells() {
   for (const k of Array.from(persistentShells.keys())) {
-    try { persistentShells.get(k).child.kill(); } catch (e) {}
-    persistentShells.delete(k);
+    persistentShells.get(k).dispose();
   }
 }
 

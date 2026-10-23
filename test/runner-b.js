@@ -1875,7 +1875,7 @@ scenarios.push({
     record('pshell: cd persists - pwd shows the subdirectory', ps3 && ps3.c.includes('/sub') && ps3.c.includes('GAP2-ALIVE'), ps3 ? ps3.c.substring(0, 160) : 'no result');
     record('pshell: one-shot mode stays stateless (fresh cwd)', ps4 && ps4.c.includes('Command OK') && !/\/sub(\s|$)/.test(ps4.c), ps4 ? ps4.c.substring(0, 120) : 'no result');
     record('pshell: nonzero exit reported as failure with code', ps5 && ps5.c.includes('Command failed (exit 1)'), ps5 ? ps5.c.substring(0, 100) : 'no result');
-    record('pshell: hung command times out and restarts the shell', ps6 && ps6.c.includes('[SHELL] timeout') && ps6.c.includes('restarted'), ps6 ? ps6.c.substring(0, 140) : 'no result');
+    record('pshell: hung command retires session and reports unknown outcome', ps6 && ps6.c.includes('[SHELL] timeout') && ps6.c.includes('result unknown') && ps6.c.includes('next call starts'), ps6 ? ps6.c.substring(0, 180) : 'no result');
     record('pshell: session usable again after the restart', ps7 && ps7.c.includes('back-to-life'), ps7 ? ps7.c.substring(0, 100) : 'no result');
     stopMock(m);
   }

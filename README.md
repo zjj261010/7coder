@@ -252,6 +252,10 @@ if they crash. `mcp_list_tools_tool` discovers servers, tools and arg schemas
 `mcp_tool { server, tool_name, args }` (HIGH risk - goes through the normal
 approval system). Per-call timeout: `MCP_CALL_TIMEOUT` (default 120000 ms).
 
+MCP stdio frames are limited to 4 MB of UTF-8 data in either direction. An oversized outgoing request is rejected before sending. Pipe failure, EOF, disposal or timeout retires the client and settles all pending requests; the next call may create a new client. Sent calls report **result unknown**: check side effects before retrying. The transport does not automatically replay them. Retiring a direct child does not prove that its descendants or external operations stopped.
+
+Persistent bash accepts one command at a time and retains at most 8 MB of combined stdout/stderr per active command; idle output is discarded. A completion marker plus a 300 ms trailing-output window determines success. Nonzero command status is preserved. Pipe failure, early exit, timeout or output overflow ends the wait and retires the session; the next call starts with fresh cwd/env. These failures also report unknown results. Direct-child termination is best effort; full process-tree cleanup remains separate work.
+
 The old `mcp_url`/`npx_pkg` bridges (custom HTTP POST /invoke protocol) still
 work but are legacy - real MCP ecosystem servers need the stdio config above.
 
@@ -287,6 +291,8 @@ On restart, use the destination as it stands: there is no intermediate step that
 `npm run test:text-encoding` checks text safety and strict backups. `read_file` and `prompt_from_file` require lossless UTF-8 decoding. Existing files used by `write_file`, `append_file`, `edit_file` and `notebook_edit_tool` must also pass that check before mutation. Invalid UTF-8, common GBK/CP936/UTF-16 byte sequences and NUL-containing text are refused with an explicit error. Tool input rejects unpaired surrogates and NUL. This is a UTF-8 contract: bytes that happen to be valid in both UTF-8 and a legacy encoding cannot reveal their intended encoding. Prepare an explicitly converted copy for legacy projects; the Agent does not guess or automatically convert them.
 
 `npm run test:model-routing` runs the real backend against two local fixture endpoints that each reject foreign model names and keys. It exercises per-request selection, settings/profile hot changes during a held request, default and explicit helpers, compression, approval, planning, synthetic output, direct/workflow sub-agents and action summaries. It uses no real model service.
+
+`npm run test:pipe-lifecycle` injects asynchronous Writable errors and late child events into the original transports, checks timeout/dispose settlement and byte limits, then exercises owned real MCP children and available Git Bash. Missing bash is explicitly skipped. This does not substitute for Win7 native pipe faults, process-tree ownership or long-running stress tests.
 
 Existing UTF-8 BOMs are retained. Uniform CRLF, LF or CR line endings are used for incoming write/append/replacement text and edit matching; untouched bytes stay intact. Mixed/no line-ending styles keep incoming text literal. Every existing target modified by those four text writers requires a complete, flushed, published backup; backup or recovery-metadata failure stops the write. Backup ordering advances across rapid writes and clock rollback so `/undo` selects the latest complete version. Text writes themselves retain their ordinary write/append behavior: an interrupted or partially failed write can require `/undo` recovery. Atomic state-file updates, multi-instance coordination and total backup-byte limits remain separate work.
 
