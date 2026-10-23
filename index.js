@@ -124,8 +124,8 @@ const RALPH_ITERATIONS = Math.max(1, parseInt(process.env.RALPH_ITERATIONS, 10) 
 let HEAVY_MODEL = process.env.HEAVY_MODEL || 'gpt-4o-mini';
 // OP5-4: no hardcoded light-model default any more (the old one named a
 // discontinued model) - when LIGHT_MODEL is unset, light traffic rides on
-// HEAVY_MODEL instead.
-const LIGHT_MODEL = process.env.LIGHT_MODEL || HEAVY_MODEL;
+// the selected execution model (HEAVY_MODEL when no per-request selection).
+const LIGHT_MODEL = (process.env.LIGHT_MODEL || '').trim() || null;
 const VISION_MODEL = process.env.VISION_MODEL || null;
 // parseFloat('0')||fallback would silently rewrite a legitimate TEMPERATURE=0;
 // only fall back when the value is missing or not a finite number.
@@ -134,7 +134,7 @@ const MAX_TOKENS = parseInt(process.env.MAX_TOKENS, 10) || 42000;
 // AST-R1: the task-summary call is a background convenience, not the main
 // event - it gets its own cheap model and a small token budget (fallbacks:
 // the light model / 512 tokens).
-const SUMMARY_MODEL = process.env.SUMMARY_MODEL || LIGHT_MODEL;
+const SUMMARY_MODEL = (process.env.SUMMARY_MODEL || '').trim() || null;
 const SUMMARY_MAX_TOKENS = parseInt(process.env.SUMMARY_MAX_TOKENS, 10) || 512;
 const VALID_PERMISSION_MODES = ['default', 'auto', 'bypass', 'denial'];
 const rawPermissionMode = (permissionModeFlag || process.env.PERMISSION_MODE || (dangerMode ? 'bypass' : 'default')).toLowerCase().trim();
@@ -198,10 +198,21 @@ function resolveModelConfig(model) {
     apiKey: (prof && typeof prof.apiKey === 'string') ? prof.apiKey : OPENAI_API_KEY
   };
 }
+// Capture the selected model and routes once per execution. Settings/profile
+// changes affect new executions; every auxiliary call in this one stays put.
+function createModelContext(main = HEAVY_MODEL) {
+  const light = LIGHT_MODEL || main;
+  const summary = SUMMARY_MODEL || light;
+  const routes = Object.create(null);
+  for (const name of [main, light, summary, VISION_MODEL].filter(Boolean)) {
+    routes[String(name).toLowerCase()] = Object.freeze(resolveModelConfig(name));
+  }
+  return Object.freeze({ main, light, summary, routes: Object.freeze(routes) });
+}
 function modelList() {
   const seen = {};
   const names = [];
-  for (const n of [HEAVY_MODEL, LIGHT_MODEL].concat(Object.keys(modelProfiles))) {
+  for (const n of [HEAVY_MODEL, LIGHT_MODEL || HEAVY_MODEL, SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL].concat(Object.keys(modelProfiles))) {
     if (!seen[n.toLowerCase()]) { seen[n.toLowerCase()] = true; names.push(n); }
   }
   return names;
@@ -502,7 +513,7 @@ function effectivePermissionMode() {
 
 // Runs a sub-agent: a FRESH conversation with full tool access. Never touches
 // the caller's message array (keeps assistant(tool_calls) -> tool pairing valid).
-async function runSubAgent(agentName, task, cancelled) {
+async function runSubAgent(agentName, task, cancelled, modelContext) {
   if (agentDepth > 0) {
     return 'Nested sub-agents are not allowed (a sub-agent cannot spawn further sub-agents).';
   }
@@ -522,7 +533,7 @@ You are currently running as a SUB-AGENT named "${agentName}".
   try {
     // A2-06: inherit the parent request's cancellation token so a client
     // disconnect also stops a running sub-agent's model calls and tools.
-    const answer = await processWithTools(agentMessages, { cancel: cancelled });
+    const answer = await processWithTools(agentMessages, { cancel: cancelled, modelContext });
     console.log(`[AGENT] Sub-agent "${agentName}" finished`);
     return `Sub-agent "${agentName}" result:\n${answer || '(no output)'}`;
   } catch (e) {
@@ -1787,7 +1798,7 @@ function migrateWorkspaceRootFiles() {
   } catch (e) {}
 }
 
-async function triggerDreamIfNeeded() {
+async function triggerDreamIfNeeded(modelContext) {
   const lastTime = getLastInteractionTime();
   const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60);
   const lockPath = internalStatePath('.7coder', 'dream.lock');
@@ -1841,7 +1852,7 @@ Rules (strict, no exceptions):
   ];
   console.log('Dreaming deeply (self-consolidation in progress)...');
   try {
-    await processWithTools(dreamMessages);
+    await processWithTools(dreamMessages, { modelContext });
     console.log('[OK] Dream consolidation complete.');
   } catch (e) {
     // A2-08: a failed consolidation must NEVER overwrite 7CODER.md - the old
@@ -1851,12 +1862,12 @@ Rules (strict, no exceptions):
 }
 
 // ====================== VISION HELPER ======================
-async function describeWithVision(imageUrl) {
+async function describeWithVision(imageUrl, modelContext) {
   if (!VISION_MODEL) {
     return `[IMAGE] Image at ${imageUrl} - (VISION_MODEL not set in .env - add e.g. gpt-4o to enable real vision)`;
   }
   try {
-    const mcfg = resolveModelConfig(VISION_MODEL);
+    const mcfg = (modelContext && modelContext.routes[String(VISION_MODEL).toLowerCase()]) || resolveModelConfig(VISION_MODEL);
     const base = mcfg.endpoint.replace(/\/+$/, '');
     const payload = {
       model: VISION_MODEL,
@@ -2066,7 +2077,7 @@ function parseSSEStream(stream, onDelta, onReasoning) {
 
 async function callOpenAI(currentMessages, options = {}) {
   const {
-    model = HEAVY_MODEL,
+    model = options.modelContext ? options.modelContext.main : HEAVY_MODEL,
     useTools = true,
     toolChoice = "auto",
     temperature = TEMPERATURE,
@@ -2075,7 +2086,7 @@ async function callOpenAI(currentMessages, options = {}) {
     onReasoning = null,
   } = options;
 
-  const mcfg = resolveModelConfig(model);
+  const mcfg = (options.modelContext && options.modelContext.routes[String(model).toLowerCase()]) || resolveModelConfig(model);
   const base = mcfg.endpoint.replace(/\/+$/, '');
   const url = `${base}/chat/completions`;
 
@@ -2137,13 +2148,13 @@ async function callOpenAI(currentMessages, options = {}) {
 }
 
 // ====================== RISK CLASSIFICATION & PERMISSION ======================
-async function classifyRisk(toolName, args) {
+async function classifyRisk(toolName, args, modelContext) {
   const prompt = `Classify risk of tool call as ONLY ONE WORD: LOW, MEDIUM or HIGH.
 Tool: ${toolName}
 Args: ${JSON.stringify(args)}
 Consider file edits, shell commands, web access, computer control, protected paths.`;
   try {
-    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
+    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false });
     const cleaned = (choice.message.content || 'MEDIUM').replace(/[*'`"“”’‘]/g, '').trim().toUpperCase();
     const first = cleaned.split(/\s+/)[0].replace(/[^A-Z]/g, '');
     return ['LOW', 'MEDIUM', 'HIGH'].includes(first) ? first : 'MEDIUM';
@@ -2152,20 +2163,20 @@ Consider file edits, shell commands, web access, computer control, protected pat
   }
 }
 
-async function getPermissionExplanation(toolName, args, risk) {
+async function getPermissionExplanation(toolName, args, risk, modelContext) {
   const prompt = `Explain this tool action to the user in 1-2 friendly sentences. Include what it does and why it might need approval.
 Tool: ${toolName}
 Args: ${JSON.stringify(args)}
 Risk level: ${risk}`;
   try {
-    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
+    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false });
     return (choice.message.content || `Tool ${toolName} will run (risk: ${risk}).`).trim();
   } catch (e) {
     return `Tool ${toolName} will run. Risk: ${risk}.`;
   }
 }
 
-async function isAutoApprovalSafe(toolName, args, risk) {
+async function isAutoApprovalSafe(toolName, args, risk, modelContext) {
   // AST-R2: ask for a STRUCTURED verdict - a bare YES/NO gave the model no
   // way to say why, so declines were indistinguishable and unfixable. Legacy
   // YES/NO replies still parse (models that ignore the JSON instruction).
@@ -2174,7 +2185,7 @@ Tool: ${toolName}
 Args: ${JSON.stringify(args)}
 Reply ONLY with compact JSON: {"safe": true, "reason": "one short sentence"} or {"safe": false, "reason": "why not"}.`;
   try {
-    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: LIGHT_MODEL, useTools: false });
+    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false });
     const raw = choice.message.content || '';
     let safe = false;
     let reason = '';
@@ -2235,7 +2246,7 @@ function nextTodoId(items) {
 // ====================== TOOL EXECUTION ======================
 // `conversation` is the current message array (used by snip_tool); tools that
 // spawn their own sub-conversations must NOT push into it mid-tool-call.
-async function executeToolRaw(name, args, conversation, approvalBridge, cancelled) {
+async function executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext) {
   if (name === 'read_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path || ''));
@@ -2310,7 +2321,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     const agentName = String(args.name || 'agent').substring(0, 60);
     const task = String(args.task || '').trim();
     if (!task) return makeToolResult('error', 'Agent error: task is required');
-    return makeToolResult('ok', await runSubAgent(agentName, task, cancelled));
+    return makeToolResult('ok', await runSubAgent(agentName, task, cancelled, modelContext));
   }
 
   if (name === 'run_command') {
@@ -2523,7 +2534,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     try {
       const isImage = url.match(/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i);
       if (isImage) {
-        const desc = await describeWithVision(url);
+        const desc = await describeWithVision(url, modelContext);
         return `[IMAGE] Image viewed at ${url}\nVision description:\n${desc}`;
       }
 
@@ -2833,7 +2844,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       // check in safeExecuteToolInner).
       const npxCmd = `npx ${effectiveNpx} ${toolName} ${argsToken}`.trim();
       if (isSuperDangerous(npxCmd)) return 'BLOCKED: Super-dangerous command prevented (even in danger mode).';
-      return await executeToolRaw('run_command', { command: npxCmd }, conversation);
+      return await executeToolRaw('run_command', { command: npxCmd }, conversation, approvalBridge, cancelled, modelContext);
     } else {
       return `MCP error: no endpoint configured. Add servers to .7coder/mcp.json (stdio, recommended - see README), or set MCP_SERVER_URLS / MCP_NPX_PKGS in .env, or pass server/mcp_url/npx_pkg parameters. Args: ${JSON.stringify(toolArgs)}`;
     }
@@ -2974,7 +2985,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         if (VISION_MODEL) {
           const dataUrl = screenshotToDataUrl(shotPath);
           if (dataUrl) {
-            const desc = await describeWithVision(dataUrl);
+            const desc = await describeWithVision(dataUrl, modelContext);
             return `Screenshot saved to ${shotPath}.\nVision: ${desc}`;
           }
         }
@@ -3105,7 +3116,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         continue;
       }
       const stepArgs = (st.args && typeof st.args === 'object' && !Array.isArray(st.args)) ? st.args : {};
-      const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation, approvalBridge, cancelled);
+      const res = await safeExecuteTool({ function: { name: toolName, arguments: JSON.stringify(stepArgs) } }, conversation, approvalBridge, cancelled, modelContext);
       const firstLine = toolResultText(res).split('\n')[0];
       const stepStatus = cancelled && cancelled() ? 'cancelled' : toolResultStatus(res);
       stepResults.push({ step: i + 1, tool: toolName, status: stepStatus, optional: !!st.optional });
@@ -3375,7 +3386,7 @@ Rules:
       try {
         const choice = await callOpenAI(
           [{ role: 'user', content: attempt === 1 ? genPrompt : `${genPrompt}\n\nPrevious attempt was invalid: ${lastError}. Try again.` }],
-          { useTools: false, temperature: 0.2 }
+          { modelContext, useTools: false, temperature: 0.2 }
         );
         const raw = (choice.message.content || '').replace(/```(?:json)?/gi, '').trim();
         const start = raw.indexOf('{');
@@ -3416,7 +3427,7 @@ Reply with ONLY valid JSON:
   "refinement_loops": 3
 }`;
     try {
-      const lightChoice = await callOpenAI([{ role: 'user', content: lightPrompt }], { model: LIGHT_MODEL, useTools: false, maxTokens: 1000 });
+      const lightChoice = await callOpenAI([{ role: 'user', content: lightPrompt }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false, maxTokens: 1000 });
       let planData = { improved_prompt: initialTask, refinement_loops: 2 };
       const content = (lightChoice.message.content || '{}').replace(/```(?:json)?/gi, '').trim();
       try {
@@ -3444,13 +3455,13 @@ Reply with ONLY valid JSON:
       round++;
       // PM1 speaks
       messagesPM1.push({ role: 'user', content: `Round ${round}: Debate the best way to ${task}. Reply in 1-2 sentences.` });
-      const pm1Resp = await callOpenAI(messagesPM1, { model: LIGHT_MODEL, useTools: false, maxTokens: 300 });
+      const pm1Resp = await callOpenAI(messagesPM1, { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false, maxTokens: 300 });
       const pm1Text = pm1Resp.message.content.trim();
       messagesPM1.push({ role: 'assistant', content: pm1Text });
 
       // PM2 responds
       messagesPM2.push({ role: 'user', content: `Round ${round}: PM1 said "${pm1Text}". Counter or agree in 1-2 sentences.` });
-      const pm2Resp = await callOpenAI(messagesPM2, { model: LIGHT_MODEL, useTools: false, maxTokens: 300 });
+      const pm2Resp = await callOpenAI(messagesPM2, { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false, maxTokens: 300 });
       const pm2Text = pm2Resp.message.content.trim();
       messagesPM2.push({ role: 'assistant', content: pm2Text });
 
@@ -3458,7 +3469,7 @@ Reply with ONLY valid JSON:
 
       // Check for agreement
       const agreementPrompt = `Do these two statements show clear agreement on a plan? Reply ONLY YES or NO.\nPM1: ${pm1Text}\nPM2: ${pm2Text}`;
-      const agreeCheck = await callOpenAI([{ role: 'user', content: agreementPrompt }], { model: LIGHT_MODEL, useTools: false });
+      const agreeCheck = await callOpenAI([{ role: 'user', content: agreementPrompt }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false });
       const agreeAnswer = (agreeCheck.message.content || '').replace(/[*'`"“”’‘.]/g, '').trim().toUpperCase();
       if (agreeAnswer.startsWith('YES')) {
         agreement = `Agreed plan after ${round} rounds: ${pm2Text}`;
@@ -3506,7 +3517,7 @@ Reply with ONLY valid JSON:
         { role: 'system', content: systemPrompt },
         { role: 'user', content: `Fix all fatal errors in this app. Only warnings allowed at the end.\nPath: ${args.path}\nRecent logs:\n${finalLog.substring(0, 8000)}\nRead the file, fix it, and output the COMPLETE fixed code via write_file.` }
       ];
-      await processWithTools(fixMessages);
+      await processWithTools(fixMessages, { cancel: cancelled, modelContext });
     }
 
     return `[OK] Auto-debug complete - ${fixRound} fix round(s) applied. Remaining issues: only warnings or benign.\nFull log:\n${finalLog}`;
@@ -3599,12 +3610,12 @@ let lastDeclineReason = '';
 // ====================== SAFE TOOL EXECUTION ======================
 // Auditing wrapper: records every tool call (args preview, status, duration)
 // to .7coder/audit.jsonl, then delegates to the real implementation.
-async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled) {
+async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled, modelContext) {
   const t0 = Date.now();
   const func = toolCall.function;
   let argsPreview = {};
   try { const a = JSON.parse(func.arguments || '{}'); for (const k of Object.keys(a)) argsPreview[k] = String(JSON.stringify(a[k])).substring(0, 200); } catch (e) { argsPreview = { raw: String(func.arguments || '').substring(0, 200) }; }
-  const raw = await safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled);
+  const raw = await safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled, modelContext);
   // Pilot tools are structured even when permission/argument checks return
   // early. Other tools retain their string interface and legacy inference.
   const res = STRUCTURED_RESULT_TOOLS.has(func.name) ? normalizeToolResult(raw) : raw;
@@ -3621,7 +3632,7 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   return res;
 }
 
-async function safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled) {
+async function safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled, modelContext) {
   const func = toolCall.function;
   let args;
   try { args = JSON.parse(func.arguments || '{}'); } catch (e) { return `Parse error: ${e.message}`; }
@@ -3667,7 +3678,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
     }
     if (!protectedRead && !protectedWrite && (getToolMetadata(name).autoSafe || isAutoLogWrite)) {
       console.log(`[TOOL] Auto-executing safe tool: ${name}`);
-      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
+      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
     }
 
     // OP2-2/A2-17: EVERY tool that ultimately reaches a shell command goes
@@ -3690,7 +3701,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       const allowHit = matchPermRule('allow', name, args);
       if (allowHit) {
         console.log(`[PERM] auto-executing per user allow rule: ${allowHit.raw}`);
-        return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
+        return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
       }
     }
 
@@ -3698,12 +3709,12 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       console.log(`[TOOL] [DANGER MODE] Executing tool: ${name}`);
       // A2-06: bypass used to drop the cancellation token - a client that
       // hit Stop mid-command still ran it to completion in bypass/danger.
-      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
+      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
     }
 
     // Fixed policy and model fallbacks share the same tool declaration.
     const meta = getToolMetadata(name);
-    const risk = (protectedWrite || protectedRead) ? 'HIGH' : (meta.risk || await classifyRisk(name, args));
+    const risk = (protectedWrite || protectedRead) ? 'HIGH' : (meta.risk || await classifyRisk(name, args, modelContext));
 
     if (mode === 'auto') {
       // AST-03: the workflow OUTER call passes the same auto-approval screen as
@@ -3717,7 +3728,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       } else {
         // AST-R2: structured verdict - the decline carries the light model's
         // reason so the caller (and the audit log) can explain the veto.
-        const verdict = await isAutoApprovalSafe(name, args, risk);
+        const verdict = await isAutoApprovalSafe(name, args, risk, modelContext);
         if (!verdict.safe) {
           lastDeclineReason = verdict.reason || 'no reason given';
           audit({ ts: new Date().toISOString(), type: 'approval_decline', tool: name, mode: 'auto', reason: lastDeclineReason, argsPreview: String(JSON.stringify(args)).substring(0, 300) });
@@ -3751,7 +3762,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       } else if (meta.explain) {
         console.log(`\n[PERM] ${meta.explain(args)} (risk: ${risk})`);
       } else {
-        const expl = await getPermissionExplanation(name, args, risk);
+        const expl = await getPermissionExplanation(name, args, risk, modelContext);
         console.log(`\n[PERM] ${expl}`);
       }
       if (workflowStepDepth > 0 && !protectedWrite) {
@@ -3763,7 +3774,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
     }
 
     console.log(`[TOOL] Executing approved tool: ${name}`);
-    return await executeToolRaw(name, args, conversation, approvalBridge, cancelled);
+    return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
   } catch (e) {
     // Never let a tool exception kill the whole conversation - feed the error
     // back to the model so it can react.
@@ -3920,7 +3931,7 @@ function messageSize(m) {
   return n;
 }
 
-async function summarizeConversation(oldMessages) {
+async function summarizeConversation(oldMessages, modelContext) {
   const transcript = oldMessages
     .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')}` +
       (m.tool_calls ? ` [called: ${JSON.stringify(m.tool_calls)}]` : ''))
@@ -3940,7 +3951,7 @@ async function summarizeConversation(oldMessages) {
     const choice = await callOpenAI([{
       role: 'user',
       content: `Summarize this coding conversation compactly. Keep: user goals, hard constraints, files touched, completed side effects (do not repeat them), key decisions, errors hit and their fixes, open threads. Max 15 bullet lines. Part ${i + 1}/${parts.length}.\n\n${parts[i]}`
-    }], { model: LIGHT_MODEL, useTools: false, maxTokens: 600 });
+    }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, useTools: false, maxTokens: 600 });
     const content = choice && choice.message && choice.message.content;
     if (typeof content !== 'string' || !content.trim()) throw new Error('empty context summary');
     summaries.push(content.trim());
@@ -3956,7 +3967,7 @@ async function summarizeConversation(oldMessages) {
 // the kept-start because its assistant(tool_calls) would land in the summarized
 // part). This also enables compression inside sub-agent conversations, which
 // contain no user turns after the initial task.
-async function compressConversationIfNeeded(currentMessages) {
+async function compressConversationIfNeeded(currentMessages, modelContext) {
   let total = 0;
   for (const m of currentMessages) total += messageSize(m);
   if (total <= CONTEXT_CHARS) return;
@@ -4003,7 +4014,7 @@ async function compressConversationIfNeeded(currentMessages) {
     return;
   }
   let digest;
-  try { digest = await summarizeConversation(oldPart); }
+  try { digest = await summarizeConversation(oldPart, modelContext); }
   catch (error) { throw new Error('Context compression failed; original history preserved: ' + error.message); }
   const summaryMsg = {
     role: 'user',
@@ -4021,7 +4032,8 @@ async function processWithTools(currentMessages, opts = {}) {
   const onReasoning = opts.onReasoning || null;
   const onToolCall = opts.onToolCall || null;
   const onToolResult = opts.onToolResult || null;
-  const reqModel = opts.model || HEAVY_MODEL;
+  const modelContext = opts.modelContext || createModelContext(opts.model || HEAVY_MODEL);
+  const reqModel = modelContext.main;
   // Cancellation token (A5): an HTTP client that disconnects mid-stream can
   // stop the run at the next step/tool boundary instead of running to
   // completion for a ghost client.
@@ -4031,8 +4043,8 @@ async function processWithTools(currentMessages, opts = {}) {
   const approvalBridge = opts.approvalBridge || null;
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
     if (cancelled()) return '[aborted: client disconnected]';
-    await compressConversationIfNeeded(currentMessages);
-    const choice = await callOpenAI(currentMessages, { onDelta, onReasoning, model: reqModel });
+    await compressConversationIfNeeded(currentMessages, modelContext);
+    const choice = await callOpenAI(currentMessages, { onDelta, onReasoning, model: reqModel, modelContext });
     const assistantMsg = choice.message;
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
@@ -4051,7 +4063,7 @@ async function processWithTools(currentMessages, opts = {}) {
       const calls = assistantMsg.tool_calls;
       if (calls.length > 1 && calls.every(tc => READ_ONLY_TOOLS.has(tc.function.name))) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled).catch(e => 'Tool error: ' + e.message)));
+        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext).catch(e => 'Tool error: ' + e.message)));
         for (let i = 0; i < calls.length; i++) {
           if (onToolResult) {
             let preview = {};
@@ -4064,7 +4076,7 @@ async function processWithTools(currentMessages, opts = {}) {
       }
       for (const tc of calls) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const result = await safeExecuteTool(tc, currentMessages, approvalBridge, cancelled);
+        const result = await safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext);
         if (onToolResult) {
           let preview = {};
           try { preview = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
@@ -4078,7 +4090,7 @@ async function processWithTools(currentMessages, opts = {}) {
   }
   // Step limit reached - force a final answer without any more tool calls.
   currentMessages.push({ role: 'user', content: `Tool step limit (${MAX_TOOL_STEPS}) reached. Wrap up now and give your final answer without calling more tools.` });
-  const finalChoice = await callOpenAI(currentMessages, { useTools: false, onDelta, onReasoning, model: reqModel });
+  const finalChoice = await callOpenAI(currentMessages, { useTools: false, onDelta, onReasoning, model: reqModel, modelContext });
   currentMessages.push(finalChoice.message);
   return finalChoice.message.content || '';
 }
@@ -4502,7 +4514,7 @@ function loadSession() {
   } catch (e) { console.warn('[WARN] session load failed: ' + e.message); return false; }
 }
 
-async function summarizeAction(rawPrompt, assistantResponse) {
+async function summarizeAction(rawPrompt, assistantResponse, modelContext) {
   // AST-R1: replies shorter than 200 chars carry nothing worth a light-model
   // round-trip - skip the call entirely (callers treat null as "no summary").
   // A whitespace-only/empty reply is not a "short reply", it is a degenerate
@@ -4514,7 +4526,7 @@ async function summarizeAction(rawPrompt, assistantResponse) {
 User task: "${rawPrompt}"
 Action/Response: "${assistantResponse}"`;
   try {
-    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: SUMMARY_MODEL, maxTokens: SUMMARY_MAX_TOKENS, useTools: false });
+    const choice = await callOpenAI([{ role: 'user', content: prompt }], { model: modelContext ? modelContext.summary : SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, modelContext, maxTokens: SUMMARY_MAX_TOKENS, useTools: false });
     return (choice.message.content || `Completed task: ${rawPrompt}`).trim();
   } catch (e) {
     return `Completed task: ${rawPrompt}`;
@@ -4580,14 +4592,14 @@ function updateCompleteSummary(newSummary) {
 }
 
 // ====================== CORE EXECUTION ======================
-async function executeTask() {
+async function executeTask(modelContext = createModelContext()) {
   resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
   createTaskGitCheckpoint();
   console.log(`7coder is ${getRandomSpinner()}`);
   try {
     let streamed = false;
     const onDelta = (t) => { streamed = true; process.stdout.write(t); };
-    let displayReply = await processWithTools(messages, { onDelta });
+    let displayReply = await processWithTools(messages, { onDelta, modelContext });
 
     if (ENABLE_RALPH_MODE) {
       console.log(`[LOOP] Ralph Wiggum Loop - Iteration 1: ${displayReply.substring(0, 120)}${displayReply.length > 120 ? '...' : ''}`);
@@ -4595,7 +4607,7 @@ async function executeTask() {
       for (let attempt = 2; attempt <= RALPH_ITERATIONS; attempt++) {
         const refineMsg = `You are in Claude-Like Ralph Wiggum loop mode. This is iteration ${attempt}. Review and iterate. You may use any tools. If complete, start reply with exactly "RALPH_WIGGUM_COMPLETE" followed by final version.`;
         messages.push({ role: 'user', content: refineMsg });
-        displayReply = await processWithTools(messages, { onDelta });
+        displayReply = await processWithTools(messages, { onDelta, modelContext });
 
         if (displayReply.trim().startsWith('RALPH_WIGGUM_COMPLETE')) {
           displayReply = displayReply.replace(/^RALPH_WIGGUM_COMPLETE\s*/i, '').trim();
@@ -4607,7 +4619,7 @@ async function executeTask() {
     }
 
     // Generate action summary using the small model
-    const newSummary = await summarizeAction(currentRawPrompt, displayReply);
+    const newSummary = await summarizeAction(currentRawPrompt, displayReply, modelContext);
     updateCompleteSummary(newSummary);
 
     updateLastInteractionTime();
@@ -4763,7 +4775,7 @@ function startHttpServer() {
   }
   function hInfo(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(), usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
+    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(), usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
   }
   function hTodos(req, res) {
     // GAP-6: the structured task list for the webui sidebar; re-read per
@@ -5037,6 +5049,7 @@ function startHttpServer() {
         try {
         const data = JSON.parse(body);
         const reqModel = (typeof data.model === 'string' && data.model.trim()) ? data.model.trim().substring(0, 200) : HEAVY_MODEL;
+        const modelContext = createModelContext(reqModel);
         wantsStream = data.stream === true;
         const tempMessages = conversationFromClient(data.messages);
         const rawPrompt = tempMessages.length > 1 && tempMessages[tempMessages.length - 1].role === 'user'
@@ -5114,7 +5127,7 @@ function startHttpServer() {
               if (clientGone) return;
               createTaskGitCheckpoint();
               const result = await processWithTools(tempMessages, {
-                onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, model: reqModel,
+                onDelta: t => writeChunk({ content: t }, null), cancel: () => clientGone, modelContext,
                 onReasoning: t => writeChunk({ reasoning: t }, null),
                 onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: sanitizeAuditArgs(args) } }, null),
                 onToolResult: (name, args, output) => {
@@ -5132,7 +5145,7 @@ function startHttpServer() {
               writeChunk({}, 'stop');
               res.write('data: [DONE]\n\n');
               res.end();
-              const newSummary = await summarizeAction(rawPrompt, result);
+              const newSummary = await summarizeAction(rawPrompt, result, modelContext);
               updateCompleteSummary(newSummary);
             } finally {
               clearInterval(ka);
@@ -5146,7 +5159,7 @@ function startHttpServer() {
           let result;
           try {
             createTaskGitCheckpoint();
-            result = await processWithTools(tempMessages, { model: reqModel });
+            result = await processWithTools(tempMessages, { modelContext });
           } finally {
             releaseGate();
           }
@@ -5157,7 +5170,7 @@ function startHttpServer() {
           // paths still await: a one-shot process would exit before a
           // fire-and-forget summary ever ran.
           summaryChain = summaryChain
-            .then(() => summarizeAction(rawPrompt, result))
+            .then(() => summarizeAction(rawPrompt, result, modelContext))
             .then(ns => { if (ns) updateCompleteSummary(ns); })
             .catch(() => {});
 
@@ -5299,12 +5312,13 @@ async function main() {
 
   if (ENABLE_HTTP_SERVER) {
     console.log('\n7coder HTTP server mode');
-    await triggerDreamIfNeeded();
+    const modelContext = createModelContext();
+    await triggerDreamIfNeeded(modelContext);
     if (promptArg) {
       console.log(`Running startup task first: ${promptArg}`);
       currentRawPrompt = promptArg;
       messages = prepareMessagesForPrompt(currentRawPrompt);
-      await executeTask();
+      await executeTask(modelContext);
     }
     rl.close();
     startHttpServer();
@@ -5313,11 +5327,12 @@ async function main() {
 
   if (promptArg) {
     console.log(`\n7coder non-interactive mode`);
-    await triggerDreamIfNeeded();
+    const modelContext = createModelContext();
+    await triggerDreamIfNeeded(modelContext);
     console.log(`Task: ${promptArg}`);
     currentRawPrompt = promptArg;
     messages = prepareMessagesForPrompt(currentRawPrompt);
-    await executeTask();
+    await executeTask(modelContext);
     flushExit(0);
   } else {
     console.log('\nWelcome to 7coder (interactive REPL)');
@@ -5331,7 +5346,7 @@ async function main() {
     // Each execution takes ownership of one draft before its first await.
     // Later input (including BTW) belongs to the next draft, even while the
     // previous draft is still waiting for its own note summaries.
-    const newDraft = () => ({ text: '', pending: Promise.resolve() });
+    const newDraft = () => ({ text: '', pending: Promise.resolve(), modelContext: createModelContext() });
     let currentDraft = newDraft();
     let taskRunning = false;
     // After stdin EOF the readline interface is closed; calling prompt() on it
@@ -5445,7 +5460,7 @@ Output ONLY the summarized user message text (no extra explanation, no quotes, n
 Make it read like a direct continuation of the user's task instructions for the main agent.`;
             let summarized = note;
             try {
-              const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: LIGHT_MODEL, useTools: false });
+              const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: draft.modelContext.light, modelContext: draft.modelContext, useTools: false });
               summarized = (resp.message.content || note).trim() || note;
             } catch (e) {
               console.log(`[BTW] BTW sub-agent error - injecting original note as fallback.`);
@@ -5518,7 +5533,7 @@ Make it read like a direct continuation of the user's task instructions for the 
           const taskText = draft.text.trim();
           if (taskText) {
             try {
-              await triggerDreamIfNeeded();
+              await triggerDreamIfNeeded(draft.modelContext);
             } catch (e) {
               console.error(`[WARN] dream check failed (task continues): ${e.message}`);
             }
@@ -5532,7 +5547,7 @@ Make it read like a direct continuation of the user's task instructions for the 
             } else {
               messages.push({ role: 'user', content: currentRawPrompt });
             }
-            await executeTask();
+            await executeTask(draft.modelContext);
             saveSession();
           } else {
             console.log('No task entered.');

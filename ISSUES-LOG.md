@@ -550,7 +550,7 @@
 | OP5-1 | test/_shared.js vs scripts/test-all.js | **runner 不隔离本地 .env**：loadBaseline()（.env.example 覆盖 + 强制 ENABLE_AUTO_DEBUG=false）只存在于 test-all.js；单独跑 runner 时本地 .env 的 PERMISSION_MODE=auto / ENABLE_AUTO_DEBUG=true / HEAVY_MODEL=qwen3.7-plus 泄入 → npm test 4 项失败（adv auto_debug 文案、editnet 连锁崩溃、/v1/models 键控断言），恢复默认值后 85/85。**审阅者自己完成了因果证明** | ✅ OP5 快批（glm-5.3-flash 修复 + tierflow_pro 门禁 + 主会话终检）：applyBaselineEnv() 下沉 _shared.js create() 首行（与 test-all loadBaseline 同规则，幂等），58 处 process.env 泄入自动消失。主验收：npm test 红 78/82 → 绿 88/88（超 85 的差额自证：editnet 崩溃恢复 3 条 + 新增 3 条）；隔离探针注入四值后 create() 内全部归位 |
 | OP5-2 | index.js（现 5391 行） | 单文件过大（=OPT-3 暂缓项的复述，附具体建议：优先拆 startHttpServer ~4475 与 executeToolRaw ~2178，边界最清楚） | ⬜ 并入 OPT-3（用户既有暂缓决策不变，此建议留作重开时的切入点） |
 | OP5-3 | startHttpServer 路由链 | 连续 if(method&&url) 路由 + 鉴权行每路由复制一份（易漏，OP2-4 曾漏三个）；缩进层级不一致（/api/todos 前与 /v1/models 后不同）属实 | ✅ 主会话实施（2026-10-17）：ROUTES 表驱动 dispatch（17 路由：method+url+auth+handler），鉴权收敛为单一 hasAuth() 门——新路由声明 auth:true 即受保护，不可能再漏贴 401 块（OP2-4 曾漏三个）；handler 逐字搬运原 if 链分支（含 chat 流式/审批桥/请求门全部语义）；writeWorkspaceEnv 提升出回调；缩进层级统一；hOpen 的死变量 loopbackBind 顺带移除。回归：A 88/88 + B 314/314 + test-all 12 目标全绿 |
-| OP5-4 | index.js:123 | LIGHT_MODEL 默认 'gpt-3.5-turbo' 过时（SUMMARY_MODEL 继承它）；建议未配置时回落 HEAVY_MODEL | ✅ 快批：LIGHT_MODEL 默认回落 HEAVY_MODEL；.env.example 的 gpt-3.5-turbo 残留一并清（会随基线泄入测试且抵消本项）；dist/.cache/历史文档按冻结件保留。light-model-default 场景 2 断言（字面量缺席 + light===model 回落） |
+| OP5-4 | index.js:123 | LIGHT_MODEL 默认 'gpt-3.5-turbo' 过时（SUMMARY_MODEL 继承它）；建议未配置时回落 HEAVY_MODEL | ✅ 历史快批修启动回落；2026-10-23 T22-11 扩展为按本次执行模型继承并固定路由，保留显式辅助配置。旧 light-model-default 2断言仍是历史证据；本次双端点33/33，详见第六批。dist/.cache/历史文档按冻结件保留。 |
 | OP5-5 | updateCompleteSummary | auto-log 只增不去重不限条数（机制核对属实——push 后原样重建）；本地根 7CODER.md 现仅 11 条 bullet 尚未膨胀，但"10 条近似条目"的场景在内网环境已出现 | ✅ 快批：严格相等去重（连续相同摘要 bullet 数恰 1 + stdout 含 dedup 消息）+ 60 条上限（slice(-60)，源码断言；61 条端到端未构造，如实标注）。连带修复：runner-f perf / runner-h rss-soak 的完成计数正则同步接受 dedup 行（去重后旧正则漏计，门禁实抓红后修） |
 | OP5-6 | 仓库整洁 | 根目录空目录 '-p'（Windows 误用 mkdir -p 遗迹，核实存在）；.workbuddy/ 未跟踪也未 ignore（用户个人目录，此前刻意不动，ignore 是合理处置） | ✅ 快批：空目录 -p 已删（删前 ls -A 确认为空）；.gitignore 增 .workbuddy/（git check-ignore 验证）。repo-hygiene 场景 1 断言 |
 
@@ -591,8 +591,8 @@
 | ⬜ | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：覆盖普通命令、后台 task、cron、MCP、持久 shell、调试；超时/取消/正常退出树杀并确认结果；明确 one-shot 后台任务语义。删除运行中 cron 不能丢句柄；强杀后重启可诊断残留。保留 cron running 防重叠。 | R1 H04、M08；A10、NEW-2；与 T22-06 联动 |
 | ✅ | T22-08 | High／确认＋风险 | **串行化交互审批并修 REPL 等待**：2026-10-23 第三批落地单一 CLI 问题队列，EOF/close 结算全部问题、取消结算对应问题；审批和询问用户共用输入分派。任务在首个 await 前占位并取走草稿，BTW 按草稿排队，后续输入进入下一草稿，clear 后旧回调不污染新草稿。Node13 新回归20/20＋既有btw-eof 1/1，均单次；真实Win7终端待验收，HTTP活动取消仍属T22-06。 | R2 N01；R1 M10；D6；提交5149903 |
 | ✅ | T22-09 | High／确认 | **下载替换不先删原文件**：2026-10-23 第四批移除目标 unlink；独占打开唯一临时文件，等 close＋fsync，严格完整旧版备份发布后单次 rename 覆盖，失败不删目标；复用有保留上限的 /undo 恢复。Node13故障专项获准复跑41/41，既有下载6/6；提交边界骤停及新进程恢复通过，实Win7/占用/断电仍待验收。 | R1 H07；AST-05；提交7ce82f9 |
-| ✅ | T22-10 | High／确认错误路径 | **文件编辑编码止损**：2026-10-23 第五批对读/提示词文件/写/追加/编辑/notebook实施UTF-8可逆检查，拒绝不支持的字节与NUL，不猜测GBK；保留BOM及单一换行风格。现存文件写入统一完整严格备份，失败阻断；恢复时间戳顺序保护。Node13专项46/46、既有读取/保留6/6，均单次。普通文本写入仍可能部分失败，需undo恢复；实Win7/字节编码歧义见第五批边界。 | R1 H08；A2 的 chcp 修复不覆盖文件编码 |
-| ⬜ | T22-11 | High＋Medium／确认 | **统一模型继承与请求路由**：区分显式辅助模型和默认继承；切主模型/端点后默认 light/summary 随动；本次请求选定模型传入子代理，或显式声明独立 agent 模型。用两个仅支持各自模型的端点验收主调用、审批、压缩、摘要与委派。 | R1 H09；R2 N06；OP5-4、DS-2、多模型路由 |
+| ✅ | T22-10 | High／确认错误路径 | **文件编辑编码止损**：2026-10-23 第五批对读/提示词文件/写/追加/编辑/notebook实施UTF-8可逆检查，拒绝不支持的字节与NUL，不猜测GBK；保留BOM及单一换行风格。现存文件写入统一完整严格备份，失败阻断；恢复时间戳顺序保护。Node13专项46/46、既有读取/保留6/6，均单次。普通文本写入仍可能部分失败，需undo恢复；实Win7/字节编码歧义见第五批边界。 | R1 H08；A2 的 chcp 修复不覆盖文件编码；提交f2e9409 |
+| ✅ | T22-11 | High＋Medium／确认 | **统一模型继承与请求路由**：2026-10-23 第六批区分显式/默认辅助模型，以不可变上下文固定选定主/轻/摘要及端点/密钥，贯穿子代理、workflow、审批、压缩、摘要等；设置热切换作用于新执行，在途及其摘要保留原路由。严格双端点专项获准复跑33/33，流/压缩31/31；实Win7与真实模型待验收。 | R1 H09；R2 N06；OP5-4、DS-2、多模型路由 |
 | ⬜ | T22-12 | High／高可信风险 | **处理 MCP/持久 shell 管道故障**：stdin 安装异步 error 处理；请求必结算；dispose/die 幂等且校验对象身份，旧 child 不得删除新缓存；超时区分停止与结果未知，限制帧长。断 stdin、退出/重连、迟到响应后 Agent 不崩溃。 | R1 M07（按 R2 C03 提升管道故障等级）；GAP-1/GAP-2；不含已撤回的 .cmd 断言 |
 | ⬜ | T22-13 | High／数据风险 | **关键状态可靠落盘与损坏恢复**：todos、session、models、`.env`、记忆/工作日志等采用可靠替换和上一版本；解析失败隔离原件并告警，不能静默当空后覆盖。磁盘满、占用、提交中断后可恢复完整版本。与下载提交协议共享经验，不削弱路径检查。 | R1 H10；GAP-6 的「损坏自动重建」不能当成数据保全 |
 
@@ -662,7 +662,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | R1 Critical 与 --help 证据 | 按 R2 C04/C05：Critical 不要求所有部署触发；--help不证明dotenv初始化。本清单没有新增Critical或扩大既有验证结论。 |
 | A5/A2-06/OPT-15 | 既有取消接线视为历史已做；活动取消、迟到审批与副作用截止仍未完成，合并到T22-06；不能把A5旧✅理解为完整取消已验收。 |
 | OPT-13／10-20第四批 | 24/53迁移保持部分完成；参数校验失败获error不等于agent运行失败获error，余量及M05归T22-20，不重做已完成的24个工具。 |
-| OP5-4／多模型路由 | 启动时light回落已完成；热切换继承与子代理模型是新增范围，归T22-11。 |
+| OP5-4／多模型路由 | 启动回落保留；2026-10-23 T22-11已补热切换继承、执行路由快照与子代理模型传递，原缺口由第六批证据关闭；并非重新宣称旧启动测试覆盖全部路由。 |
 | GAP-2/A2-14、A2-12/OPT-16 | /clear清shell与页面sessGen已做；HTTP身份隔离与保存最新快照未做，分别归T22-17/19。 |
 | AST-R1/AST-15/NEW-2 | 非流式摘要后台化、主任务串行、cron防重叠均保留；补队列边界及进程归属，不能因此重开全并行架构。 |
 | C5/C8及历史全绿 | C5不接受“现代宿主Node13等价Win7实机”的关闭口径；C8短会话验证仍只算部分覆盖。历史通过记录保留，不作为新增问题已修证据。 |
@@ -837,6 +837,37 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 普通写/追加/编辑/notebook仍用原有同步目标写入，写中断可能留下部分内容；当前保证存在完整严格备份且报错，可用 `/undo` 恢复，**未实现这些普通文本写入的原子提交或自动回滚**。专项注入部分写验证了这条剩余故障路径及手动恢复；不能把T22-10完成理解为所有文件写入已事务化。
 - 未运行全套A–J/UI、Win7实机、真实CP936编辑器互操作、FAT/网络盘粗时间戳实机、杀毒/共享占用、真实磁盘写满、硬件断电或24/72h。粗时间戳兼容分支代码已检查，未单独动态模拟。一般读写仍整文件同步IO，UTF8往返及追加前完整备份增加内存/IO成本；大文件窗口与总字节预算仍属T22-15/26。
 - `.env`/models/session/todos/记忆及工作日志的独立内部落盘路径没有因此整体修复，仍属T22-13等；多实例并发修改在快照/写入间仍存在竞态，T22-14未完成。编码检测、快照或恢复元数据失败时宁可明确拒写，需要现场磁盘/权限问题排查。本批未提交、未发布，旧ZIP不含本批。
+
+---
+
+## 2026-10-23 —— T22-11 第六批实施
+
+### 前批提交与本批范围
+
+- 按用户要求先提交第五批：`f2e9409 fix(T22-10): reject lossy text edits and require complete backups`；提交后工作区干净，未推送。本批模型改动随后开始，尚未提交。
+- `LIGHT_MODEL`/`SUMMARY_MODEL` 仅保存显式非空设置；默认继承不再在启动时凝固。`createModelContext` 解析选定 main、默认/显式 light、默认/显式 summary，并复制/冻结对应模型（含显式 vision）的 endpoint/apiKey。默认摘要继承已解析的 light；显式辅助名称按 profile 或全局路由，不能擅自替用户更名。
+- HTTP 请求读入即捕获上下文，队列等待、主模型重试、子代理及 workflow 内层、风险/审批/解释、压缩、规划/辩论、结构化输出、摘要使用同一对象。API设置/profile更新不再把在途执行拆到不同服务；后续新请求使用新配置。流式摘要和非流式后台 summaryChain 都显式捕获原上下文；响应仍回显 reqModel。
+- CLI任务/Ralph、启动dream、REPL草稿及BTW/fixer/vision接线同步传递上下文；原auto_debug默认禁用保持。`/api/info` 显示动态默认 light 和 summary，模型列表纳入显式摘要。没有新增 AsyncLocalStorage 或运行时依赖，保持Node13语法。
+- 新增 `test/model-routing.js` 和 npm入口，接入test-all；README/配置模板解释继承、显式配置、快照时点及热更新边界。旧VM测试补必要的上下文依赖/参数，取消源码断言扩展到含context的原有参数位置，未放宽取消检查。OP5-4同源行回记新证据，历史报告不回写。
+
+### 验证与首跑修正
+
+| 检查 | 结果 | 范围与边界 |
+|---|---|---|
+| Node13 --check | index.js、test/model-routing.js、test/stream-context.js、test/runner-b.js、test/runner-i.js、scripts/test-all.js 6/6；package.json解析成功 | 每文件一次。其后仅修专项HTTP调用/启动诊断；专项获准复跑已解析最终专项源码。最后给未运行的runner-i scheduling VM补上下文stub，仅静态检查，未另跑该场景。 |
+| 路由专项首跑 | 前4项通过；健康探针8秒超时 exit1 | 测试漏向 `_shared.httpReq` 显式传 null，Buffer.byteLength(undefined) 被探针 catch 当成未就绪；当次没有实际聊天验收，不算产品失败或端到端成功。 |
+| 集中修正 | GET空正文传null、API包装默认null；探针仅吞预期连接错误，采集子进程输出并检查退出 | 未重启服务“试试看”；先读helper确认参数协议并修复，再向用户申请一次专项复跑。 |
+| 获准专项复跑 | `runtime/node.exe test/model-routing.js` 33/33，exit0 | 严格A/B端点各拒绝外来模型名与密钥；真实后端请求选B不改默认A、全局切B后默认轻/摘要随动、压缩/审批/计划/结构化输出、直接及workflow子代理、流式/非流式行动摘要。挂起主调用后替换设置和B的profile，原执行及摘要仍走B，下一请求默认A。显式light=A/summary=B保持独立。角色必须实际出现，不能用空every判定冒充覆盖。风险/解释/审批同一context另有源码原函数检查。 |
+| 流/上下文回归 | Node13 test/stream-context.js 31/31，exit0，单次 | 受影响的压缩/主循环：坏SSE结构和提前关闭清理、失败/空摘要不覆盖原历史、全量分段、原始要求/工具配对、真实HTTP坏帧后下一请求恢复。 |
+
+只有模型路由专项在用户明确同意后复跑一次；未进行第三轮或全套循环。fixture/安装/工作区/进程由隔离工装管理，只有本机假模型端点和假密钥；没有真实模型、凭据、桌面或开发仓库写入。之后产品代码仅注释修改，未再变更已验收的执行逻辑。
+
+### 未验收与剩余风险
+
+- 未运行全套A–J/UI、修改的runner-b sec3和runner-i专属场景、真实Win7/浏览器、真实模型、24/72h或发布包。CLI/Ralph/dream/BTW/辩论/fixer/vision路由接线静态复核，未逐项动态启动；双端点证据主要覆盖HTTP核心与其辅助链。不会把Node13现代宿主结果当Win7实机结论。
+- LIGHT/SUMMARY显式配置仍由启动环境决定，改.env需重启；未扩展设置API去热改这两个字段。显式模型没有profile时仍使用全局endpoint/key；需要旧服务就必须配对应profile，不能从模型名推测服务。未知/停用模型正常报错，不自动偷偷切回其它模型。
+- 在途任务和收到但排队的HTTP请求使用接收时路由/密钥，REPL按草稿捕获；密钥立即撤销可能令旧执行失败。快照不承诺旧服务永久可用，也不自动重试新服务。内部快照不进入HTTP payload、UI或审计。
+- 活动取消/截止时间、summaryChain积压、全局权限/depth状态、子代理失败的结构化状态等仍归T22-06/16/20；本批传递模型上下文不等于完整ExecutionContext或全局并行隔离。设置/.env/models可靠落盘仍属T22-13。未推送、未打包；本批未提交。
 
 ---
 

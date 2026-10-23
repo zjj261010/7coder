@@ -34,6 +34,7 @@
     "test:repl-approval": "node test/repl-approval.js",
     "test:download-commit": "node test/download-commit.js",
     "test:text-encoding": "node test/text-encoding.js",
+    "test:model-routing": "node test/model-routing.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",

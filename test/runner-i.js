@@ -300,7 +300,7 @@ scenarios.push({
     const wfStart=src.indexOf("  if (name === 'workflow_tool') {");
     const wfEnd=src.indexOf('// ====================== TEST RUNNER PARSING',wfStart);
     const wfCtx={tools:[{function:{name:'read_file'}}],workflowStepDepth:0,...api};
-    require('vm').runInNewContext('async function run(name,args,conversation,approvalBridge,cancelled) {\n'+src.slice(wfStart,wfEnd)+'\n}\nthis.run=run;',wfCtx);
+    require('vm').runInNewContext('async function run(name,args,conversation,approvalBridge,cancelled,modelContext) {\n'+src.slice(wfStart,wfEnd)+'\n}\nthis.run=run;',wfCtx);
     let calls=0;
     wfCtx.safeExecuteTool=async()=>{calls++;return api.makeToolResult('cancelled','Interrupted');};
     const cancelled=await wfCtx.run('workflow_tool',{steps:[{tool:'read_file',optional:true},{tool:'read_file'}]},null,null,()=>false);
@@ -331,6 +331,7 @@ scenarios.push({
       let round = 0;
       const ctx = {
         MAX_TOOL_STEPS: 3, HEAVY_MODEL: 'fixture',
+        createModelContext: main => ({ main, light: main, summary: main }),
         compressConversationIfNeeded: async () => {}, capToolResult: String,
         callOpenAI: async () => ({ message: round++ === 0 ? { role:'assistant',tool_calls:names.map((name,i) => ({id:String(i),function:{name,arguments:'{}'}})) } : {role:'assistant',content:'done'} }),
         safeExecuteTool: async call => {

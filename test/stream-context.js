@@ -24,6 +24,7 @@ async function rejectsFrame(value) {
 }
 function context(callOpenAI, budget = 1000) {
   const sandbox = vm.createContext({ console: { log() {}, warn() {} }, LIGHT_MODEL: 'fixture', HEAVY_MODEL: 'fixture',
+    createModelContext: main => ({ main, light: 'fixture', summary: 'fixture' }),
     CONTEXT_CHARS: budget, MAX_TOOL_STEPS: 2, callOpenAI, READ_ONLY_TOOLS: new Set(), capToolResult: String,
     safeExecuteTool: () => { throw Error('tool must not run after compression failure'); } });
   vm.runInContext(cut('function charUnits(', '// ====================== TASK CHANGE SUMMARY'), sandbox);

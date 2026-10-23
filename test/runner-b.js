@@ -2399,8 +2399,8 @@ scenarios.push({
     // A2-06 (wiring assertions - behavioral cancel is timing-sensitive offline):
     const bypassIdx = src.indexOf('[DANGER MODE] Executing tool');
     const bypassCall = src.substring(bypassIdx, src.indexOf('}', src.indexOf('return await executeToolRaw', bypassIdx)));
-    record('sec3/a206: bypass branch passes the cancellation token', /executeToolRaw\(name, args, conversation, approvalBridge, cancelled\)/.test(bypassCall), bypassCall.trim().substring(0, 120));
-    record('sec3/a206: sub-agent processWithTools inherits cancel', /processWithTools\(agentMessages, \{ cancel: cancelled \}\)/.test(src), '');
+    record('sec3/a206: bypass branch passes the cancellation token', /executeToolRaw\(name, args, conversation, approvalBridge, cancelled, modelContext\)/.test(bypassCall), bypassCall.trim().substring(0, 120));
+    record('sec3/a206: sub-agent processWithTools inherits cancel', /processWithTools\(agentMessages, \{ cancel: cancelled, modelContext \}\)/.test(src), '');
 
     // A2-15 (unit-level on parseSSEStream with a fake stream):
     const fnSrc = (() => { const a = src.indexOf('function parseSSEStream'); const b = src.indexOf('\n}', src.indexOf('stream.on(\'error\'', a)); return src.substring(a, b + 2); })();
