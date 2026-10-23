@@ -97,22 +97,15 @@ function flushExit(code) {
 const launchDir = process.cwd();
 const appDir = require.main ? path.dirname(require.main.filename) : __dirname;
 try {
-  require('dotenv').config({ path: path.join(appDir, '.env') });
+  loadEnvState(path.join(appDir, '.env'), false);
   // Per-project overrides (D7): a .env in the workspace wins over the
   // install-dir .env, so each project can pin its own models/endpoint/key.
   // The workspace .env is on the protected-files list - the AI cannot edit it.
-  try {
-    const wsEnv = path.join(launchDir, '.env');
-    if (fs.existsSync(wsEnv)) {
-      const parsed = require('dotenv').parse(fs.readFileSync(wsEnv));
-      const keys = Object.keys(parsed);
-      for (const k of keys) process.env[k] = parsed[k];
-      if (keys.length) console.log('[OK] workspace .env loaded (' + keys.length + ' overrides)');
-    }
-  } catch (e) {
-    console.warn('[WARN] failed to read workspace .env: ' + e.message);
-  }
-} catch (e) {}
+  loadEnvState(path.join(launchDir, '.env'), true);
+} catch (e) {
+  console.error('[ERROR] configuration load failed: ' + e.message);
+  process.exit(1);
+}
 
 let OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 let OPENAI_ENDPOINT = process.env.OPENAI_ENDPOINT || 'https://api.openai.com/v1';
@@ -177,20 +170,18 @@ let auditDirReady = false;
 // A model without a profile uses the global OPENAI_ENDPOINT / OPENAI_API_KEY.
 let modelProfiles = {};
 function loadModelProfiles() {
-  modelProfiles = {};
+  const next = {};
   const files = [path.join(appDir, 'models.json')];
-  try { files.push(internalStatePath('.7coder', 'models.json')); } catch (e) { console.warn('[WARN] workspace models.json rejected: ' + e.message); }
+  files.push(internalStatePath('.7coder', 'models.json'));
   for (const f of files) {
-    try {
-      if (!fs.existsSync(f)) continue;
-      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
-      for (const k of Object.keys(j)) { if (k && typeof k === 'string') modelProfiles[k.toLowerCase()] = j[k]; }
-    } catch (e) {
-      console.warn('[WARN] failed to read ' + f + ': ' + e.message);
-    }
+    const record = readStateRecord(f, parseModelState);
+    if (!record) continue;
+    for (const k of Object.keys(record.value)) { if (k) next[k.toLowerCase()] = record.value[k]; }
   }
+  modelProfiles = next;
 }
-loadModelProfiles();
+try { loadModelProfiles(); }
+catch (e) { console.error('[ERROR] model configuration load failed: ' + e.message); process.exit(1); }
 function resolveModelConfig(model) {
   const prof = modelProfiles[String(model || '').toLowerCase()];
   return {
@@ -1131,6 +1122,155 @@ function managedWorkspacePath(relativePath) {
   return lexical;
 }
 
+// T22-13: product-owned state. Sibling files stay on the same volume; never
+// unlink the destination to emulate replace on Windows. No claim of directory
+// durability on power loss, and no cross-process read/modify/write lock (T22-14).
+function guardStateFile(file, owner = file) {
+  file = path.resolve(file); owner = path.resolve(owner);
+  if (path.dirname(file) !== path.dirname(owner)) throw new Error('Security: state companion escaped its parent');
+  const installConfig = [path.join(appDir, '.env'), path.join(appDir, 'models.json')].includes(owner);
+  const allowedRoot = installConfig ? realPathSafe(appDir) : getLaunchDirReal();
+  if (!isInsideDir(allowedRoot, realPathSafe(owner)) ||
+      !isInsideDir(realPathSafe(path.dirname(owner)), realPathSafe(file))) {
+    throw new Error('Security: state file resolves outside its allowed root');
+  }
+  try {
+    if (!fs.lstatSync(file).isFile()) throw new Error('Security: state file must be a regular file, not a link/directory');
+  } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  return file;
+}
+function replaceStateBytes(file, bytes, owner = file) {
+  file = guardStateFile(file, owner);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const staging = file + '.7coder-tmp-' + process.pid + '-' + crypto.randomBytes(12).toString('hex');
+  let fd = null, owned = false;
+  try {
+    guardStateFile(staging, owner);
+    fd = fs.openSync(staging, 'wx', 0o600); owned = true;
+    fs.writeFileSync(fd, bytes);
+    fs.fsyncSync(fd);
+    fs.closeSync(fd); fd = null;
+    guardStateFile(file, owner);
+    fs.renameSync(staging, file);
+    owned = false;
+  } finally {
+    if (fd !== null) { try { fs.closeSync(fd); } catch (e) { console.warn('[STATE] close failed for ' + staging + ': ' + e.code); } }
+    if (owned) {
+      try { fs.unlinkSync(staging); }
+      catch (e) { if (e.code !== 'ENOENT') console.warn('[STATE] incomplete staging retained: ' + staging + ' (' + e.code + ')'); }
+    }
+  }
+}
+function parseStateText(text) { return text; }
+function isManagedNote(file) {
+  const rel = path.relative(launchDir, file).split(path.sep).join('/').toLowerCase();
+  return rel === '7coder.md' || rel === 'todo.md' || rel === '.7coder/btw.md' ||
+    /^\.7coder\/memory\/[a-z0-9][a-z0-9_-]{0,39}\.md$/.test(rel);
+}
+function managedStateParser(file) {
+  const rel = path.relative(launchDir, file).split(path.sep).join('/').toLowerCase();
+  if (rel === '.7coder/todos.json') return parseTodoState;
+  if (rel === '.7coder/models.json') return parseModelState;
+  if (rel === '.7coder/session.json' || /^\.7coder\/sessions\/[a-z0-9._-]+\.json$/.test(rel)) return parseSessionState;
+  if (rel === '.env' || isManagedNote(file)) return parseStateText;
+  return null;
+}
+function parseStateJson(text) {
+  // Do not echo a JSON parser's input excerpt: models.json can contain keys.
+  try { return JSON.parse(text.replace(/^\uFEFF/, '')); }
+  catch (e) { throw new Error('invalid JSON'); }
+}
+function parseModelState(text) {
+  const j = parseStateJson(text);
+  if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('invalid model profiles');
+  for (const k of Object.keys(j)) {
+    const p = j[k];
+    if (!p || typeof p !== 'object' || Array.isArray(p) ||
+        (p.endpoint !== undefined && typeof p.endpoint !== 'string') ||
+        (p.apiKey !== undefined && typeof p.apiKey !== 'string')) throw new Error('invalid model profile fields');
+  }
+  return j;
+}
+function parseTodoState(text) {
+  const j = parseStateJson(text);
+  if (!j || !Array.isArray(j.items) || j.items.some(it => !it || typeof it !== 'object' ||
+      typeof it.id !== 'string' || typeof it.title !== 'string' || !['pending', 'doing', 'done'].includes(it.status))) {
+    throw new Error('invalid todo store');
+  }
+  return j;
+}
+function parseSessionState(text) {
+  const j = parseStateJson(text);
+  if (!j || !Array.isArray(j.messages) || j.messages.some(m => !m ||
+      !['system', 'user', 'assistant', 'tool'].includes(m.role) ||
+      !(m.content === null || typeof m.content === 'string' || Array.isArray(m.content)))) {
+    throw new Error('invalid session store');
+  }
+  return j;
+}
+function quarantineState(file, bytes, owner = file) {
+  const evidence = guardStateFile(file + '.7coder-corrupt-' + crypto.createHash('sha256').update(bytes).digest('hex'), owner);
+  let existing;
+  try { existing = fs.readFileSync(evidence); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (existing) {
+    if (!existing.equals(bytes)) throw new Error('state corruption evidence collision: ' + evidence);
+  } else replaceStateBytes(evidence, bytes, owner);
+  console.warn('[STATE] invalid state preserved: ' + evidence);
+}
+function readStateRecord(file, parse = parseStateText) {
+  file = guardStateFile(file);
+  let bytes, invalid = false;
+  try { bytes = fs.readFileSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (bytes !== undefined) {
+    try { return { bytes, value: parse(decodeUtf8Text(bytes)) }; }
+    catch (e) { invalid = true; quarantineState(file, bytes); }
+  }
+  const previous = guardStateFile(file + '.7coder-prev', file);
+  let saved;
+  try { saved = fs.readFileSync(previous); }
+  catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+    if (!invalid) return null;
+    throw new Error('Invalid state has no valid previous version; repair before retrying: ' + file);
+  }
+  let value;
+  try { value = parse(decodeUtf8Text(saved)); }
+  catch (e) {
+    quarantineState(previous, saved, file);
+    throw new Error('Previous state is also invalid; repair before retrying: ' + file);
+  }
+  // Restore without copying the corrupt primary over the valid previous copy.
+  replaceStateBytes(file, saved);
+  console.warn('[STATE] restored ' + file + ' from ' + previous + (invalid ? '; invalid bytes retained separately' : '; primary was missing'));
+  return { bytes: saved, value };
+}
+function writeStateFile(file, text, parse = parseStateText) {
+  const bytes = Buffer.from(normalizeUtf8Input(text), 'utf8');
+  parse(decodeUtf8Text(bytes)); // validate proposed data before changing anything
+  const current = readStateRecord(file, parse);
+  if (current && current.bytes.equals(bytes)) return;
+  if (current) replaceStateBytes(file + '.7coder-prev', current.bytes, file);
+  replaceStateBytes(file, bytes);
+}
+function deleteStateFile(file) {
+  file = guardStateFile(file);
+  const previous = guardStateFile(file + '.7coder-prev', file);
+  // Prevent an explicit delete from being silently undone by missing-primary
+  // recovery. If backup deletion fails, leave the primary in place.
+  let removedPrevious = false;
+  try { fs.unlinkSync(previous); removedPrevious = true; } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT' || !removedPrevious) throw e; }
+}
+function loadEnvState(file, override) {
+  const record = readStateRecord(file);
+  if (!record) return;
+  const parsed = require('dotenv').parse(record.value);
+  for (const key of Object.keys(parsed)) {
+    if (override || process.env[key] === undefined) process.env[key] = parsed[key];
+  }
+  if (override && Object.keys(parsed).length) console.log('[OK] workspace .env loaded (' + Object.keys(parsed).length + ' overrides)');
+}
+
 function sanitizePath(userPath) {
   if (!userPath) return '';
   const resolved = path.resolve(launchDir, userPath);
@@ -1154,13 +1294,15 @@ function isProtectedTarget(name, args) {
   if (!['read_file', 'prompt_from_file', 'write_file', 'append_file', 'notebook_edit_tool', 'edit_file', 'download_tool'].includes(name)) return false;
   const p = args && (args.path || args.file);
   if (!p || typeof p !== 'string') return false;
-  if (PROTECTED_FILES.includes(path.basename(p).toLowerCase())) return true;
+  // Backups/evidence/staging of credentials retain the original protection.
+  const originalPath = p.replace(/(?:\.7coder-(?:prev|tmp-\d+-[a-f0-9]+|corrupt-[a-f0-9]{64}))+$/i, '');
+  if (PROTECTED_FILES.includes(path.basename(originalPath).toLowerCase())) return true;
   // GAP-11: user-extended protection - protected_extra patterns match the
   // sanitized workspace-relative path OR the bare file name.
   if (permRules.protectedExtra.length) {
     let rel = '';
-    try { rel = path.relative(launchDir, path.join(launchDir, sanitizePath(p))).split(path.sep).join('/'); } catch (e) { rel = String(p).split(path.sep).join('/'); }
-    const base = path.basename(p);
+    try { rel = path.relative(launchDir, path.join(launchDir, sanitizePath(originalPath))).split(path.sep).join('/'); } catch (e) { rel = String(originalPath).split(path.sep).join('/'); }
+    const base = path.basename(originalPath);
     for (const r of permRules.protectedExtra) {
       if (r.argRe.test(rel) || r.argRe.test(base)) return true;
     }
@@ -1823,8 +1965,8 @@ function updateLastInteractionTime() {
   try {
     const dir = internalStatePath('.7coder');
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'last_interaction'), Date.now().toString());
-  } catch (e) {}
+    writeStateFile(internalStatePath('.7coder', 'last_interaction'), Date.now().toString());
+  } catch (e) { console.warn('[WARN] last interaction save failed: ' + e.message); }
 }
 
 // P2-1: one-time migration of the three legacy workspace-root files into
@@ -1855,7 +1997,8 @@ function migrateWorkspaceRootFiles() {
     const newBtw = path.join(dotDir, 'BTW.md');
     if (fs.existsSync(oldBtw)) {
       ensureDot();
-      fs.appendFileSync(newBtw, fs.readFileSync(oldBtw, 'utf8'), 'utf8');
+      const record = readStateRecord(newBtw);
+      writeStateFile(newBtw, (record ? record.value : '') + decodeUtf8Text(fs.readFileSync(managedWorkspacePath('BTW.md'))));
       fs.unlinkSync(oldBtw);
     }
   } catch (e) {}
@@ -1890,7 +2033,8 @@ async function runDreamSession() {
   const mdPath = managedWorkspacePath('7CODER.md');
   let currentContent = 'No prior content.';
   try {
-    if (fs.existsSync(mdPath)) currentContent = fs.readFileSync(mdPath, 'utf8') || currentContent;
+    const record = readStateRecord(mdPath);
+    if (record) currentContent = record.value || currentContent;
   } catch (e) {}
   const dreamSystemPrompt = `${systemPrompt}
 [DREAM MODE OVERRIDE - 2.5 HOUR SELF-CONSOLIDATION SESSION]
@@ -2273,29 +2417,28 @@ Reply ONLY with compact JSON: {"safe": true, "reason": "one short sentence"} or 
 // ====================== STRUCTURED TASK STORE (GAP-6) ======================
 // The task list lives at .7coder/todos.json as { items: [{id,title,status,updated}] }.
 // status is one of pending/doing/done; ids are t1/t2/... (max+1, stable across
-// deletions of later ids). A missing OR corrupt file is treated as an empty
-// list and rebuilt by the next write - the store never blocks a task.
+// deletions of later ids). A missing file is treated as an empty list only
+// when no previous version exists. Corrupt stores recover a valid previous version
+// or fail visibly; a subsequent add must never overwrite them as an empty list.
 const TODO_STATUSES = ['pending', 'doing', 'done'];
 const TODO_STORE_MAX = 500; // safety cap so a looping model cannot grow the file forever
 function todosFilePath() { return internalStatePath('.7coder', 'todos.json'); }
 function loadTodos() {
-  try {
-    const j = JSON.parse(fs.readFileSync(todosFilePath(), 'utf8'));
-    if (j && Array.isArray(j.items)) return j.items.filter(it => it && typeof it === 'object');
-  } catch (e) {}
-  return [];
+  const record = readStateRecord(todosFilePath(), parseTodoState);
+  return record ? record.value.items : [];
 }
 function saveTodos(items) {
-  fs.mkdirSync(path.dirname(todosFilePath()), { recursive: true });
-  fs.writeFileSync(todosFilePath(), JSON.stringify({ items: items }, null, 2), 'utf8');
+  writeStateFile(todosFilePath(), JSON.stringify({ items: items }, null, 2), parseTodoState);
 }
 // Legacy human-readable log kept in sync with the structured store: every
 // mutating todo_write_tool call still appends to TODO.md (the pre-GAP-6
 // contract - suite A asserts TODO.md is created), one line per change.
 function appendTodoLog(entry) {
   try {
-    fs.appendFileSync(managedWorkspacePath('TODO.md'), `\n## ${new Date().toISOString()}\n${entry}\n`, 'utf8');
-  } catch (e) {}
+    const file = managedWorkspacePath('TODO.md');
+    const current = readStateRecord(file);
+    writeStateFile(file, (current ? current.value : '') + `\n## ${new Date().toISOString()}\n${entry}\n`);
+  } catch (e) { console.warn('[WARN] TODO log save failed (structured todo store is authoritative): ' + e.message); }
 }
 function nextTodoId(items) {
   let max = 0;
@@ -2339,11 +2482,14 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'write_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path || ''));
+      const stateParser = managedStateParser(fullPath);
+      if (stateParser) readStateRecord(fullPath, stateParser);
       const original = readUtf8ForWrite(fullPath, true);
       const content = preserveTextBom(original, normalizeUtf8Input(args.content || '', original.newline));
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       backupExistingFile(fullPath);
-      fs.writeFileSync(fullPath, content, 'utf8');
+      if (stateParser) writeStateFile(fullPath, content, stateParser);
+      else fs.writeFileSync(fullPath, content, 'utf8');
       if (args.path && args.path.endsWith('7CODER.md')) return '[OK] 7CODER.md updated with findings';
       return `Written: ${path.relative(launchDir, fullPath)}`;
     } catch (e) { return `Write error: ${e.message}`; }
@@ -2351,11 +2497,14 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'append_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path));
+      const stateParser = managedStateParser(fullPath);
+      if (stateParser) readStateRecord(fullPath, stateParser);
       const original = readUtf8ForWrite(fullPath, true);
       const content = normalizeUtf8Input(args.content || '', original.newline);
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       backupExistingFile(fullPath);
-      fs.appendFileSync(fullPath, content, 'utf8');
+      if (stateParser) writeStateFile(fullPath, original.text + content, stateParser);
+      else fs.appendFileSync(fullPath, content, 'utf8');
       return `Appended: ${args.path}`;
     } catch (e) { return `Append error: ${e.message}`; }
   }
@@ -2363,6 +2512,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'edit_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path));
+      const stateParser = managedStateParser(fullPath);
+      if (stateParser) readStateRecord(fullPath, stateParser);
       const original = readUtf8ForWrite(fullPath, false);
       const content = original.text;
       const oldStr = normalizeUtf8Input((args.old_string === undefined || args.old_string === null) ? '' : String(args.old_string), original.newline);
@@ -2375,7 +2526,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       }
       // split/join (not String.replace) so $-patterns in new_string stay literal
       backupExistingFile(fullPath);
-      fs.writeFileSync(fullPath, preserveTextBom(original, content.split(oldStr).join(newStr)), 'utf8');
+      const next = preserveTextBom(original, content.split(oldStr).join(newStr));
+      if (stateParser) writeStateFile(fullPath, next, stateParser);
+      else fs.writeFileSync(fullPath, next, 'utf8');
       return `[OK] Edited ${path.relative(launchDir, fullPath)} (${args.replace_all ? count : 1} replacement(s))`;
     } catch (e) { return `Edit error: ${e.message}`; }
   }
@@ -2663,7 +2816,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       }
       const summary = `Summary of ${args.folder} (${files.length} files):\n${body}\n\nGenerated at ${new Date().toISOString()}`;
       fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
-      fs.writeFileSync(summaryPath, summary, 'utf8');
+      writeStateFile(summaryPath, summary);
       return `Summary written to ${summaryPath}`;
     } catch (e) { return `Brief error: ${e.message}`; }
   }
@@ -2833,8 +2986,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       if (!memoryTopicValid(topic)) return makeToolResult('error', 'Tool error: invalid topic');
       const guard = memoryPathGuard(topic); // A2-01
       if (guard) return makeToolResult('error', guard);
-      try { fs.unlinkSync(memoryFilePath(topic)); return makeToolResult('ok', `[OK] Memory note deleted: ${topic}.md`); }
-      catch (e) { return makeToolResult('error', `Tool error: no memory note named "${topic}"`); }
+      try { deleteStateFile(memoryFilePath(topic)); return makeToolResult('ok', `[OK] Memory note deleted: ${topic}.md`); }
+      catch (e) { return makeToolResult('error', `Tool error: cannot delete memory note "${topic}": ${e.message}`); }
     }
     return makeToolResult('error', 'Tool error: memory_tool requires action=save|read|list|delete');
   }
@@ -3420,7 +3573,7 @@ function inGitRepo() {
       // Keep it out of commits via pathspec exclusion - we never edit the
       // user's .gitignore and never untrack files they committed on purpose;
       // add -A just cannot sweep .7coder/ in anymore.
-      if (args.stage_all !== false) git(["add", "-A", "--", ":(exclude).7coder/"]);
+      if (args.stage_all !== false) git(["add", "-A", "--", ":(exclude).7coder/", ":(exclude,glob)**/*.7coder-*"]);
       const staged = git(["diff", "--cached", "--name-only"]).trim();
       if (!staged) return "[GIT] nothing to commit (no staged changes).";
       git(["commit", "-m", message]); // message is ONE argv entry - no shell quoting at all
@@ -4252,12 +4405,11 @@ function listMemoryTopics() {
   } catch (e) { return []; }
 }
 function readMemoryFile(topic) {
-  try { return fs.readFileSync(memoryFilePath(topic), 'utf8'); } catch (e) { return null; }
+  const record = readStateRecord(memoryFilePath(topic));
+  return record ? record.value : null;
 }
 function saveMemoryFile(topic, content) {
-  const safeDir = internalStatePath('.7coder/memory');
-  fs.mkdirSync(safeDir, { recursive: true });
-  fs.writeFileSync(memoryFilePath(topic), String(content || ''), 'utf8');
+  writeStateFile(memoryFilePath(topic), String(content || ''));
 }
 // keyword-overlap score between the prompt and a note (deterministic recall)
 function memoryScore(promptText, topic, body) {
@@ -4317,9 +4469,10 @@ function recallMemory(promptText) {
 function buildTaskUserContent(rawPrompt) {
   const mdPath = managedWorkspacePath('7CODER.md');
   let content = rawPrompt;
-  if (fs.existsSync(mdPath)) {
+  {
     try {
-      const completeSummary = fs.readFileSync(mdPath, 'utf8').trim();
+      const record = readStateRecord(mdPath);
+      const completeSummary = record ? record.value.trim() : '';
       if (completeSummary) {
         content += `\n\nthis is what's already been done.\n${completeSummary}`;
       }
@@ -4553,23 +4706,23 @@ function saveSession() {
     const body = JSON.stringify({ savedAt: new Date().toISOString(), messages: keep });
     if (body.length > 2 * 1024 * 1024) { console.warn('[WARN] session too large to save (>2MB)'); return; }
     fs.mkdirSync(internalStatePath('.7coder'), { recursive: true });
-    fs.writeFileSync(sessionFilePath(), body, 'utf8');
+    writeStateFile(sessionFilePath(), body, parseSessionState);
     // timestamped history copy for the web session browser (newest 20 kept)
     try {
       const sdir = internalStatePath('.7coder/sessions');
       fs.mkdirSync(sdir, { recursive: true });
-      fs.writeFileSync(path.join(sdir, new Date().toISOString().replace(/[:.]/g, '-') + '.json'), body, 'utf8');
+      writeStateFile(internalStatePath('.7coder/sessions', new Date().toISOString().replace(/[:.]/g, '-') + '.json'), body, parseSessionState);
       const olds = fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort();
-      while (olds.length > 20) { try { fs.unlinkSync(path.join(sdir, olds.shift())); } catch (e2) { break; } }
-    } catch (e2) {}
+      while (olds.length > 20) { try { deleteStateFile(internalStatePath('.7coder/sessions', olds.shift())); } catch (e2) { break; } }
+    } catch (e2) { console.warn('[WARN] session history save/prune failed: ' + e2.message); }
   } catch (e) { console.warn('[WARN] session save failed: ' + e.message); }
 }
 function loadSession() {
   try {
     const sessionPath = sessionFilePath();
-    if (!fs.existsSync(sessionPath)) return false;
-    const j = JSON.parse(fs.readFileSync(sessionPath, 'utf8'));
-    if (!Array.isArray(j.messages)) return false;
+    const record = readStateRecord(sessionPath, parseSessionState);
+    if (!record) return false;
+    const j = record.value;
     const clean = j.messages.filter(m => m && (m.role === 'system' || ((m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string')));
     if (clean.length < 2) return false;
     messages = clean;
@@ -4613,9 +4766,11 @@ function updateCompleteSummary(newSummary) {
   const mdPath = managedWorkspacePath('7CODER.md');
   let existing = '';
   try {
-    if (fs.existsSync(mdPath)) existing = fs.readFileSync(mdPath, 'utf8');
+    const record = readStateRecord(mdPath);
+    if (record) existing = record.value;
   } catch (e) {
-    console.error('Error reading 7CODER.md:', e);
+    console.error('Error reading 7CODER.md; summary not written:', e.message);
+    return;
   }
   // Bullets from the previous auto-log section (if present)
   let summaries = [];
@@ -4647,7 +4802,7 @@ function updateCompleteSummary(newSummary) {
   const autoSection = LOG_START + '\n' + summaries.map(s => '- ' + s).join('\n') + '\n' + LOG_END;
   const next = outside ? autoSection + '\n\n' + outside + '\n' : autoSection + '\n';
   try {
-    fs.writeFileSync(mdPath, next, 'utf8');
+    writeStateFile(mdPath, next);
     console.log('[OK] 7CODER.md updated with complete summary');
   } catch (e) {
     console.error('Error writing to 7CODER.md:', e);
@@ -4806,26 +4961,35 @@ function startHttpServer() {
     return !HTTP_API_KEY || req.headers.authorization === 'Bearer ' + HTTP_API_KEY;
   }
   function writeWorkspaceEnv(updates) {
-    const wsEnv = path.join(launchDir, ".env");
+    const wsEnv = managedWorkspacePath('.env');
     // A2-16: ONLY the managed keys being updated are rewritten. The old code
     // dotenv.parsed the WHOLE file and re-serialized every key - a multiline
     // value like CUSTOM="first\nsecond" lost its quoting and got split into
     // two broken lines. Unknown KEY= lines now pass through verbatim.
-    // (Managed values are endpoint/key/model - the settings route already
-    // rejects CR/LF/NUL in them, so no quoting is needed on write.)
+    // Managed values are endpoint/key/model. The route rejects CR/LF/NUL;
+    // quoting below also preserves whitespace and literal enclosing quotes.
     const managed = {};
-    for (const k of Object.keys(updates)) managed[k] = updates[k];
+    for (const k of Object.keys(updates)) {
+      const value = String(updates[k]);
+      // dotenv 8 strips enclosing quotes and trims unquoted values. Choose a
+      // representation that survives restart with exactly the requested value.
+      managed[k] = require('dotenv').parse(k + '=' + value)[k] === value ? value : "'" + value + "'";
+    }
     const outLines = [];
     const written = new Set();
-    if (fs.existsSync(wsEnv)) {
-      for (const line of fs.readFileSync(wsEnv, "utf8").split(/\r?\n/)) {
-        const m = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=/);
+    const current = readStateRecord(wsEnv);
+    if (current) {
+      for (const line of current.value.split(/\r?\n/)) {
+        const m = line.match(/^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=/);
         if (m && managed[m[1]] !== undefined) { outLines.push(m[1] + "=" + managed[m[1]]); written.add(m[1]); }
         else outLines.push(line); // comments, blank lines, MULTILINE continuations, unknown keys - untouched
       }
     }
     for (const k of Object.keys(managed)) { if (!written.has(k)) outLines.push(k + "=" + managed[k]); }
-    fs.writeFileSync(wsEnv, outLines.join("\n") + "\n", "utf8");
+    const next = outLines.join("\n") + "\n";
+    const parsed = require('dotenv').parse(next);
+    if (Object.keys(updates).some(k => parsed[k] !== String(updates[k]))) throw new Error('settings cannot be represented losslessly in dotenv 8');
+    writeStateFile(wsEnv, next);
   }
   function hUi(req, res) {
     if (webuiHtml) {
@@ -4844,8 +5008,14 @@ function startHttpServer() {
     // GAP-6: the structured task list for the webui sidebar; re-read per
     // request so changes made by a CLI session in the same workspace show
     // up immediately.
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ todos: loadTodos() }));
+    try {
+      const todos = loadTodos();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ todos }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: e.message } }));
+    }
   }
   function hModels(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -4860,7 +5030,7 @@ function startHttpServer() {
       const list = fs.existsSync(sdir)
         ? fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort().reverse().map(f => {
               try {
-                const j = JSON.parse(fs.readFileSync(path.join(sdir, f), 'utf8'));
+                const j = readStateRecord(internalStatePath('.7coder/sessions', f), parseSessionState).value;
                 const firstUser = (j.messages || []).find(m => m.role === 'user');
                 return { file: f, savedAt: j.savedAt || '?', turns: (j.messages || []).length, preview: firstUser ? String(firstUser.content).substring(0, 80) : '' };
               } catch (e) { return { file: f, savedAt: '?', turns: 0, preview: '(unreadable)' };
@@ -4880,8 +5050,9 @@ function startHttpServer() {
         const wanted = String(JSON.parse(body).file || "");
         if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
         const f = internalStatePath('.7coder/sessions', wanted);
-        if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
-        const j = JSON.parse(fs.readFileSync(f, "utf8"));
+        const record = readStateRecord(f, parseSessionState);
+        if (!record) throw new Error("session not found: " + wanted);
+        const j = record.value;
         const msgs = (j.messages || [])
           .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
           .map(m => ({ role: m.role, content: m.content }));
@@ -4899,8 +5070,8 @@ function startHttpServer() {
         const wanted = String(JSON.parse(body).file || "");
         if (!/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) throw new Error('invalid session file name');
         const f = internalStatePath('.7coder/sessions', wanted);
-        if (!fs.existsSync(f)) throw new Error("session not found: " + wanted);
-        fs.unlinkSync(f);
+        if (!fs.existsSync(f) && !fs.existsSync(f + '.7coder-prev')) throw new Error("session not found: " + wanted);
+        deleteStateFile(f);
         audit({ ts: new Date().toISOString(), type: 'session_delete', file: wanted });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, deleted: wanted }));
@@ -4947,8 +5118,8 @@ function startHttpServer() {
         // 客户端可携带 file 名原地覆盖同一会话记录；否则生成新记录
         const wanted = String(JSON.parse(body).file || "");
         let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
-        if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && fs.existsSync(internalStatePath('.7coder/sessions', wanted))) name = wanted;
-        fs.writeFileSync(internalStatePath('.7coder/sessions', name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), "utf8");
+        if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && readStateRecord(internalStatePath('.7coder/sessions', wanted), parseSessionState)) name = wanted;
+        writeStateFile(internalStatePath('.7coder/sessions', name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), parseSessionState);
         audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
@@ -4978,7 +5149,7 @@ function startHttpServer() {
           else {
             const ex = path.join(appDir, ".env");
             if (!fs.existsSync(ex)) {
-              try { fs.copyFileSync(path.join(appDir, ".env.example"), wsEnv); openPath = wsEnv; }
+              try { writeStateFile(managedWorkspacePath('.env'), decodeUtf8Text(fs.readFileSync(path.join(appDir, '.env.example')))); openPath = wsEnv; }
               catch (e2) { openPath = ex; }
             } else openPath = ex;
           }
@@ -5074,7 +5245,7 @@ function startHttpServer() {
         }
         const wsCfgDir = internalStatePath('.7coder');
         if (!fs.existsSync(wsCfgDir)) fs.mkdirSync(wsCfgDir, { recursive: true });
-        fs.writeFileSync(path.join(wsCfgDir, 'models.json'), JSON.stringify(profiles, null, 2), 'utf8');
+        writeStateFile(internalStatePath('.7coder', 'models.json'), JSON.stringify(profiles, null, 2), parseModelState);
         loadModelProfiles();
         audit({ ts: new Date().toISOString(), type: 'models-config', models: Object.keys(profiles) });
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -5537,7 +5708,8 @@ Make it read like a direct continuation of the user's task instructions for the 
             try { fs.mkdirSync(btwDir, { recursive: true }); } catch (e) {}
             const btwPath = path.join(btwDir, 'BTW.md');
             try {
-              fs.appendFileSync(btwPath, `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`, 'utf8');
+              const record = readStateRecord(btwPath);
+              writeStateFile(btwPath, (record ? record.value : '') + `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`);
             } catch (e) { console.error(`[BTW] Cannot persist note to ${btwPath}: ${e.message}`); }
           });
           // A failed note must neither reject the next note's chain nor leave

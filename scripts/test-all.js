@@ -21,6 +21,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'text-encoding.js', args: [path.join(ROOT, 'test', 'text-encoding.js')] },
     { name: 'model-routing.js', args: [path.join(ROOT, 'test', 'model-routing.js')] },
     { name: 'pipe-lifecycle.js', args: [path.join(ROOT, 'test', 'pipe-lifecycle.js')] },
+    { name: 'state-store.js', args: [path.join(ROOT, 'test', 'state-store.js')] },
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
