@@ -412,6 +412,7 @@ function createMcpStdioClient(name, cfg) {
     name: name,
     nextId: 1,
     pending: new Map(), // id -> { resolve, reject, timer }
+    queuedBytes: 0, // encoded writes whose callbacks have not completed
     toolsCache: null,
     initialized: false,
     initPromise: null,
@@ -426,6 +427,7 @@ function createMcpStdioClient(name, cfg) {
     client.initialized = false;
     client.toolsCache = null;
     buf = '';
+    client.queuedBytes = 0;
     for (const p of client.pending.values()) {
       clearTimeout(p.timer);
       p.detach();
@@ -441,13 +443,18 @@ function createMcpStdioClient(name, cfg) {
   function send(message) {
     if (client.dead) throw new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')');
     const line = JSON.stringify(message) + '\n';
-    if (Buffer.byteLength(line, 'utf8') > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing frame exceeds 4 MB; request not sent');
+    const bytes = Buffer.byteLength(line, 'utf8');
+    if (bytes > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing frame exceeds 4 MB; request not sent');
+    if (client.queuedBytes + bytes > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing queue exceeds 4 MB; request not sent');
     if (child.stdin.destroyed || child.stdin.writableEnded) {
       die('stdin is closed');
       throw new Error(client.deadErr);
     }
-    try { child.stdin.write(line, error => { if (error) die('stdin write: ' + error.message); }); }
-    catch (e) { die('stdin write: ' + e.message); throw e; }
+    client.queuedBytes += bytes;
+    let released = false;
+    const release = () => { if (!released) { released = true; client.queuedBytes = Math.max(0, client.queuedBytes - bytes); } };
+    try { child.stdin.write(line, error => { release(); if (error) die('stdin write: ' + error.message); }); }
+    catch (e) { release(); die('stdin write: ' + e.message); throw e; }
   }
   client.dispose = function () { die('disposed'); };
   // Node 13 returns early on EMFILE/ENFILE before constructing stdio, then
@@ -508,6 +515,7 @@ function createMcpStdioClient(name, cfg) {
     return new Promise((resolve, reject) => {
       if (cancelled && cancelled()) return reject(executionCancelledError(cancelled));
       if (client.dead) return reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
+      if (client.pending.size >= 32) return reject(new Error('MCP pending request limit (32) reached; request not sent'));
       const id = client.nextId++;
       const timer = setTimeout(() => {
         die('MCP ' + method + ' timed out after ' + timeoutMs + 'ms; session retired, next call starts a new client');
