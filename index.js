@@ -673,12 +673,58 @@ let workflowStepDepth = 0;
 // HTTP requests are therefore serialized through this gate; nested chains
 // inside one request (workflow steps, sub-agents) never re-acquire it. The
 // REPL path is single-task by design and needs no gate.
-let requestGateChain = Promise.resolve();
-function requestGate() {
-  let release;
-  const prev = requestGateChain;
-  requestGateChain = new Promise(r => { release = r; });
-  return prev.then(() => release);
+const CHAT_MAX_REQUESTS = 8;
+const CHAT_MAX_BODY_BYTES = 16 * 1024 * 1024;
+const CHAT_QUEUE_WAIT_MS = 60000;
+let requestGateBusy = false;
+const requestGateQueue = [];
+const chatAdmission = { count: 0, bytes: 0 };
+function reserveChatRequest() {
+  if (chatAdmission.count >= CHAT_MAX_REQUESTS) return null;
+  chatAdmission.count++;
+  let bytes = 0, released = false;
+  return {
+    addBytes(n) {
+      if (released || chatAdmission.bytes + n > CHAT_MAX_BODY_BYTES) return false;
+      bytes += n; chatAdmission.bytes += n; return true;
+    },
+    release() {
+      if (released) return;
+      released = true; chatAdmission.count--; chatAdmission.bytes -= bytes;
+    }
+  };
+}
+function pumpRequestGate() {
+  if (requestGateBusy || !requestGateQueue.length) return;
+  const entry = requestGateQueue.shift();
+  clearTimeout(entry.timer); entry.detach();
+  requestGateBusy = true;
+  let released = false;
+  entry.resolve(() => {
+    if (released) return;
+    released = true; requestGateBusy = false; pumpRequestGate();
+  });
+}
+function requestGate(cancelled) {
+  return new Promise((resolve, reject) => {
+    try { checkExecution(cancelled); } catch (error) { reject(error); return; }
+    const entry = { resolve, reject, detach: () => {}, timer: null };
+    const remove = reason => {
+      const index = requestGateQueue.indexOf(entry);
+      if (index < 0) return;
+      requestGateQueue.splice(index, 1); clearTimeout(entry.timer); entry.detach();
+      reject(executionCancelledError(cancelled || { reason }));
+    };
+    requestGateQueue.push(entry);
+    entry.detach = watchExecution(cancelled, () => remove('Queued execution cancelled.'));
+    if (requestGateQueue.includes(entry)) {
+      entry.timer = setTimeout(() => {
+        if (cancelled && cancelled.cancel) cancelled.cancel('Chat queue wait exceeded 60 seconds.');
+        remove('Chat queue wait exceeded 60 seconds.');
+      }, CHAT_QUEUE_WAIT_MS);
+      pumpRequestGate();
+    }
+  });
 }
 
 function effectivePermissionMode() {
@@ -5260,9 +5306,72 @@ Action/Response: "${assistantResponse}"`;
 const LOG_START = '<!-- 7coder:auto-log:start -->';
 const LOG_END = '<!-- 7coder:auto-log:end -->';
 
-// AST-R1: backgrounded summaries serialize through this chain so concurrent
-// HTTP responses cannot interleave their 7CODER.md auto-log writes.
-let summaryChain = Promise.resolve();
+// HTTP summaries run outside the permission gate, one at a time. Admission
+// includes the active item; overload writes a bounded compact record instead
+// of retaining an unbounded Promise chain or silently losing the whole task.
+function createActionSummaryQueue(options = {}) {
+  const maxJobs = options.maxJobs || 8, maxBytes = options.maxBytes || 2 * 1024 * 1024;
+  const maxQueueAge = options.maxQueueAge || 60000, maxLifetime = options.maxLifetime || 120000;
+  const pending = [];
+  let active = null, bytes = 0;
+  function compact(payload, reason) {
+    console.warn('[SUMMARY] ' + payload.id + ': ' + reason);
+    if (shuttingDown || Date.now() >= payload.deadlineAt) return;
+    const short = value => String(value || '').slice(0, 500).replace(/\s+/g, ' ').trim();
+    try { updateCompleteSummary('Task: ' + short(payload.rawPrompt) + '; response: ' + short(payload.result) + ' [compact summary: ' + reason + ']'); }
+    catch (error) { console.warn('[SUMMARY] compact record failed: ' + error.message); }
+  }
+  function release(job) {
+    clearTimeout(job.timer); job.detach(); job.execution.dispose();
+    bytes -= job.bytes; job.payload = null;
+  }
+  function pump() {
+    if (active || !pending.length) return;
+    const job = pending.shift(); active = job;
+    clearTimeout(job.timer); job.detach();
+    (async () => {
+      try {
+        checkExecution(job.execution);
+        const p = job.payload;
+        const summary = await summarizeAction(p.rawPrompt, p.result, p.modelContext, job.execution);
+        checkExecution(job.execution);
+        updateCompleteSummary(summary);
+      } catch (error) {
+        console.warn('[SUMMARY] ' + job.payload.id + ': not written: ' + error.message);
+      } finally {
+        release(job); active = null; pump();
+      }
+    })();
+  }
+  return {
+    enqueue(payload) {
+      if (shuttingDown || Date.now() >= payload.deadlineAt) { console.warn('[SUMMARY] ' + payload.id + ': expired before enqueue.'); return false; }
+      const trimmedReply = payload.result.trim();
+      if (trimmedReply.length > 0 && trimmedReply.length < 200) return true;
+      const size = Buffer.byteLength(payload.rawPrompt, 'utf8') + Buffer.byteLength(payload.result, 'utf8') +
+        Buffer.byteLength(JSON.stringify(payload.modelContext || {}), 'utf8');
+      if (pending.length + (active ? 1 : 0) >= maxJobs || bytes + size > maxBytes) {
+        compact(payload, 'queue capacity exceeded'); return false;
+      }
+      const execution = createExecutionControl(Math.max(1, Math.min(maxLifetime, payload.deadlineAt - Date.now())));
+      const job = { payload, bytes: size, execution, timer: null, detach: () => {} };
+      bytes += size; pending.push(job);
+      job.detach = watchExecution(execution, () => {
+        const index = pending.indexOf(job);
+        if (index < 0) return;
+        pending.splice(index, 1);
+        // A queue-age cancellation may still record the bounded response;
+        // an expired original request or Agent shutdown never writes here.
+        compact(job.payload, execution.reason || 'queued summary cancelled');
+        release(job); pump();
+      });
+      if (pending.includes(job)) job.timer = setTimeout(() => execution.cancel('summary queue wait exceeded'), maxQueueAge);
+      pump(); return true;
+    },
+    stats() { return { active: !!active, pending: pending.length, bytes }; }
+  };
+}
+const actionSummaryQueue = createActionSummaryQueue();
 function updateCompleteSummary(newSummary) {
   // AST-R1: null means summarizeAction skipped the call (short reply) - leave
   // 7CODER.md untouched instead of appending "null".
@@ -5426,32 +5535,52 @@ function conversationFromClient(clientMessages) {
 // finishes. Before this, the chat route only set a flag and kept growing the
 // string until 'end', and the other POST routes had no cap at all.
 const BODY_LIMIT_DEFAULT = 1024 * 1024; // 1MB is plenty for every non-chat route
-function readJsonBody(req, res, limitBytes, then) {
+function readJsonBody(req, res, limitBytes, then, options = {}) {
   let body = '';
-  let over = false;
-  let safety = null;
+  let over = false, ended = false, bytes = 0;
+  let safety = null, readTimer = null, detach = () => {};
+  const fail = (status, message) => {
+    if (over || ended) return;
+    over = true; body = ''; detach(); clearTimeout(readTimer);
+    if (options.onFailure) options.onFailure();
+    try {
+      if (!res.destroyed && !res.writableEnded) {
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { message } }));
+      }
+    } catch (error) {}
+    safety = setTimeout(() => { try { req.destroy(); } catch (error) {} }, 60000);
+  };
   req.setEncoding('utf8');
   req.on('data', c => {
     if (over) return; // keep draining so the client can finish and read the 413
+    const size = Buffer.byteLength(c, 'utf8'); bytes += size;
+    if (bytes > limitBytes) { fail(413, 'Request body too large (limit ' + limitBytes + ' bytes)'); return; }
+    if (options.addBytes && !options.addBytes(size)) { fail(429, 'Chat body memory budget is busy; retry after existing requests finish.'); return; }
     body += c;
-    if (Buffer.byteLength(body, 'utf8') > limitBytes) {
-      over = true;
-      body = '';
-      res.writeHead(413, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: { message: 'Request body too large (limit ' + limitBytes + ' bytes)' } }));
-      safety = setTimeout(() => { try { req.destroy(); } catch (e) {} }, 60000);
-    }
   });
   req.on('end', () => {
+    ended = true; detach(); clearTimeout(readTimer);
     if (over) { if (safety) clearTimeout(safety); return; }
     try { then(body); } catch (e) {
+      if (options.onFailure) options.onFailure();
       try {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: e.message } }));
       } catch (e2) {}
     }
+    body = '';
   });
-  req.on('error', () => { if (safety) clearTimeout(safety); });
+  const abandon = () => {
+    clearTimeout(safety); clearTimeout(readTimer);
+    if (ended || over) return;
+    over = true; body = ''; detach();
+    if (options.onFailure) options.onFailure();
+  };
+  req.on('error', abandon);
+  req.on('aborted', abandon);
+  if (options.readTimeoutMs) readTimer = setTimeout(() => fail(408, 'Chat body read deadline exceeded.'), options.readTimeoutMs);
+  detach = watchExecution(options.cancelled, () => fail(408, options.cancelled.reason || 'Chat cancelled while reading body.'));
 }
 
 function startHttpServer() {
@@ -5514,7 +5643,9 @@ function startHttpServer() {
   }
   function hInfo(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(), usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
+    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(),
+      load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
+      usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
   }
   function hTodos(req, res) {
     // GAP-6: the structured task list for the webui sidebar; re-read per
@@ -5790,22 +5921,41 @@ function startHttpServer() {
     });
   }
   function hChat(req, res) {
+    const reservation = reserveChatRequest();
+    if (!reservation) {
+      res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '1' });
+      res.end(JSON.stringify({ error: { message: 'Chat request capacity is busy; retry after an existing request finishes.' } }));
+      req.resume(); return;
+    }
+    const execution = createExecutionControl();
+    let cleaned = false, bodyReceived = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true; execution.dispose(); reservation.release();
+      res.removeListener('close', onDisconnect);
+    };
+    const onDisconnect = () => {
+      if (!res.writableEnded) {
+        execution.cancel('Client disconnected.');
+        if (!bodyReceived) cleanup();
+      }
+    };
+    res.once('close', onDisconnect);
     readJsonBody(req, res, 10 * 1024 * 1024, async body => {
+        bodyReceived = true;
         let wantsStream = false;
-        const execution = createExecutionControl();
-        const onDisconnect = () => {
-          if (!res.writableEnded) execution.cancel('Client disconnected.');
-        };
-        res.once('close', onDisconnect);
         try {
         const data = JSON.parse(body);
         const reqModel = (typeof data.model === 'string' && data.model.trim()) ? data.model.trim().substring(0, 200) : HEAVY_MODEL;
         const modelContext = createModelContext(reqModel);
         wantsStream = data.stream === true;
         const tempMessages = conversationFromClient(data.messages);
-        const rawPrompt = tempMessages.length > 1 && tempMessages[tempMessages.length - 1].role === 'user'
+        const promptContent = tempMessages.length > 1 && tempMessages[tempMessages.length - 1].role === 'user'
           ? tempMessages[tempMessages.length - 1].content
           : '';
+        const rawPrompt = Array.isArray(promptContent)
+          ? promptContent.filter(part => part && part.type === 'text').map(part => String(part.text || '')).join('\n')
+          : String(promptContent || '');
 
         console.log('[WEB] HTTP request received from UI');
         const responseId = 'chatcmpl-' + Date.now();
@@ -5847,11 +5997,12 @@ function startHttpServer() {
               if (clientGone || res.destroyed) { clearInterval(ka); return; }
               try { res.write(': keep-alive\n\n'); } catch (e) { clientGone = true; execution.cancel('Client write failed.'); clearInterval(ka); }
             }, 5000);
-            const releaseGate = await requestGate(); // AST-03: serialize requests (permission globals)
+            let releaseGate = null;
             // AST-09: keep-alive timer, pending approvals and the gate are ALL
             // cleaned in one finally - an exception mid-stream used to leak the
             // interval (keep-alive writes on a dead response) and the approvals.
             try {
+              releaseGate = await requestGate(execution); // AST-03: permission globals remain serialized
               if (clientGone) return;
               checkExecution(execution);
               createTaskGitCheckpoint();
@@ -5876,18 +6027,16 @@ function startHttpServer() {
               writeChunk({}, 'stop');
               res.write('data: [DONE]\n\n');
               res.end();
-              const newSummary = await summarizeAction(rawPrompt, result, modelContext, execution);
-              checkExecution(execution);
-              updateCompleteSummary(newSummary);
+              actionSummaryQueue.enqueue({ id: responseId, rawPrompt, result, modelContext, deadlineAt: execution.deadlineAt });
             } finally {
               clearInterval(ka);
               approvalBridge.dispose();
-              releaseGate();
+              if (releaseGate) releaseGate();
             }
             return;
           }
 
-          const releaseGate = await requestGate(); // AST-03
+          const releaseGate = await requestGate(execution); // AST-03
           let result;
           try {
             checkExecution(execution);
@@ -5898,18 +6047,6 @@ function startHttpServer() {
           } finally {
             releaseGate();
           }
-
-          // AST-R1 remainder: the client already has its answer below - the
-          // summary is backgrounded (serialized through summaryChain so two
-          // racing requests cannot interleave 7CODER.md writes). The CLI/REPL
-          // paths still await: a one-shot process would exit before a
-          // fire-and-forget summary ever ran.
-          const summaryExecution = createExecutionControl(Math.max(1, execution.deadlineAt - Date.now()));
-          summaryChain = summaryChain
-            .then(() => { checkExecution(summaryExecution); return summarizeAction(rawPrompt, result, modelContext, summaryExecution); })
-            .then(ns => { checkExecution(summaryExecution); if (ns) updateCompleteSummary(ns); })
-            .catch(e => console.warn('[WARN] task summary not written: ' + e.message))
-            .finally(() => summaryExecution.dispose());
 
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({
@@ -5923,6 +6060,7 @@ function startHttpServer() {
               finish_reason: 'stop'
             }]
           }));
+          actionSummaryQueue.enqueue({ id: responseId, rawPrompt, result, modelContext, deadlineAt: execution.deadlineAt });
         } catch (e) {
           console.error('HTTP error:', e);
           if (res.destroyed || res.writableEnded) return;
@@ -5933,14 +6071,13 @@ function startHttpServer() {
               res.end();
             } catch (e2) {}
           } else {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
+            res.writeHead(e.code === 'EXECUTION_CANCELLED' ? 408 : 500, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: { message: e.message } }));
           }
         } finally {
-          execution.dispose();
-          res.removeListener('close', onDisconnect);
+          cleanup();
         }
-      });
+      }, { cancelled: execution, addBytes: n => reservation.addBytes(n), readTimeoutMs: 30000, onFailure: cleanup });
   }
 
   const ROUTES = [
