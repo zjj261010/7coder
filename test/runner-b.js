@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { resultForCall, auditMatches } = require('./_protocol');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'B', wsPrefix: 'w-b-' });
@@ -2969,7 +2970,7 @@ scenarios.push({
       const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
       const log=readLog(m.log);
       const result=id=>tr(log,id);
-      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=r.c.substring(0,25);const o=outputs.find(e=>e.result&&e.result.substring(0,25)===key);return o&&o.status;};
+      const statusOf=id=>{const output=resultForCall(outputs,id);return output&&output.status;};
       record('ToolResult-b2: glob output naming an error-looking file stays ok', result('b2g1') && statusOf('b2g1')==='completed' && result('b2g1').c.startsWith('Read error fake.txt'), JSON.stringify(outputs.map(o=>o.status)));
       record('ToolResult-b2: grep match inside an error-looking filename stays ok', result('b2r1') && statusOf('b2r1')==='completed' && result('b2r1').c.startsWith('Read error fake.txt'), '');
       record('ToolResult-b2: workflow continues past error-looking glob result and writes', result('b2wf') && result('b2wf').c.startsWith('[OK] Workflow complete') && fs.existsSync(path.join(cwd,'wf-b2-continued.txt')), result('b2wf') ? result('b2wf').c.substring(0,120) : 'no result');
@@ -2978,7 +2979,7 @@ scenarios.push({
       record('ToolResult-b2: git status and git diff of a dirty tree stay completed', statusOf('b2gs')==='completed' && statusOf('b2gd')==='completed', '');
       record('ToolResult-b2: process list completes and grep no-match stays completed', statusOf('b2pl')==='completed' && statusOf('b2r2')==='completed' && result('b2r2') && result('b2r2').c.startsWith('No matches for pattern:'), '');
       const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
-      record('ToolResult-b2: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+      record('ToolResult-b2: streamed statuses agree with audit rows', outputs.length===calls.length && auditMatches(outputs,auditRows), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
     } finally { if (srv) srv.kill(); stopMock(m); }
   }
 });
@@ -3027,19 +3028,15 @@ scenarios.push({
       const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
       const log=readLog(m.log);
       const result=id=>tr(log,id);
-      // SSE display text passes sanitizeAuditLine, whose /sk-[A-Za-z0-9]{8,}/
-      // masking also hits "ta<sk-...>" inside task ids - normalize both sides
-      // the same way before keying (display-only masking; the model text keeps
-      // the full id).
-      const norm=s=>String(s).replace(/sk-[A-Za-z0-9]{8,}/g,'sk-***');
-      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=norm(r.c).substring(0,25);const o=outputs.find(e=>e.result&&norm(e.result).substring(0,25)===key);return o&&o.status;};
+      // Diagnostic IDs are independent of display masking and text prefixes.
+      const statusOf=id=>{const output=resultForCall(outputs,id);return output&&output.status;};
       record('ToolResult-b3: task output that begins like an error prefix stays ok', result('b3to2') && statusOf('b3to2')==='completed' && result('b3to2').c.startsWith('[ERROR] b3-fake-task-output'), JSON.stringify(outputs.map(o=>o.status)));
       record('ToolResult-b3: prompt and mcp resource content passthrough stays ok', result('b3pf') && statusOf('b3pf')==='completed' && result('b3rr') && statusOf('b3rr')==='completed' && result('b3rr').c.startsWith('[ERROR] b3-fake-resource'), '');
       record('ToolResult-b3: not-found failures report explicit error status', ['b3to','b3tg','b3rm','b3pm'].every(id=>statusOf(id)==='error'), JSON.stringify({task:statusOf('b3to'),res:statusOf('b3rm'),file:statusOf('b3pm')}));
       record('ToolResult-b3: workflow continues past error-looking task output and writes', result('b3wf') && result('b3wf').c.startsWith('[OK] Workflow complete') && fs.existsSync(path.join(cwd,'wf-b3-continued.txt')), result('b3wf') ? result('b3wf').c.substring(0,120) : 'no result');
       record('ToolResult-b3: memory round-trip and listings stay completed', statusOf('b3ms')==='completed' && statusOf('b3mr')==='completed' && statusOf('b3ml')==='completed' && statusOf('b3tl')==='completed' && statusOf('b3lr')==='completed', '');
       const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
-      record('ToolResult-b3: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+      record('ToolResult-b3: streamed statuses agree with audit rows', outputs.length===calls.length && auditMatches(outputs,auditRows), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
     } finally { if (srv) srv.kill(); stopMock(m); }
   }
 });
@@ -3085,12 +3082,8 @@ scenarios.push({
       const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
       const log=readLog(m.log);
       const result=id=>tr(log,id);
-      // SSE display text passes sanitizeAuditLine, whose /sk-[A-Za-z0-9]{8,}/
-      // masking also hits "ta<sk-...>" inside task ids - normalize both sides
-      // the same way before keying (display-only masking; the model text keeps
-      // the full id).
-      const norm=s=>String(s).replace(/sk-[A-Za-z0-9]{8,}/g,'sk-***');
-      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=norm(r.c).substring(0,25);const o=outputs.find(e=>e.result&&norm(e.result).substring(0,25)===key);return o&&o.status;};
+      // Diagnostic IDs are independent of display masking and text prefixes.
+      const statusOf=id=>{const output=resultForCall(outputs,id);return output&&output.status;};
       record('ToolResult-b4: skill validation and unknown-skill failures report error', statusOf('b4sv')==='error' && statusOf('b4sn')==='error' && result('b4sn') && result('b4sn').c.startsWith('Skill "nosuchskill" not found'), JSON.stringify({valid:statusOf('b4sv'),unknown:statusOf('b4sn')}));
       record('ToolResult-b4: task creation validation and not-found stops report error', statusOf('b4tc')==='error' && result('b4tc').c.startsWith('Task error: command is required') && statusOf('b4ts')==='error', '');
       record('ToolResult-b4: cron delete and pid validation failures report error', statusOf('b4cd')==='error' && result('b4cd').c.startsWith('Cron job not found') && statusOf('b4pk')==='error' && result('b4pk').c.startsWith('Invalid PID'), '');
@@ -3098,7 +3091,7 @@ scenarios.push({
       record('ToolResult-b4: todo round-trip and valid task creation stay completed', statusOf('b4ta')==='completed' && statusOf('b4tl')==='completed' && statusOf('b4tu')==='error' && statusOf('b4te')==='error' && statusOf('b4tc2')==='completed' && statusOf('b4pk2')==='error' && result('b4pk2').c.startsWith('Kill error:'), '');
       record('ToolResult-b4: stopping an already-finished task stays completed', statusOf('b4ts2')==='completed' && result('b4ts2').c.includes('already completed'), result('b4ts2') ? result('b4ts2').c.substring(0,100) : 'no result');
       const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
-      record('ToolResult-b4: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+      record('ToolResult-b4: streamed statuses agree with audit rows', outputs.length===calls.length && auditMatches(outputs,auditRows), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
     } finally { if (srv) srv.kill(); stopMock(m); }
   }
 });
@@ -3310,7 +3303,7 @@ scenarios.push({
       const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
       const log=readLog(m.log);
       const result=id=>tr(log,id);
-      const statusOf=id=>{const r=result(id);if(!r)return undefined;const o=outputs.find(e=>e.result===r.c);return o&&o.status;};
+      const statusOf=id=>{const output=resultForCall(outputs,id);return output&&output.status;};
       record('ToolResult-b5: fetch failures error while fetched page content stays ok',
         result('b5fe') && statusOf('b5fe')==='error' && result('b5fe').c.startsWith('Fetch error:') &&
         result('b5fc') && statusOf('b5fc')==='completed' && result('b5fc').c.startsWith('[ERROR] b5-fake-fetch-body'),
@@ -3320,7 +3313,7 @@ scenarios.push({
       record('ToolResult-b5: agent success round-trip and validation stay classified',
         result('b5ag') && statusOf('b5ag')==='completed' && result('b5ag').c.startsWith('Sub-agent "b5agent" result:\nSUBAGENT-B5-ANSWER') && statusOf('b5agv')==='error', '');
       const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
-      record('ToolResult-b5: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+      record('ToolResult-b5: streamed statuses agree with audit rows', outputs.length===calls.length && auditMatches(outputs,auditRows), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
     } finally { if (srv) srv.kill(); if (fakeWeb) fakeWeb.kill(); stopMock(m); }
   }
 });
@@ -3423,7 +3416,7 @@ scenarios.push({
       const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
       const log=readLog(m.log);
       const result=id=>tr(log,id);
-      const statusOf=id=>{const r=result(id);if(!r)return undefined;const o=outputs.find(e=>e.result===r.c);return o&&o.status;};
+      const statusOf=id=>{const output=resultForCall(outputs,id);return output&&output.status;};
       record('ToolResult-b6: live success keeps both streams while failures stay errors',
         result('b6rc') && statusOf('b6rc')==='completed' && result('b6rc').c.includes('OUT-B6-LIVE') && result('b6rc').c.includes('[STDERR]') && result('b6rc').c.includes('ERR-B6-LIVE') &&
         result('b6rf') && statusOf('b6rf')==='error' && result('b6rf').c.startsWith('[ERROR] Command failed'),
@@ -3431,7 +3424,7 @@ scenarios.push({
       record('ToolResult-b6: bash and powershell live paths keep classified statuses',
         statusOf('b6bp')==='completed' && result('b6bp').c.includes('BP-B6-OK') && statusOf('b6bx')==='error' && result('b6bx').c.includes('BP-B6-FAIL') && statusOf('b6ps')==='completed' && result('b6ps').c.includes('PS-B6-OK'), '');
       const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
-      record('ToolResult-b6: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+      record('ToolResult-b6: streamed statuses agree with audit rows', outputs.length===calls.length && auditMatches(outputs,auditRows), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
     } finally { if (srv) srv.kill(); stopMock(m); }
   }
 });
@@ -3480,11 +3473,8 @@ scenarios.push({
       const outputs=events.map(e=>e.choices && e.choices[0].delta.tool_result).filter(Boolean);
       const log=readLog(m.log);
       const result=id=>tr(log,id);
-      // Prefix-key matching (b3 pattern): SSE display text is truncated at
-      // 12000 chars (snip emits the whole system prompt as JSON) and passes
-      // sanitizeAuditLine masking - exact equality would miss the pairing.
-      const norm=s=>String(s).replace(/sk-[A-Za-z0-9]{8,}/g,'sk-***');
-      const statusOf=id=>{const r=result(id);if(!r)return undefined;const key=norm(r.c).substring(0,25);const o=outputs.find(e=>e.result&&norm(e.result).substring(0,25)===key);return o&&o.status;};
+      // Full model text can differ from bounded SSE display text; match IDs.
+      const statusOf=id=>{const output=resultForCall(outputs,id);return output&&output.status;};
       record('ToolResult-b7: handover description passthrough stays ok despite error-looking text',
         result('b7aa') && statusOf('b7aa')==='completed' && result('b7aa').c.startsWith('[ERROR] b7-flip-description'),
         JSON.stringify({status:statusOf('b7aa'),text:result('b7aa') && result('b7aa').c.substring(0,40)}));
@@ -3507,7 +3497,7 @@ scenarios.push({
       record('ToolResult-b7: invalid search provider fails with provider error',
         statusOf('b7ws')==='error' && result('b7ws').c.startsWith('Search error (provider): Unknown SEARCH_PROVIDER'), '');
       const auditRows=readLog(path.join(cwd,'.7coder','audit.jsonl')).filter(e=>e.type==='tool');
-      record('ToolResult-b7: streamed statuses agree with audit rows', outputs.length===calls.length && outputs.every(e=>auditRows.some(a=>a.tool===e.name && a.status===(e.status==='completed'?'ok':e.status))), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
+      record('ToolResult-b7: streamed statuses agree with audit rows', outputs.length===calls.length && auditMatches(outputs,auditRows), JSON.stringify(auditRows.map(a=>a.tool+':'+a.status)));
     } finally { if (srv) srv.kill(); if (fakeWeb) fakeWeb.kill(); stopMock(m); }
   }
 });

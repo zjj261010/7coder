@@ -40,4 +40,20 @@ function requestError(body, expect) {
   }
   return null;
 }
-module.exports = { pairingError, pairingValid: messages => pairingError(messages) === null, requestError };
+function resultForCall(outputs, callId) {
+  if (!Array.isArray(outputs) || typeof callId !== 'string' || !callId) return undefined;
+  const matches = outputs.filter(row => row && row.callId === callId);
+  return matches.length === 1 ? matches[0] : undefined;
+}
+function auditMatches(outputs, audits) {
+  if (!Array.isArray(outputs) || !outputs.length || !Array.isArray(audits)) return false;
+  const ids = new Set();
+  return outputs.every(output => {
+    if (!output || typeof output.callId !== 'string' || !output.callId || ids.has(output.callId) ||
+        !['completed','error','blocked','declined','cancelled'].includes(output.status)) return false;
+    ids.add(output.callId);
+    const rows = audits.filter(row => row && row.callId === output.callId);
+    return rows.length === 1 && rows[0].tool === output.name && rows[0].status === (output.status === 'completed' ? 'ok' : output.status);
+  });
+}
+module.exports = { pairingError, pairingValid: messages => pairingError(messages) === null, requestError, resultForCall, auditMatches };

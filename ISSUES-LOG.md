@@ -628,7 +628,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。后续INC-24-04另补正则期限并定向回归21/21；同步文件IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20保护保留；本日扫描批和INC-24-04 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
-| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对与严格mock、K/R本地正反例见10-24/25记录。10-25再补SSE/audit/保存活动callId，重复正文/同名/长ID实际专项10/10，B pilot改逐ID且11/11单次。仍待旧位置mock及B2–B7正文关联逐个迁移、跨请求execution ID和真实模型质量验收；不据本地fixture宣称全套/真实端点已验收。 | R1 §10.3；R2 N01/N02/N03；各定向记录 |
+| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例见各批。SSE/audit/保存活动callId新10/10＋pilot11；10-25再迁B2–B7至唯一ID/状态，反例10/10＋六场景40/40首跑。仍待旧位置mock按业务期望迁移、跨请求execution ID和真实模型质量验收；不据本地fixture宣称全套/真实端点已验收。 | R1 §10.3；R2 N01/N02/N03；各定向记录 |
 
 ### V22：验证与发布门槛（均未执行）
 
@@ -1434,3 +1434,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新debug-prerequisites首跑5项后因提取夹具漏载awaitCommandCancellable而失败；补原命令等待helper后按现有授权仅复跑失败专项，最终 **10/10，0 SKIP**。三类缺失零进程/零编译/guard恢复，模拟.NET安装目录与真实PATH文件查找优先级，真实编译spec的绝对csc/完整argv；私有Node二进制作为明确的解释器shim验证Unicode/空格/&脚本路径与退出7，不声称实际Python语义。真实Git Bash .sh debug与stateless命令均使用选定解释器、取消后观察直属close，不靠打印取消文本。
 - 旧debug-lifecycle本批首次单次 **21/21**、B tool-results-b6 **7/7**（缺依赖/取消/双流/实际命令状态）通过；新专项失败后未重跑已通过debug21。旧两个命令提取夹具补显式Bash路径/环境identity stub，B5仅语法核对未重跑，真实路径选择由新专项覆盖。npm/test-all登记，相关Node13语法及diff检查通过。
 - 未执行真实C#编译/.NET GUI、实际Python、Win7目标版本矩阵、所有其它Bash布局/任意后代树、完整A–J/UI/test-all、24/72h或打包。T22-07/18/23仍部分完成；不据现代宿主上的Node/Git/fixture验收解除Win7门槛。按授权提交本批、未推送，继续T22-33旧工具结果断言的逐调用迁移。
+
+### 2026-10-25 —— T22-33 B2–B7逐调用结果证据
+
+- 调试依赖/Bash批已提交`56994bb`。六个statusOf由完整/前25字正文匹配改为resultForCall的callId唯一匹配；六个SSE/audit验证由同名同状态some改为每个ID恰一条、工具名与权威状态都一致。公共test/_protocol拒绝重复/缺失/空ID和未知SSE状态，允许独立workflow内部无ID行存在，但不能拿它替代外部模型调用。删除过时的掩码/前缀关联helper与注释。
+- 新tool-result-evidence首次单次 **10/10**：同名同正文不同ID、审计乱序、ID状态交叉（旧some会误过）、缺失/重复SSE与audit、空结果/无ID/无status、错工具、内部无ID行的正反例。结果正文仍由原场景的模型tool消息与实际文件/进程行为断言验证；通用关联helper不把脱敏展示正文当身份。
+- 修改判据后仅运行受影响B2–B7六场景，首次单次 **40/40**：文件/搜索/Git/进程列表、task/memory/资源、skill/cron/agent验证、网络/合成/子代理、命令/PS/Bash取消与双流、写/edit/notebook/download/交接等原契约均保留，真实SSE/audit使用新callId核对。B6在上一批以旧判据通过7项，本批因判据实质改变纳入这一次定向验证；没有无改动重复测试，也未跑完整B/其它A–J。
+- npm/test-all登记、Node13语法及diff检查通过；未重跑通用mock-protocol30、调用关联10或其它已通过专项。T22-33剩余的是业务错序期望逐个覆盖（legacy mock仍可重复末步）、跨请求/内部父子execution span和真实外部模型质量；没有新增生产变更，不把这40项算作全项目再次审阅/Win7/72h验收。按授权提交本批、未推送，继续磁盘保留的自有Git快照范围核查。
