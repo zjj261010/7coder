@@ -36,6 +36,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'test-runtime.js', args: [path.join(ROOT, 'test', 'test-runtime.js')] },
     { name: 'git-status-columns.js', args: [path.join(ROOT, 'test', 'git-status-columns.js')] },
     { name: 'path-boundaries.js', args: [path.join(ROOT, 'test', 'path-boundaries.js')] },
+    { name: 'scan-budget.js', args: [path.join(ROOT, 'test', 'scan-budget.js')] },
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);

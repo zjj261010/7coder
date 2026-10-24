@@ -625,7 +625,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-27 | Medium／确认 | **修 Markdown 语言属性转义**：使用 DOM 属性赋值或有限字符规则，含引号的 fenced language 不能改变 HTML 属性；普通 c++/c#、未闭合围栏仍正确。 | R1 M15；A2-04 只修错误气泡，不应反向宣布其修复无效 |
 | ✅ | T22-28 | Low／确认 | **修 git status 首行 trim**：10-24只去末尾CR/LF，保留首项XY的index空格；CRLF按行计数。旧Git集成断言由错误staged:1/modified:0改为staged:0/modified:1并检查实际前导空格。新真实隔离Git专项9/9（未暂存/已暂存/MM/未跟踪/clean/CRLF/故障）、旧Git集成4/4，Node13均单次。 | R1 L01；DS-4/P2-11原分列保留；本日Git首列记录 |
 | ✅ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：10-24先将relative路径分隔符归一为/再匹配例外；原函数＋实际私有磁盘写入证实反斜杠memory在default模式可自动写，普通source仍需审批，deny/denial/protected-extra不被绕过，外指junction仍拒绝；新路径25/25、旧权限8/8。 | R1 L02；GAP-9；本日路径批记录 |
-| ⬜ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：grep 支持文件路径或明确拒绝，不能伪装无匹配；glob 按实际访问条目计预算，区分预算耗尽/无匹配。 | R1 L03；P2-3、A2-20 的已有保护保留 |
+| ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。同步readdir分配和正则CPU预算未解决，详见疑点。 | R1 L03；P2-3、A2-20保护保留；本日扫描批记录 |
 | ⬜ | T22-31 | Low／潜在风险 | **cron ID 唯一**：固定时钟下同毫秒创建两个 job 不覆盖 Map，不丢 timer，二者可独立删除/回收。 | R1 L04；NEW-2 不因新增ID问题重开 |
 | ⬜ | T22-32 | Improvement | **补最低运行诊断**：记录当前运行/排队、最后成功/错误、关键 errno/路径/child exit；故障日志有限额。完整 runId 架构与跨会话提交统计仍留 OPT-3/DS-13 暂缓，不借此启动大拆分。 | R1 日志/长期运行章节；R2 N04；DS-13/OPT-3 |
 | 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：10-24修pshell先决条件为6秒内建watchdog/1秒工具期限；新独立真实Bash专项首跑暴露bin/bash启动器残留，修产品后获现有自动复测授权复跑8/8，必须观察close、下一环境与命令可用性，SKIP单列。旧pshell修后未重复跑。其余仍待：信息/skip不记PASS、D按调用ID、stderr预览假命中、MAX_TOOL_STEPS=0、K/R真实workflow/第二模型、严格tool配对、mock错序。 | R1 §10.3；R2 N01/N02/N03；本日INC-24-03及超时oracle记录 |
@@ -1256,3 +1256,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新path-boundaries首跑11项路径判断通过，进入虚拟根状态写入时因测试沙箱漏传Buffer而ReferenceError、exit1；对照既有state-store夹具补Buffer/require后，按现有失败自动复测授权仅复跑该专项一次：**25/25，exit0**。包括drive根/相等/大小写/不同卷/前缀/父级、UNC共享根/大小写/不同共享/不同server、POSIX根及大小写；映射drive/UNC根的源码原state读写/previous、反斜杠memory自动写、普通source需审批、deny/protected-extra/denial、真实外指junction拒绝。所有IO由有边界断言的虚拟FS映射到本次私有临时目录，既未写真实盘符根也未访问真实网络共享。
 - 旧B perm-rules **8/8**，仅首跑，修夹具后没有重复；三份相关JS Node13语法与diff静态检查通过。未运行全套A–J/UI/test-all、真实驱动器根/UNC共享故障、Win7、24/72h或打包。代码修复及所列验证关闭T22-25/29，目标机/网络文件系统实机门槛继续保留。
 - 新npm/test-all入口登记。本批按授权提交`fix(T22-25,T22-29): normalize root containment and memory paths`，未推送。
+
+### 2026-10-24 —— T22-30搜索输入与真实访问预算
+
+- 路径批已提交`05086b9`。确认原glob的visitedCount仅在进入目录时增长，不能限制平铺的大量不匹配文件；改按每个目录条目计数（包含跳过/无法读取项），glob最多4×maxEntries，匹配条目仍维持原1000+sentinel契约。深度/访问耗尽和IO错误用显式incomplete标记，真正空结果才为无匹配。内部pruneBackups不传opts，保留无预算/无过滤遍历。
+- grep显式输入可为普通文件或目录；不存在的起始路径带errno返回Tool error，外指junction仍先被sanitizePath拒绝。显式大文件/二进制输入有跳过原因，不再误报无匹配；嵌套读取失败报告incomplete/errno。模型侧除5000实际文本文件和每文件50匹配行外，新增20000访问条目/深度12，跳过的二进制/重目录同样消耗条目预算，真实路径去重继续防junction循环。schema同步。
+- Node13新scan-budget首跑7项通过后，外指junction断言错误地期待返回文本，而原sanitizePath已抛Security异常，产品保护有效；改为assert.throws后按失败自动复测授权仅重跑该专项一次：**21/21**。包括实际中文/空格私有路径、文件/无匹配/缺失、binary/2MiB、匹配行cap、原regex lint、真实junction逃逸/循环、计数IO、无opts全量、深度及EACCES注入。旧B scan-caps/tool-results-b2 **13/13**首跑，未重复。Node13语法、diff静态检查通过；新专项登记npm/test-all。
+- 本项关闭不等于同步IO有硬时限：readdirSync仍一次分配目录清单，单次读/stat/regex仍可能阻塞；尤其歧义分支正则疑点仍开放。未跑全套A–J/UI/test-all、Win7/真实ACL/网络盘、24/72h或打包。按授权提交本批，未推送；继续T22-31固定时钟下cron ID和独立回收。
