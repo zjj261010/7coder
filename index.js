@@ -867,7 +867,7 @@ if (DANGER_MODE) {
 
 // ====================== TOOL DEFINITIONS ======================
 const tools = [
-  { type: "function", function: { name: "read_file", description: "Read a file. Output is always line-numbered (cat -n style). Optional offset (1-based start line) and limit (number of lines) window large reads. Binary files are refused ([BINARY] marker); empty files return (empty file).", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } } },
+  { type: "function", function: { name: "read_file", description: "Read a regular file as line-numbered UTF-8. Optional offset (1-based) and limit select lines. Reads use 64KiB chunks, at most 16MiB scanned, and check a 5s/caller budget between IO operations. Output is bounded by the configured result cap and a 128KiB character ceiling; incomplete views are marked and must not be used for whole-file rewrites. Only scanned bytes are encoding-validated; unscanned tails remain unknown. Initial binary files return [BINARY]; empty files return (empty file).", parameters: { type: "object", properties: { path: { type: "string" }, offset: { type: "number" }, limit: { type: "number" } }, required: ["path"] } } },
   { type: "function", function: { name: "write_file", description: "Create or overwrite a file.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "append_file", description: "Append content to a file.", parameters: { type: "object", properties: { path: { type: "string" }, content: { type: "string" } }, required: ["path", "content"] } } },
   { type: "function", function: { name: "edit_file", description: "Replace an exact unique substring in a file (surgical edit, much safer than rewriting whole files). old_string must occur exactly once, or set replace_all=true.", parameters: { type: "object", properties: { path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_string", "new_string"] } } },
@@ -3096,28 +3096,11 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'read_file') {
     try {
       const fullPath = path.join(launchDir, sanitizePath(args.path || ''));
-      // GAP-3b: read as a Buffer first - a NUL byte in the first 4KB marks
-      // binary content, which must not be decoded into the conversation as text.
-      const buf = fs.readFileSync(fullPath);
-      if (buf.length === 0) return makeToolResult('ok', '(empty file)');
-      if (buf.slice(0, 4096).includes(0)) {
-        return makeToolResult('ok', `[BINARY] ${args.path} looks binary - refused to read as text. Use download_tool or a shell command instead.`);
-      }
-      // GAP-3a: every read is line-numbered (`cat -n` style), full and windowed
-      // alike - one shared formatter so the two branches cannot drift.
-      const lines = decodeUtf8Text(buf).split('\n');
-      const windowed = typeof args.offset === 'number' || typeof args.limit === 'number';
-      const start = windowed ? Math.max(0, (parseInt(args.offset, 10) || 1) - 1) : 0;
-      // old P1-6 third half: a window fully past EOF must say so, not
-      // silently return '' (indistinguishable from an empty file).
-      if (windowed && start >= lines.length) return makeToolResult('ok', `(offset ${args.offset} is beyond EOF - the file has ${lines.length} line(s))`);
-      const count = !windowed
-        ? lines.length
-        : ((typeof args.limit === 'number' && args.limit > 0) ? Math.floor(args.limit) : Math.max(0, lines.length - start));
-      return makeToolResult('ok', lines.slice(start, start + count)
-        .map((l, i) => String(start + i + 1).padStart(6) + '\t' + l)
-        .join('\n'));
-    } catch (e) { return makeToolResult('error', `Read error: ${e.message}`); }
+      return makeToolResult('ok', await readUtf8Window(fullPath, args, cancelled, MAX_TOOL_RESULT_CHARS));
+    } catch (e) {
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: file read cancelled]');
+      return makeToolResult('error', `Read error: ${e.message}`);
+    }
   }
   if (name === 'write_file') {
     try {
@@ -5369,6 +5352,93 @@ function decodeUtf8Text(bytes) {
     throw new Error('Unsupported text encoding or binary data: only lossless UTF-8 is supported. Convert a copy explicitly; original bytes were not changed.');
   }
   return text;
+}
+
+// Bounded line view. Validate every scanned UTF-8 prefix, retaining at most
+// three incomplete codepoint bytes across chunks. Unscanned tails are unknown.
+async function readUtf8Window(fullPath, args, cancelled, maxResultChars) {
+  const start = Math.max(1, parseInt(args.offset, 10) || 1);
+  const count = typeof args.limit === 'number' && args.limit > 0 ? Math.floor(args.limit) : Infinity;
+  const last = start + count - 1;
+  const charBudget = Math.max(256, Math.min(maxResultChars, 128 * 1024) - 256);
+  const scanBudget = 16 * 1024 * 1024, deadline = Date.now() + 5000;
+  const invoke = (method, ...values) => new Promise((resolve, reject) => fs[method](...values, (error, value) => error ? reject(error) : resolve(value)));
+  let fd = null, position = 0, line = 1, lineStart = true, selected = false, out = '', pending = Buffer.alloc(0);
+  const buffer = Buffer.alloc(64 * 1024);
+  const same = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
+  function append(text) {
+    if (line < start || line > last) return false;
+    selected = true;
+    const value = (lineStart ? (out ? '\n' : '') + String(line).padStart(6) + '\t' : '') + text;
+    lineStart = false;
+    let take = Math.min(value.length, charBudget - out.length);
+    if (take > 0 && take < value.length && /[\uD800-\uDBFF]/.test(value.charAt(take - 1)) && /[\uDC00-\uDFFF]/.test(value.charAt(take))) take--;
+    out += value.slice(0, take);
+    return take < value.length;
+  }
+  function consume(text) {
+    let offset = 0;
+    while (offset < text.length) {
+      const end = text.indexOf('\n', offset);
+      if (append(text.slice(offset, end < 0 ? text.length : end))) return 'output budget exhausted';
+      if (end < 0) return null;
+      line++; lineStart = true; offset = end + 1;
+      if (line > last) return 'window complete';
+    }
+    return null;
+  }
+  function partial(reason) {
+    return out + '\n[read incomplete: ' + reason + '; scanned through line ' + line +
+      '. Request a smaller window or use bounded byte reads. DO NOT rewrite from this partial view.]';
+  }
+  try {
+    checkExecution(cancelled);
+    const before = await invoke('stat', fullPath);
+    if (!before.isFile()) throw new Error('read_file requires a regular file');
+    checkExecution(cancelled);
+    fd = await invoke('open', fullPath, 'r');
+    const original = await invoke('fstat', fd);
+    if (!original.isFile()) throw new Error('read_file requires a regular file');
+    async function finish(text) {
+      checkExecution(cancelled);
+      const after = await invoke('fstat', fd), named = await invoke('stat', fullPath);
+      if (!same(original, after) || !same(original, named)) throw new Error('file changed during read; retry before using this view');
+      return text;
+    }
+    if (!original.size) return await finish('(empty file)');
+    while (true) {
+      checkExecution(cancelled);
+      if (Date.now() >= deadline) return await finish(partial('5s read budget exhausted'));
+      if (position >= scanBudget) return await finish(partial('16MiB scan budget exhausted before EOF'));
+      const bytes = await invoke('read', fd, buffer, 0, Math.min(buffer.length, scanBudget - position), position);
+      checkExecution(cancelled);
+      if (!position && buffer.slice(0, Math.min(bytes, 4096)).includes(0)) {
+        return await finish('[BINARY] ' + args.path + ' looks binary - refused to read as text. Use download_tool or a shell command instead.');
+      }
+      position += bytes;
+      const input = pending.length ? Buffer.concat([pending, buffer.slice(0, bytes)]) : buffer.slice(0, bytes);
+      let complete = input.length;
+      // Hold only an otherwise valid leading byte with too few trailing bytes.
+      let lead = input.length - 1;
+      while (lead >= 0 && input.length - lead <= 3 && (input[lead] & 0xC0) === 0x80) lead--;
+      const first = input[lead], need = first >= 0xC2 && first <= 0xDF ? 2 : first >= 0xE0 && first <= 0xEF ? 3 : first >= 0xF0 && first <= 0xF4 ? 4 : 1;
+      if (lead >= 0 && need > input.length - lead) complete = lead;
+      pending = Buffer.from(input.slice(complete));
+      const state = consume(decodeUtf8Text(input.slice(0, complete)));
+      if (state === 'window complete' || !count) return await finish(out);
+      if (state) return await finish(partial(state));
+      if (!bytes || position >= original.size) {
+        if (pending.length) consume(decodeUtf8Text(pending)); // refuse truncated UTF-8 at EOF
+        if (line > last) return await finish(out);
+        if (line >= start && lineStart) {
+          if (append('')) return await finish(partial('output budget exhausted'));
+        }
+        return await finish(selected ? out : '(offset ' + args.offset + ' is beyond EOF - the file has ' + line + ' line(s))');
+      }
+    }
+  } finally {
+    if (fd !== null) await invoke('close', fd);
+  }
 }
 
 function readUtf8ForWrite(fullPath, allowMissing) {

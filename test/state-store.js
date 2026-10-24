@@ -29,7 +29,7 @@ function context(cwd, overrides) {
     cut('function sessionFilePath()', 'async function summarizeAction(') +
     cut('const LOG_START =', '// ====================== CORE EXECUTION') +
     cut('  function writeWorkspaceEnv(', '  function hUi(') +
-    'async function invoke(name,args) {\n' +
+    'async function invoke(name,args,cancelled=null) {\n' +
     cut("  if (name === 'read_file') {", "  if (name === 'agent_tool') {") +
     cut("  if (name === 'todo_write_tool') {", "  if (name === 'memory_tool') {") + '\n}', ctx);
   ctx.warnings = warnings;

@@ -18,7 +18,7 @@ function cut(from, to) {
 }
 function context(cwd, overrides) {
   const ctx = loadContext(source, cwd, overrides, { Buffer, makeToolResult: (status, text) => ({ status, text }) });
-  vm.runInContext('async function invoke(name,args) {\n' +
+  vm.runInContext('async function invoke(name,args,cancelled=null) {\n' +
     cut("  if (name === 'read_file') {", "  if (name === 'agent_tool') {") +
     cut("  if (name === 'notebook_edit_tool') {", "  if (name === 'ask_user_question_tool') {") +
     cut("  if (name === 'prompt_from_file') {", "  if (name === 'auto_approval_return') {") + '\n}', ctx);

@@ -18,7 +18,7 @@ function loadContext(source, cwd, overrides, extra) {
   // the sandbox the constructor (plain object; the suites assert on .text).
   const ctx = Object.assign({ fs: Object.assign({}, fs, overrides), path, process, console,
     crypto, pipeline, Transform, axios, vm, launchDir: cwd, setTimeout, clearTimeout, setInterval, clearInterval,
-    EXECUTION_TIMEOUT_MS: 5000,
+    EXECUTION_TIMEOUT_MS: 5000, MAX_TOOL_RESULT_CHARS: 30000,
     makeToolResult: (status, text) => ({ status, text }) }, extra || {});
   vm.createContext(ctx);
   vm.runInContext(cut(source, 'function executionCancelledError(', 'function parseSSEStream(') +
