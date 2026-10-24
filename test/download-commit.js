@@ -17,7 +17,7 @@ function loadContext(source, cwd, overrides, extra) {
   // OPT-13: the extracted branches return structured ToolResults now - give
   // the sandbox the constructor (plain object; the suites assert on .text).
   const ctx = Object.assign({ fs: Object.assign({}, fs, overrides), path, process, console,
-    crypto, pipeline, Transform, axios, launchDir: cwd, setTimeout, clearTimeout, setInterval, clearInterval,
+    crypto, pipeline, Transform, axios, vm, launchDir: cwd, setTimeout, clearTimeout, setInterval, clearInterval,
     EXECUTION_TIMEOUT_MS: 5000,
     makeToolResult: (status, text) => ({ status, text }) }, extra || {});
   vm.createContext(ctx);

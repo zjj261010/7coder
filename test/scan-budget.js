@@ -14,7 +14,7 @@ function context(name, overrides) {
   const ctx = loadContext(source, cwd, overrides, { Buffer, SCAN_SKIP_DIRS: ['node_modules', '.git', 'dist', '.cache'] });
   vm.runInContext(cut('function globToRegex(', '// P2-3: heavy directories') +
     cut('function grepSearch(', '// Keep the handle until close') +
-    'async function tool(name,args) {\n' + cut("  if (name === 'glob_tool') {", "  if (name === 'list_dir') {") + '\n}', ctx);
+    'async function tool(name,args,cancelled=null) {\n' + cut("  if (name === 'glob_tool') {", "  if (name === 'list_dir') {") + '\n}', ctx);
   return { cwd, ctx };
 }
 (async () => {

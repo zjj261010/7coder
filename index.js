@@ -8,6 +8,7 @@ const http = require('http');
 const { pipeline, Transform } = require('stream');
 const crypto = require('crypto');
 const net = require('net');
+const vm = require('vm');
 
 // ====================== CLI ARGUMENT PARSING (Node 13 safe) =====================
 // Two-pass parsing so flags work in any order: flags are consumed first, then
@@ -867,7 +868,7 @@ const tools = [
   { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell; default is a fresh stateless shell per call. persistent=true is disabled in HTTP server mode. CLI/REPL persistent shells retain cwd/env within the current conversation, sub-agent or workflow; sub-agent/workflow shells close when that scope ends.", parameters: { type: "object", properties: { command: { type: "string" }, persistent: { type: "boolean" }, timeout_ms: { type: "number", description: "persistent mode only: 1000-300000, default 120000" } }, required: ["command"] } } },
   { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (uses PS2-compatible APIs, UTF-16LE Base64 input and UTF-8 text output). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js). Budget: node_modules/.git/dist/.cache are skipped; at most 1000 matches, 4000 visited entries and depth 12. Truncation/incomplete markers distinguish partial scans from no matches.", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
-  { type: "function", function: { name: "grep_tool", description: "Search contents of a file or directory. Budget: node_modules/.git/dist/.cache, files over 2MB and binary files are skipped; at most 5000 text files, 20000 visited entries and depth 12. Truncation/incomplete markers identify partial scans; invalid input paths are errors.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
+  { type: "function", function: { name: "grep_tool", description: "Search contents of a file or directory. Budget: node_modules/.git/dist/.cache, files over 2MB and binary files are skipped; at most 5000 text files, 20000 visited entries and depth 12. Matching stops with an error after 100ms per file; traversal checks a 5s/caller deadline between operations. Truncation/incomplete markers identify partial scans; invalid input paths are errors.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "list_dir", description: "List directory contents (name, type, size).", parameters: { type: "object", properties: { path: { type: "string" } } } } },
   { type: "function", function: { name: "download_tool", description: "Download a URL to a local file inside the workspace (streamed, 500 MB cap).", parameters: { type: "object", properties: { url: { type: "string" }, path: { type: "string" } }, required: ["url", "path"] } } },
   { type: "function", function: { name: "process_list_tool", description: "List running processes (tasklist on Windows, ps on Unix).", parameters: { type: "object", properties: {} } } },
@@ -2115,8 +2116,9 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
   return results;
 }
 
-// P2-3: grep budgets are opt-in via opts. No opts -> legacy unbounded scan,
-// byte for byte. When an opts object is passed the caps apply:
+// P2-3: grep budgets: traversal limits are opt-in via opts. No opts keeps the legacy
+// whole-file match semantics, but every match execution is limited to 100ms.
+// When an opts object is passed the following additional caps apply:
 //   skipHeavy          - skip SCAN_SKIP_DIRS, files > 2MB and binary content
 //                        (first 4096 bytes containing NUL)
 //   maxFiles           - stop after N files actually scanned (default 5000),
@@ -2125,6 +2127,7 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
 //                        (default 50), adding '... (more matches in this file)'
 //   maxVisited / maxDepth - cap all directory entries (including skipped or
 //                        unreadable files), default 4*maxFiles / 12
+//   deadlineAt         - optional caller deadline; scan also stops after 5s
 function grepSearch(pattern, searchPath = '', opts = null) {
   const budgeted = !!opts;
   const skipHeavy = budgeted && !!opts.skipHeavy;
@@ -2134,6 +2137,8 @@ function grepSearch(pattern, searchPath = '', opts = null) {
   const maxDepth = budgeted ? (typeof opts.maxDepth === 'number' ? opts.maxDepth : 12) : Infinity;
   const results = [];
   const incomplete = new Set();
+  const scanDeadline = budgeted ? Math.min(Date.now() + 5000, Number.isFinite(opts.deadlineAt) ? opts.deadlineAt : Infinity) : Infinity;
+  let matchError = null;
   const startDir = searchPath ? path.join(launchDir, sanitizePath(searchPath)) : launchDir;
   // A2-20: an evil pattern (a quantified group that itself contains a
   // quantifier - (a+)+, (\d+)+, ([a-z]+)*) turns line matching into a
@@ -2150,10 +2155,24 @@ function grepSearch(pattern, searchPath = '', opts = null) {
   } catch (e) {
     rx = null;
   }
+  // The lint above cannot prove an arbitrary regex is linear: (a|aa)+$
+  // passes it and can block Node's event loop. Keep the code constant and
+  // pass only regex/string data into a Node13-supported timed VM execution.
+  const matchContext = vm.createContext({ rx, needle: String(pattern).toLowerCase(), content: '', budgeted, perFileCap });
+  const matchScript = new vm.Script(String.raw`
+    var lines = budgeted ? content.split(/\r?\n/) : [content];
+    var count = 0;
+    for (var i = 0; i < lines.length; i++) {
+      if (count > perFileCap) break;
+      if (rx ? rx.test(lines[i]) : lines[i].toLowerCase().includes(needle)) count++;
+    }
+    count;
+  `);
   let scanned = 0;
   let visitedCount = 0;
   const visited = new Set(); // A2-20: junction cycles must not loop the walk
   function scanFile(full, stat, explicit) {
+    if (Date.now() >= scanDeadline) { incomplete.add('time budget exhausted'); return; }
     if (skipHeavy && stat.size > 2 * 1024 * 1024) {
       if (explicit) incomplete.add('file exceeds 2MiB limit');
       return;
@@ -2167,18 +2186,21 @@ function grepSearch(pattern, searchPath = '', opts = null) {
         }
       }
       const content = buf.toString('utf8');
+      matchContext.content = content;
+      let matchedLines;
+      const matchBudget = Math.max(1, Math.min(100, scanDeadline - Date.now()));
+      try { matchedLines = matchScript.runInContext(matchContext, { timeout: matchBudget }); }
+      catch (error) {
+        matchError = 'Tool error: grep matching failed at ' + path.relative(launchDir, full) +
+          (error.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' ? ' (' + matchBudget + 'ms matching budget exceeded)' : ' (' + error.message + ')') +
+          '; scan stopped. Simplify the pattern or search a smaller file.';
+        return;
+      } finally { matchContext.content = ''; }
       if (!budgeted) {
-        const matched = rx ? rx.test(content) : content.toLowerCase().includes(pattern.toLowerCase());
-        if (matched) results.push(`${path.relative(launchDir, full)}: matches "${pattern}"`);
+        if (matchedLines) results.push(`${path.relative(launchDir, full)}: matches "${pattern}"`);
         return;
       }
       scanned++;
-      const lines = content.split(/\r?\n/);
-      let matchedLines = 0;
-      for (const line of lines) {
-        if (matchedLines > perFileCap) break;
-        if (rx ? rx.test(line) : line.toLowerCase().includes(pattern.toLowerCase())) matchedLines++;
-      }
       if (matchedLines > 0) {
         results.push(`${path.relative(launchDir, full)}: matches "${pattern}"`);
         if (matchedLines > perFileCap) results.push('... (more matches in this file)');
@@ -2186,6 +2208,8 @@ function grepSearch(pattern, searchPath = '', opts = null) {
     } catch (e) { incomplete.add('unreadable file (' + e.code + ')'); }
   }
   function walk(current, depth) {
+    if (matchError) return;
+    if (Date.now() >= scanDeadline) { incomplete.add('time budget exhausted'); return; }
     if (scanned >= maxFiles) return;
     let realCur;
     try { realCur = fs.realpathSync(current); } catch (e) { incomplete.add('unreadable path (' + e.code + ')'); return; }
@@ -2194,6 +2218,8 @@ function grepSearch(pattern, searchPath = '', opts = null) {
     let entries;
     try { entries = fs.readdirSync(current); } catch (e) { incomplete.add('unreadable directory (' + e.code + ')'); return; }
     for (const entry of entries) {
+      if (matchError) return;
+      if (Date.now() >= scanDeadline) { incomplete.add('time budget exhausted'); return; }
       if (scanned >= maxFiles) return;
       if (visitedCount >= maxVisited) { incomplete.add('visit limit ' + maxVisited); return; }
       visitedCount++;
@@ -2220,6 +2246,7 @@ function grepSearch(pattern, searchPath = '', opts = null) {
   if (startStat.isDirectory()) walk(startDir, 0);
   else if (startStat.isFile()) scanFile(startDir, startStat, true);
   else return 'Tool error: grep path must be a regular file or directory';
+  if (matchError) return matchError;
   if (budgeted && scanned >= maxFiles) results.push(`[truncated after ${maxFiles} files scanned]`);
   if (incomplete.size) results.push('[scan incomplete: ' + Array.from(incomplete).join('; ') + ']');
   return results.length ? results.join('\n') : `No matches for pattern: ${pattern}`;
@@ -3221,7 +3248,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     return makeToolResult('ok', files.length ? files.join('\n') : 'No files matched');
   }
   if (name === 'grep_tool') {
-    const text = grepSearch(args.pattern, args.path, { skipHeavy: true });
+    const text = grepSearch(args.pattern, args.path, { skipHeavy: true, deadlineAt: cancelled && cancelled.deadlineAt });
     // Invalid patterns/starting paths are errors; an incomplete scan has an
     // explicit marker, while a complete no-match scan remains normal output.
     return makeToolResult(text.startsWith('Tool error:') ? 'error' : 'ok', text);
