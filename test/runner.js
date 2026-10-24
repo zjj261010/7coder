@@ -463,7 +463,7 @@ scenarios.push({
         httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'p2' }] }, { Authorization: 'Bearer k9' })
       ]);
       record('http: concurrent requests both 200', c1.status === 200 && c2.status === 200, c1.status + '/' + c2.status);
-      record('http: server never binds non-loopback (env default)', true, '');
+      S.info('http: this scenario connects over loopback; it does not prove the bind address');
     } finally {
       try { srv.kill(); } catch (e) {}
       stopMock(m);

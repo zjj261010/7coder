@@ -628,7 +628,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。后续INC-24-04另补正则期限并定向回归21/21；同步文件IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20保护保留；本日扫描批和INC-24-04 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
-| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell真实期限/close见INC-24-03；10-24再修MAX_TOOL_STEPS=0被默认30覆盖，并让J断言恰一次无工具请求和零dispatch；新20/20、J定向2/2。其余仍待：信息/skip不记PASS、D按调用ID、stderr预览假命中、K/R真实workflow/第二模型、严格tool配对、mock错序。 | R1 §10.3；R2 N01/N02/N03；本日超时oracle与零轮批记录 |
+| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell真实期限/close见INC-24-03；零轮新20/20＋J2/2。10-24再将信息/skip分开统计，D完整逐ID/终态和stderr工具结果代替文本预览；反例12/12、D修断言后9/9、I2/2。仍待：K/R真实workflow/第二模型、通用严格tool配对与mock错序、旧SSE/audit逐调用关联。 | R1 §10.3；R2 N01/N02/N03；本日超时oracle、零轮、统计与反例批 |
 
 ### V22：验证与发布门槛（均未执行）
 
@@ -1361,3 +1361,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - .env.example和README说明参数是模型工具轮次，一个轮次允许多个tool_calls；不把0泛化为限制内部模型调用或代替权限。旧J不再用模型主动给工具调用的违规响应冒充正常最终答复，而核对真实上游请求无schemas、有limit0指令、恰一次、审计零工具。
 - 新tool-step-limit首跑14项通过后，实际CLI失败，根因为本地模型fixture只回JSON而CLI请求stream=true；按实际协议补SSE和DONE，按现有授权仅复跑失败专项，最终 **20/20**。13种配置/警告边界、零轮取消、真实CLI零轮零文件/零审计、一轮两写入与两call ID结果完整、下一请求无schemas；没有使用真实模型。旧J steps-zero本批首次单次 **2/2**，其它J场景未跑。
 - npm/test-all登记，Node13语法及diff检查通过。未运行完整A–J/UI/test-all、Win7/真实浏览器/24/72h或打包；该配置修复不解决一轮任意大tool_calls批次的全局资源预算。T22-33其它oracle缺口保持未完成；按授权提交本批、未推送，继续信息/skip统计与D逐调用、stderr证据。
+
+### 2026-10-24 —— T22-33统计、D完整结果与stderr反例
+
+- 零轮批已提交`179fc8c`。共享reporter提供INFO和SKIP，不进入assertion的PASS分子/分母；SUMMARY单列跳过场景/检查和信息数。零断言且非显式跳过不再exit0（含只有信息、RUN_ONLY未命中）；全跳过保留exit0但明确0/0＋SKIP，不能据此当功能验收。A/I/G的三个固定true信息项改INFO，B的junction失败/已有配置跳过改SKIP，不假装环境不存在时通过。
+- D torture只看最终上游请求中的7个call ID，每个需要唯一真实read error且无outside bait；完成项要求调用声明/结果都逐一存在、退出0和最终答复，缺结果/重复/只发请求不再通过。CON.txt保留原来“正常完成”目标，并核对真实文件字节或明确错误；不强加不必要的设备名拒绝策略。没有改产品的路径支持范围。
+- I flush的stderr标记改Base64传输且使用随包Node绝对路径，避免命令预览直接带明文；断言bg调用的实际工具结果含Command OK和STDERR标记、背景任务最终答复完成。该检查证明stderr被交给模型，**不证明任意stderr逐字落入background.log或后台进程树已回收**；background.log的无限增长仍属T22-26。
+- 新review-oracles首次单次 **12/12**：5种reporter子进程exit/count组合，执行原D场景并注入完整/空/缺一/重复结果/重复声明/泄漏/无最终答复7种反例。随后真实D首次仅1/9，根因为我把Read error错误写成Tool error并假定CON.txt必须拒绝；修正实际契约，按现有授权仅复跑失败D torture，最终 **9/9**。新12项未因D断言修正重复跑；其fixture使用Tool error拒绝，新增Read error前缀/实际文件成功分支由真实D覆盖。I flush本批首次单次 **2/2**，未重复。
+- npm/test-all登记；涉及的runner和共享helper Node13语法及diff检查通过。B跳过分支/A/I/G信息项调用走静态核对，统计运行行为由新5种子进程覆盖，没有为输出标签重跑各套。未跑完整A–J/UI/test-all、真实模型K/R、Win7/真实桌面/24/72h或打包。全局mock错序/工具消息严格配对、SSE/audit逐调用、K/R证据仍开放。按授权提交本批、未推送，继续检查mock协议和配对反例。

@@ -2256,7 +2256,7 @@ scenarios.push({
     fs.writeFileSync(path.join(outsideDir, 'review.md'), 'OUTSIDE-ONLY-FAKE-DATA');
     const mk = spawnSync('cmd', ['/c', 'mklink', '/J', path.join(cwd3, '.7coder', 'memory'), outsideDir]);
     if (mk.status !== 0) {
-      record('sec1: junction probe setup (skip if mklink unavailable)', true, 'mklink failed - skipping junction assertions: ' + String(mk.stderr || '').substring(0, 60));
+      S.skip('sec1: junction assertions unavailable', 'mklink failed: ' + String(mk.stderr || '').substring(0, 60));
     } else {
       const m3 = startMock([
         tc('s2a', 'memory_tool', { action: 'read', topic: 'review' }),
@@ -2291,7 +2291,7 @@ scenarios.push({
     // IDX is the private per-run install, never the real install directory.
     const installPerm = path.join(path.dirname(IDX), 'permissions.json');
     if (fs.existsSync(installPerm)) {
-      record('sec1: cross-layer deny test (skipped - install permissions.json exists)', true, 'manual environment, not a failure');
+      S.skip('sec1: cross-layer deny test', 'install permissions.json exists');
     } else {
       // Temporarily create an allow in the isolated install only.
       fs.writeFileSync(installPerm, JSON.stringify({ allow: ['write_file(blocked.txt)'] }));
@@ -3528,7 +3528,7 @@ scenarios.push({
       fs.writeFileSync(path.join(outside, leaf), 'OUTSIDE-STATE-DATA');
       fs.mkdirSync(path.dirname(path.join(cwd, root)), { recursive:true });
       const mk = spawnSync('cmd',['/c','mklink','/J',path.join(cwd,root),outside]);
-      if (mk.status !== 0) { record('state guard '+label+': junction setup unavailable', true, 'mklink skipped'); continue; }
+      if (mk.status !== 0) { S.skip('state guard '+label+': junction assertions unavailable', 'mklink failed'); continue; }
       if (label === 'memory') {
         const m = startMock([tcState('sg1',tool,args),{role:'assistant',content:'DONE'}]);
         await new Promise(r=>setTimeout(r,500)); await runCli({port:m.port,args:['--prompt','t'],env:{PERMISSION_MODE:'bypass'},cwd,timeoutMs:60000});

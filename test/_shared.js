@@ -75,6 +75,8 @@ function create(opts) {
   fs.writeFileSync(manifest, '# 7coder-test-run\t' + runDir + '\n');
   const ownedChildren = new Set();
   let skipped = 0;
+  let skippedChecks = 0;
+  let information = 0;
   console.log('[TEST] isolated run: ' + runDir);
   function track(child, needle) {
     ownedChildren.add(child);
@@ -116,6 +118,14 @@ function create(opts) {
   function record(name, pass, detail) {
     results.push({ name, pass, detail: detail || '' });
     console.log((pass ? 'PASS' : 'FAIL') + '  ' + name + (pass ? '' : '  :: ' + String(detail).substring(0, 300)));
+  }
+  function info(name, detail) {
+    information++;
+    console.log('INFO  ' + name + (detail ? ' :: ' + String(detail).substring(0, 300) : ''));
+  }
+  function skip(name, detail) {
+    skippedChecks++;
+    console.log('SKIP  ' + name + (detail ? ' :: ' + String(detail).substring(0, 300) : ''));
   }
 
   // Spawn a mock LLM endpoint on an already-incremented port number.
@@ -216,8 +226,8 @@ function create(opts) {
   function finish(t0) {
     cleanup();
     const pass = results.filter(r => r.pass).length;
-    if (RUN_ONLY.length && results.length === 0 && skipped === 0) { console.log('WARNING: RUN_ONLY matched 0 scenarios'); process.exit(1); }
-    console.log('\n===== ' + (suite ? 'SUITE ' + suite + ' ' : '') + 'SUMMARY: ' + pass + '/' + results.length + ' passed; ' + skipped + ' scenarios skipped in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
+    if (results.length === 0 && skipped === 0 && skippedChecks === 0) { console.log('WARNING: no assertions executed' + (RUN_ONLY.length ? ' (RUN_ONLY matched no executable assertions)' : '')); process.exit(1); }
+    console.log('\n===== ' + (suite ? 'SUITE ' + suite + ' ' : '') + 'SUMMARY: ' + pass + '/' + results.length + ' passed; ' + skipped + ' scenarios skipped; ' + skippedChecks + ' checks skipped; ' + information + ' information items in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
     for (const f of results.filter(r => !r.pass)) console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
     process.exit(pass === results.length ? 0 : 1);
   }
@@ -239,7 +249,7 @@ function create(opts) {
     })();
   }
 
-  return { ROOT, IDX, NODE_BIN, RUN_ONLY, runDir, manifest, cleanup, spawn: ownedSpawn, spawnSync: ownedSpawnSync, delayCommand, results, record, startProcessAt, stopMock, freshCwd, runCli, httpReq, readLog, toolResults, tr, rmrf, finish, runAll };
+  return { ROOT, IDX, NODE_BIN, RUN_ONLY, runDir, manifest, cleanup, spawn: ownedSpawn, spawnSync: ownedSpawnSync, delayCommand, results, record, info, skip, startProcessAt, stopMock, freshCwd, runCli, httpReq, readLog, toolResults, tr, rmrf, finish, runAll };
 }
 
 module.exports = { create, rmrf, ROOT, IDX, NODE_BIN, RUN_ONLY };

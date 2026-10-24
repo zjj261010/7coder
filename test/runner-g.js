@@ -42,7 +42,7 @@ scenarios.push({
     const quitAtBye = !r.out.includes('RUN1-DONE');
     if (quitAtBye) {
       record('cmd-running: /BYE during run quits (kills task)', r.out.includes('Goodbye'), '');
-      record('cmd-running: (informational) later lines skipped after quit', true, '');
+      S.info('cmd-running: later lines skipped after quit');
     } else {
       record('cmd-running: /clear rejected while running', r.out.includes('A task is running'), r.out.substring(0, 200));
       record('cmd-running: /undo rejected while running', (r.out.match(/A task is running/g) || []).length >= 2, '');

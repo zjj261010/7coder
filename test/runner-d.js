@@ -40,30 +40,34 @@ scenarios.push({
     calls.push({ role: 'assistant', content: 'TORTURE-DONE' });
     const m = startMock(calls);
     await new Promise(r => setTimeout(r, 600));
-    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 120000 });
+    const run = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 120000 });
     const log = readLog(m.log);
-    let leaks = 0;
+    const finalMessages = log.length ? (log[log.length - 1].messages || []) : [];
+    const resultFor = id => finalMessages.filter(msg => msg.role === 'tool' && msg.tool_call_id === id);
     attacks.forEach(([label], i) => {
-      const res = tr(log, 'x' + i);
-      const leaked = res && res.c.includes('OUTSIDE-BAIT');
-      if (leaked) leaks++;
-      record('torture: ' + label + ' cannot read outside bait', !leaked, res ? res.c.substring(0, 70) : 'no result');
+      const matches = resultFor('x' + i), text = matches.length === 1 ? String(matches[0].content) : '';
+      record('torture: ' + label + ' returns one read error without outside bait', matches.length === 1 && /^(Read error:|Tool error:|BLOCKED:)/.test(text) && !text.includes('OUTSIDE-BAIT'), text ? text.substring(0, 70) : 'missing or duplicate result');
     });
-    // reserved device names: must not hang or crash the process
-    const res2 = tr(log, 'x0');
-    record('torture: process completed the full attack table', r2done(log), 'calls=' + attacks.length);
+    record('torture: process completed every call ID and final answer', run.code === 0 && run.out.includes('TORTURE-DONE') && attacks.every((_, i) =>
+      resultFor('x' + i).length === 1 && finalMessages.filter(msg => msg.role === 'assistant').reduce((n, msg) => n + (msg.tool_calls || []).filter(tc => tc.id === 'x' + i).length, 0) === 1), 'calls=' + attacks.length);
     // reserved name write attempt (CON) via second mock
     const m2 = startMock([
       { role: 'assistant', content: null, tool_calls: [{ id: 'w1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'CON.txt', content: 'x' }) } }] },
       { role: 'assistant', content: 'RESERVED-DONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: freshCwd('d1b') });
-    record('torture: reserved device name write surfaces cleanly', r.out.includes('RESERVED-DONE'), r.out.substring(0, 120));
+    const reservedCwd = freshCwd('d1b');
+    const r = await runCli({ port: m2.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd: reservedCwd });
+    const reserved = tr(readLog(m2.log), 'w1');
+    // Node's Windows namespaced IO can create a literal CON.txt. Do not
+    // invent a rejection requirement; verify either a real file or an error.
+    const reservedFile = path.join(reservedCwd, 'CON.txt');
+    const reservedOutcome = reserved && (/^(Write error:|Tool error:|BLOCKED:)/.test(reserved.c) ||
+      (reserved.c === 'Written: CON.txt' && fs.existsSync(reservedFile) && fs.readFileSync(reservedFile, 'utf8') === 'x'));
+    record('torture: device-name outcome is observed and process completes', r.code === 0 && r.out.includes('RESERVED-DONE') && reservedOutcome, reserved ? reserved.c : 'no result');
     stopMock(m2);
     stopMock(m);
     rmrf(outsideDir, { recursive: true, force: true });
-    function r2done(l) { return l.length > 0; }
   }
 });
 

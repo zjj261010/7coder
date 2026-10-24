@@ -44,7 +44,7 @@ scenarios.push({
     record('chcp: multi-command chains work', f2 && f2.c.includes('one') && f2.c.includes('two'), f2 ? f2.c.substring(0, 60) : 'no result');
     record('chcp: redirection scoped to the user command', fs.existsSync(path.join(cwd, 'i1out.txt')) && fs.readFileSync(path.join(cwd, 'i1out.txt'), 'utf8').includes('redirect'), '');
     record('chcp: quoted ampersand passthrough', f4 && f4.c.includes('quoted & ampersand'), f4 ? f4.c.substring(0, 60) : 'no result');
-    record('chcp: bash_tool unaffected (no chcp on POSIX paths)', true, '');
+    S.info('chcp: this scenario covers run_command only; Bash is tested separately');
     stopMock(m);
   }
 });
@@ -60,20 +60,24 @@ scenarios.push({
     const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
     record('flush: 20KB streamed reply fully flushed before exit', r.out.includes(big) && r.code === 0, 'outLen=' + r.out.length);
 
-    // background stderr captured into the log
+    // Keep the plaintext marker out of the command preview. Verify the
+    // actual tool message sent back to the model, not incidental log text.
+    const stderrMarker = 'BGERR-MARK', encoded = Buffer.from(stderrMarker).toString('base64');
     const m2 = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'bg', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'node -e "console.error(\'BGERR-MARK\')"' }) } }] },
+      { role: 'assistant', content: null, tool_calls: [{ id: 'bg', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: '"' + NODE_BIN + '" -e "process.stderr.write(Buffer.from(\'' + encoded + '\',\'base64\'))"' }) } }] },
       { role: 'assistant', content: 'BG2-DONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
+    const bgCwd = freshCwd('i2b');
     const p = spawn(NODE_BIN, [IDX, '--background', '--prompt', 'bg'], {
       env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', MAX_RETRIES: '1', PERMISSION_MODE: 'bypass' }),
-      cwd: freshCwd('i2b'), stdio: 'ignore'
+      cwd: bgCwd, stdio: 'ignore'
     });
     await new Promise(r => setTimeout(r, 5000));
-    const logPath = path.join(cwd, '..', 'w-i-i2b', '.7coder', 'background.log');
+    const logPath = path.join(bgCwd, '.7coder', 'background.log');
     const content = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
-    record('flush: background log captures stderr of run commands', content.includes('BGERR-MARK'), 'size=' + content.length);
+    const result = tr(readLog(m2.log), 'bg');
+    record('flush: background command forwards successful stderr to model', result && result.c.startsWith('Command OK:') && result.c.includes('[STDERR]\n' + stderrMarker) && content.includes('BG2-DONE'), result ? result.c : 'no tool result');
     stopMock(m2);
     stopMock(m);
   }
