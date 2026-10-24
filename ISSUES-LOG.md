@@ -619,7 +619,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
 | 🔶 | T22-23 | Medium／确认 | **内部工具复用随包运行时**：JS调试已用process.execPath；10-24测试自动识别补Node13明确错误零启动，支持--test的16.17/18.1+分支用execFile(process.execPath,argv)不依赖PATH；保留npm脚本优先及显式命令，损坏package配置不再吞错。新test-runtime11/11（含PATH为空中文/空格脚本）、旧测试解析6/6。现代版本分支为原函数选择/argv测试，非实际Node18运行。仍待npm/Git/Bash/Python/csc/tsc/eslint按功能预检与Win7依赖验收。 | R1 M02；本日debug/测试运行时批局部证据 |
-| ⬜ | T22-24 | Medium／确认编码路径 | **PowerShell 输入输出编码闭环**：脚本用 BOM 或 EncodedCommand；输出明确编码后解码；CP936 下中文内容、路径、错误输出不乱码。保持 PS2 兼容。 | R1 M06；A2/chcp 只解决部分命令 |
+| 🔶 | T22-24 | Medium／确认编码路径 | **PowerShell编码闭环**：10-24统一UTF16LE Base64/固定ASCII入口，解析用户脚本前设置UTF8 output；避开实测EncodedCommand的ANSI CLIXML stderr，保留最终Write-Error/throw/显式exit；input.ps1补UTF8 BOM，桌面/截图改execFile argv。新专项根因修复后14/14、旧命令契约21/21；现代宿主实测非真实Win7/PS2/CP936，目标机和自定义编码native工具仍待验收，保持部分完成。 | R1 M06；A2/chcp保护保留；本日PowerShell批 |
 | ✅ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：10-24用relative边界判断，排除父级/绝对结果，消除drive/UNC根末尾双分隔符误拒；保留Win大小写、不同卷/共享及realpath/junction门。新专项修夹具后25/25：纯路径边界＋映射到私有目录的drive/UNC根真实state/文件/备份IO及实际外指junction拒绝；无真实根/网络共享写入。Win7真实根/远程文件系统语义仍由V22-01/05实机验收。 | R1 M11；OPT-14原安全门保留；本日路径批记录 |
 | ⬜ | T22-26 | Medium／确认＋风险 | **磁盘保留与会话历史策略**：为 snapshot refs、Web会话、截图、background/BTW/TODO日志设时间/总字节策略；T22-13新增的不同损坏证据/骤停临时文件亦需保留策略，不能删活动实例文件；CLI/Web 不按文件名前缀误删对方历史；会话列表可分页/索引。保留现有审计轮转、每源5/全局200备份，不重复实现。 | R1 M14；GAP-12、OP5-5、C8；10-23第八批补充保留范围 |
 | ✅ | T22-27 | Medium／确认 | **修 Markdown语言属性转义**：10-24新增属性上下文escAttr，在原HTML转义后补单双引号实体，仅data-language使用；文本/code渲染保持。DOM专项15项单次通过，含相邻属性注入形状、引号/&/尖括号、空language、c++/c#与未闭合围栏。实际目标浏览器仍属V22-02；不把桩DOM宣称为真实脚本执行验证。 | R1 M15；A2-04保护保留；本日Markdown属性批 |
@@ -1283,3 +1283,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 运行诊断批已提交`fcc4072`。实际render将esc(lang)拼入双引号data-language，而esc用DOM.textContent→innerHTML只承担文本转义，不保证双引号转义。新增escAttr复用文本转义并显式把双/单引号转为实体，只有属性位置改用；语言标签文字、代码内容、围栏解析与copy逻辑保持原实现。
 - Node13 webui-dom-sim单次 **15项通过**（新增3项）：含紧邻onmouseover形状的引号只能留在一个data-language值内，单双引号/&/尖括号编码正确，空language不产生属性；原c++/c#、CRLF、未闭合围栏、SSE/保存/错误气泡回归保留。此桩DOM不执行HTML事件，原“window未变化”断言本身不能证明浏览器执行隔离；本批证据是原render输出的属性边界编码，真实目标浏览器继续由V22-02验收。
 - webui内联脚本经该专项vm解析，测试文件Node13语法及diff检查通过。未运行其它UI/真实浏览器、完整A–J/test-all、Win7、24/72h或打包；未推送。T22-27关闭，按授权提交本批，继续T22-24 PowerShell编码闭环。
+
+### 2026-10-24 —— T22-24 PowerShell输入、stdout/stderr与退出码
+
+- Markdown属性批已提交`6879af9`。PowerShell工具选SystemRoot下系统WindowsPowerShell可执行文件（无SystemRoot才fallback PATH），用execFile argv和隐藏子窗口；不走cmd命令拼接。固定ASCII bootstrap解码用户UTF16LE Base64，PS2/.NET2可用的New-Object/Console API在解析用户脚本前设置UTF8；截图复用，input.ps1写UTF8 BOM并用独立argv运行，修中文/带引号路径和PS2默认ANSI读取风险。
+- 真实专项识别原先未被普通ASCII用例覆盖的宿主差异：仅设置OutputEncoding/Console后stdout正确，EncodedCommand仍输出混合UTF8直接stderr＋ANSI CLIXML Write-Error。两组私有、有限文本探针对比原入口/SetError以及ASCII bootstrap/BOM file，证实改Console.Error不能修宿主serializer，bootstrap/file均能输出完整中文错误。采用无临时脚本的ASCII bootstrap；不是在Node侧猜GBK编码。官方PowerShell参数UTF16LE文档已链接README，宿主路径结论依据本机字节实测，不冒充PS2实测。
+- 随后的真实最终Write-Error验证发现scriptblock调用会掩盖非终止错误的默认失败退出码；集中修复为脚本末尾立即检查$?并exit1，显式exitN仍先退出保留N；编码prefix在ScriptBlock.Create之前，解析错误也有UTF8错误输出。
+- 新powershell-encoding四次执行：首跑3项后夹具遗漏cancelled参数失败；修夹具复跑10项后真实stderr失败；修宿主路径复跑11项后新退出语义断言失败；集中修正后按用户“失败自动再测”授权定向复跑 **14/14、0SKIP**。含中文/空格/百分号/感叹号/&/单引号输入与路径、UTF8 BOM、截图/键鼠dispatch捕获（从未执行实际截图或键鼠）、真实现代WindowsPowerShell stdout/stderr、实际文本读写、exit7、最终Write-Error/throw及解析错误。实际仅启动文本PowerShell；有界10秒、独立cwd、专属Base64命令manifest/直属句柄，未调用真实桌面。
+- 旧B tool-results-followup/tool-results-b6 **21/21**单次：取消、stderr、数值exit/unknown和实际Agent命令契约保留；其unit仅补新helper依赖stub，真实编码由新专项检查。新npm/test-all登记；相关JS Node13语法/diff通过。未重跑全套A–J/UI/test-all或其它成功专项，未跑真实Win7 PS2/CLR2/CP936、native自定义输出编码、关机/24/72h或打包；故T22-24保持部分完成，不能因本机modern PowerShell通过就宣称Win7验收完成。按授权提交本批，未推送。

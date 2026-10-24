@@ -860,7 +860,7 @@ const tools = [
   { type: "function", function: { name: "agent_tool", description: "Run a sub-agent: a fresh AI conversation with full tool access that works through the task and returns its final answer. Use for self-contained research or multi-step work.", parameters: { type: "object", properties: { name: { type: "string" }, task: { type: "string" } }, required: ["name", "task"] } } },
   { type: "function", function: { name: "run_command", description: "Run a shell command via the system default shell (cmd.exe on Windows, /bin/sh elsewhere).", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell; default is a fresh stateless shell per call. persistent=true is disabled in HTTP server mode. CLI/REPL persistent shells retain cwd/env within the current conversation, sub-agent or workflow; sub-agent/workflow shells close when that scope ends.", parameters: { type: "object", properties: { command: { type: "string" }, persistent: { type: "boolean" }, timeout_ms: { type: "number", description: "persistent mode only: 1000-300000, default 120000" } }, required: ["command"] } } },
-  { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (works on Win7 PowerShell 2.0+ via -EncodedCommand). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
+  { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (uses PS2-compatible APIs, UTF-16LE Base64 input and UTF-8 text output). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js). Budget: node_modules/.git/dist/.cache are skipped; at most 1000 matches, 4000 visited entries and depth 12. Truncation/incomplete markers distinguish partial scans from no matches.", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "grep_tool", description: "Search contents of a file or directory. Budget: node_modules/.git/dist/.cache, files over 2MB and binary files are skipped; at most 5000 text files, 20000 visited entries and depth 12. Truncation/incomplete markers identify partial scans; invalid input paths are errors.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "list_dir", description: "List directory contents (name, type, size).", parameters: { type: "object", properties: { path: { type: "string" } } } } },
@@ -1763,6 +1763,28 @@ function isSuperDangerous(cmd) {
 // Zero-dependency fix for A2.
 function withUtf8Codepage(cmd) {
   return process.platform === 'win32' ? 'chcp 65001>nul & ' + cmd : cmd;
+}
+
+function powerShellExecutable() {
+  const env = process.env || {};
+  const root = env.SystemRoot || env.SYSTEMROOT || env.windir;
+  return root ? path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe') : 'powershell.exe';
+}
+function powerShellSpec(command) {
+  // PS2/.NET2 constructors and Console APIs only. UTF-16LE Base64 protects
+  // input text; OutputEncoding alone controls pipelines to native commands,
+  // so set Console.OutputEncoding as well for the captured host output.
+  const prefix = '$OutputEncoding = New-Object System.Text.UTF8Encoding; [Console]::OutputEncoding = $OutputEncoding;\r\n';
+  // Script-block invocation otherwise masks a final nonterminating error
+  // in Windows PowerShell. Preserve -Command's 0/1 default exit semantics;
+  // explicit exit N still leaves before this footer and retains N.
+  const encoded = Buffer.from(String(command) + '\r\nif (-not $?) { exit 1 }\r\n', 'utf16le').toString('base64');
+  // Windows PowerShell's EncodedCommand can initialize a CLIXML stderr
+  // serializer before this prefix and keep the old ANSI encoding. Use a
+  // fixed ASCII bootstrap instead: only Base64 data is interpolated, and
+  // execFile supplies argv directly (no cmd.exe or command quoting).
+  return { file: powerShellExecutable(), args: ['-NoProfile', '-NonInteractive', '-OutputFormat', 'Text', '-Command',
+    prefix + "& ([ScriptBlock]::Create([Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('" + encoded + "'))))"] };
 }
 
 // AST-09: async child-process runner. The model-facing command tools must
@@ -3145,10 +3167,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
     let cmd = args.command || '';
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') console.log(`[WARN] Running (PowerShell): ${cmd.substring(0, 200)}`);
-    // -EncodedCommand takes Base64 UTF-16LE: immune to quoting/injection issues
-    // and supported since PowerShell 2.0 (Windows 7).
-    const encoded = Buffer.from(String(cmd), 'utf16le').toString('base64');
-    const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: 'powershell', args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', encoded] }), cancelled);
+    // Fixed ASCII bootstrap decodes UTF-16LE Base64; avoids the host's
+    // EncodedCommand CLIXML stderr mode. No user command is shell-quoted.
+    const { r, aborted } = await awaitCommandCancellable(runCommandAsync(powerShellSpec(cmd), { windowsHide: true }), cancelled);
     if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]', { exitCode: null });
     if (r.error) return makeToolResult('error', `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`, { exitCode: r.exitCode });
     const okText = r.stderr.trim() ? `Command OK:\n${r.stdout}\n[STDERR]\n${r.stderr}` : `Command OK:\n${r.stdout}`;
@@ -3762,13 +3783,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         } else if (process.platform === 'win32') {
           // Single-quoted PS strings treat backslashes literally; only ' needs doubling.
           const psPath = shotPath.replace(/'/g, "''");
-          child_process.execSync(
-            `powershell -NoProfile -Command "Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; ` +
+          const ps = powerShellSpec(
+            `Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; ` +
             `$bmp = New-Object System.Drawing.Bitmap([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height); ` +
             `$gfx = [System.Drawing.Graphics]::FromImage($bmp); $gfx.CopyFromScreen(0,0,0,0,$bmp.Size); ` +
-            `$bmp.Save('${psPath}', [System.Drawing.Imaging.ImageFormat]::Png)"`,
-            { stdio: 'ignore', timeout: 30000 }
+            `$bmp.Save('${psPath}', [System.Drawing.Imaging.ImageFormat]::Png)`
           );
+          child_process.execFileSync(ps.file, ps.args, { stdio: 'ignore', timeout: 30000, windowsHide: true });
         } else {
           child_process.execSync(`import -window root "${shotPath}" || scrot "${shotPath}"`, { stdio: 'ignore' });
         }
@@ -3798,8 +3819,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     const runPsInput = (ps) => {
       try { fs.mkdirSync(inputDir, { recursive: true }); } catch (e) {}
       const file = path.join(inputDir, 'input.ps1');
-      fs.writeFileSync(file, ps, 'utf8');
-      child_process.execSync(`powershell -NoProfile -ExecutionPolicy Bypass -File "${file}"`, { stdio: 'ignore', timeout: 30000 });
+      fs.writeFileSync(file, '\ufeff' + ps, 'utf8'); // PS2 otherwise treats BOM-less scripts as ANSI
+      child_process.execFileSync(powerShellExecutable(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file],
+        { stdio: 'ignore', timeout: 30000, windowsHide: true });
     };
     const escapeSendKeys = (text) => {
       // Single pass, in order: \r\n and \r and \n -> {ENTER} (CRLF collapses to

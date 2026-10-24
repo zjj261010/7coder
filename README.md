@@ -99,7 +99,7 @@ supported, plus `/v1/models`. Client message histories are honored for multi-tur
 - `task_create_tool` / `task_get_tool` / `task_list_tool` / `task_output_tool` / `task_stop_tool` — **real background shell tasks** (async exec, output streaming, `taskkill /T /F` tree-kill on Windows)
 - `skill_tool` — **real skills**: instructions loaded from `.7coder/skills/<name>.md`
 - `synthetic_output_tool` — validated structured output (JSON parsed + type-checked against your schema)
-- `run_command` (default shell) / `bash_tool` (**real bash**; on Windows needs Git for Windows) / `powershell_tool` (**real Windows PowerShell**, works on Win7's PowerShell 2.0 via `-EncodedCommand`).
+- `run_command` (default shell) / `bash_tool` (**real bash**; on Windows needs Git for Windows) / `powershell_tool` (**real Windows PowerShell**; uses PS2-compatible APIs and a fixed ASCII bootstrap decoding UTF-16LE Base64 input).
   `bash_tool {persistent:true}` runs in ONE long-lived bash for the whole conversation: `cd`, `export` and aliases survive across calls. A hung command (interactive program) times out (`timeout_ms`, default 120s) and the session restarts fresh; bare `exit` ends the session - the next call respawns it. Default (persistent unset) stays a fresh stateless shell per call.
 - `glob_tool` / `grep_tool` / `list_dir`
 - `web_fetch_tool` / `web_search_tool` / `web_browser_tool` / `download_tool` (streamed, 500 MB cap)
@@ -361,3 +361,5 @@ what Claude Code does — with straightforward security controls and zero propri
 
 Vibe-coded with love (and a lot of Windows 7 debugging) by NodeMixaholic.
 Enjoy my hard work.
+
+PowerShell command input travels as UTF-16LE Base64 inside a fixed ASCII `-Command` bootstrap, passed through `execFile` argv. The bootstrap sets `$OutputEncoding` and `Console.OutputEncoding` before parsing user code; a footer retains the usual final-error exit status while explicit `exit N` remains N. Using `-EncodedCommand` directly was observed on the current Windows PowerShell host to keep ANSI-encoded CLIXML stderr despite changing console encoding. The Base64 UTF-16LE representation follows [Microsoft's PowerShell executable documentation](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_powershell_exe?view=powershell-5.1); the bootstrap avoids that host serialization path. Desktop input `.ps1` files use UTF-8 BOM and direct argv; screenshot dispatch uses the same Base64 helper. Tests capture desktop calls without sending input or capturing the screen. Actual Win7 PS2/CLR2, CP936 and native programs with their own encodings still require target-machine validation; scripts that explicitly change encoding can override the defaults.

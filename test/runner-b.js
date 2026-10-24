@@ -3162,7 +3162,7 @@ scenarios.push({
     const commands = vm.createContext({
       ...api.api, Buffer, process: { platform: 'win32' }, DANGER_MODE: false,
       ENABLE_HTTP_SERVER: false,
-      effectivePermissionMode: () => 'default', withUtf8Codepage: c => c,
+      effectivePermissionMode: () => 'default', withUtf8Codepage: c => c, powerShellSpec: () => ({ file: 'fixture-powershell', args: [] }),
       findBash: () => 'fixture-bash', getPersistentShell: () => commands.shell,
       shellSessionKey: () => 'fixture', runCommandAsync: spec => spec,
       awaitCommandCancellable: async () => commands.outcome
@@ -3345,7 +3345,7 @@ scenarios.push({
     const bEnd = src.indexOf("  if (name === 'glob_tool') {", bStart);
     const mkCtx = (over) => Object.assign({
       ENABLE_HTTP_SERVER: false,
-      DANGER_MODE: false, effectivePermissionMode: () => 'default', withUtf8Codepage: (c) => c,
+      DANGER_MODE: false, effectivePermissionMode: () => 'default', withUtf8Codepage: (c) => c, powerShellSpec: () => ({ file: 'fixture-powershell', args: [] }),
       runCommandAsync: (spec) => spec, awaitCommandCancellable: async () => outcomes.shift(),
       findBash: () => 'C:\\fake-bash.exe', getPersistentShell: () => persistentShell, shellSessionKey: () => 'k',
       process: { platform: 'win32' }, Buffer: Buffer, makeToolResult: api.makeToolResult, outcomes: [], persistentShell: null
