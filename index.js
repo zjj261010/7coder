@@ -2327,8 +2327,9 @@ function migrateWorkspaceRootFiles() {
   } catch (e) {}
 }
 
-async function triggerDreamIfNeeded(modelContext) {
+async function triggerDreamIfNeeded(modelContext, execution) {
   if (triggerDreamIfNeeded.owner || shuttingDown) return false;
+  triggerDreamIfNeeded.lastOutcome = 'skipped';
   const lastTime = getLastInteractionTime();
   const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60);
   const lockPath = internalStatePath('.7coder', 'dream.lock');
@@ -2345,7 +2346,8 @@ async function triggerDreamIfNeeded(modelContext) {
   } catch (e) {}
   if (fs.existsSync(lockPath)) return false;
 
-  console.log(`[DREAM] 7coder is ${getRandomSpinner()} [DREAM MODE - 2.5h self-consolidation]`);
+  checkExecution(execution);
+  console.log(`[DREAM] 7coder is ${getRandomSpinner()} [DREAM MODE - self-consolidation]`);
   // A2-08: a brand-new workspace has no .7coder/ yet - create it before the
   // lock write, otherwise the dream path dies with ENOENT (the write below is
   // not otherwise guarded, and triggerDreamIfNeeded has no try/catch around it).
@@ -2353,13 +2355,14 @@ async function triggerDreamIfNeeded(modelContext) {
   const owner = JSON.stringify({ kind: '7coder-dream-owner-v1', pid: process.pid, nonce: crypto.randomBytes(16).toString('hex') });
   fs.writeFileSync(lockPath, owner, { flag: 'wx' });
   triggerDreamIfNeeded.owner = owner;
-  const cancelled = createExecutionControl();
+  const cancelled = execution || createExecutionControl();
   try {
     const completed = await runDreamSession(modelContext, cancelled);
-    if (completed) updateLastInteractionTime();
+    triggerDreamIfNeeded.lastOutcome = cancelled() ? 'cancelled' : (completed ? 'completed' : 'failed');
+    if (completed) { checkExecution(cancelled); updateLastInteractionTime(); }
     return true;
   } finally {
-    cancelled.dispose();
+    if (!execution) cancelled.dispose();
     triggerDreamIfNeeded.owner = null;
     try { if (fs.readFileSync(lockPath, 'utf8') === owner) fs.unlinkSync(lockPath); }
     catch (e) { if (e.code !== 'ENOENT') console.warn('[WARN] dream lock cleanup failed: ' + e.message); }
@@ -2374,7 +2377,7 @@ async function runDreamSession(modelContext, cancelled) {
     if (record) currentContent = record.value || currentContent;
   } catch (e) {}
   const dreamSystemPrompt = `${systemPrompt}
-[DREAM MODE OVERRIDE - 2.5 HOUR SELF-CONSOLIDATION SESSION]
+[DREAM MODE OVERRIDE - SELF-CONSOLIDATION SESSION WITH AN EXECUTION DEADLINE]
 You are now in a dedicated deep organization session for 7CODER.md.
 Rules (strict, no exceptions):
 - NO lazy summaries ("Fix this bug later", "Improve X", etc.). Be hyper-detailed and descriptive.
@@ -5464,12 +5467,14 @@ async function executeTask(modelContext = createModelContext()) {
     else console.log(`\n7coder: ${displayReply}`);
     printTaskChanges(); // GAP-12: silent when the task changed nothing
     logSessionUsage(); // GAP-8
+    return true;
   } catch (err) {
     const exiting = shuttingDown && cancelled();
     console.error(`${exiting ? '[CANCELLED]' : '[ERROR]'} Error: ${err.message}`);
     printTaskChanges(); // GAP-12: failure path reports what did happen too
     logSessionUsage(); // GAP-8
     if (!exiting) process.exitCode = 1;
+    return false;
   } finally {
     cancelled.dispose();
   }
@@ -5528,6 +5533,34 @@ function conversationFromClient(clientMessages) {
 }
 
 // ====================== HTTP SERVER ======================
+const serverStartupState = { phase: 'not-started', error: null, execution: null };
+function preemptServerDream() {
+  if (serverStartupState.execution && ['queued-dream', 'dream'].includes(serverStartupState.phase)) {
+    serverStartupState.execution.cancel('Foreground chat preempted optional startup dream.');
+  }
+}
+async function runServerDream(modelContext) {
+  const execution = createExecutionControl(Math.min(EXECUTION_TIMEOUT_MS, 120000));
+  serverStartupState.phase = 'queued-dream'; serverStartupState.error = null; serverStartupState.execution = execution;
+  let release = null;
+  try {
+    release = await requestGate(execution);
+    checkExecution(execution);
+    serverStartupState.phase = 'dream';
+    await triggerDreamIfNeeded(modelContext, execution);
+    checkExecution(execution);
+    serverStartupState.phase = triggerDreamIfNeeded.lastOutcome || 'skipped';
+    if (serverStartupState.phase === 'failed') serverStartupState.error = 'Dream consolidation failed; inspect server log.';
+  } catch (error) {
+    serverStartupState.phase = execution() ? 'cancelled' : 'failed';
+    serverStartupState.error = String(error.message).slice(0, 1000);
+    console.warn('[STARTUP] Optional dream ' + serverStartupState.phase + ': ' + serverStartupState.error);
+  } finally {
+    execution.dispose(); serverStartupState.execution = null;
+    if (release) release();
+  }
+}
+
 // AST-10: bounded JSON body reader shared by every POST route. Bytes are
 // counted as they arrive (utf8-decoded chunk lengths); on overflow the 413
 // response goes out immediately, later chunks are drained without
@@ -5645,6 +5678,7 @@ function startHttpServer() {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(),
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
+      startup: { phase: serverStartupState.phase, error: serverStartupState.error },
       usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
   }
   function hTodos(req, res) {
@@ -5958,6 +5992,7 @@ function startHttpServer() {
           : String(promptContent || '');
 
         console.log('[WEB] HTTP request received from UI');
+        preemptServerDream();
         const responseId = 'chatcmpl-' + Date.now();
         const created = Math.floor(Date.now() / 1000);
 
@@ -6121,20 +6156,26 @@ function startHttpServer() {
 
   // P2-6: fail loudly and exit nonzero when the port is taken (or the server
   // otherwise errors) instead of dying with Node's raw stack trace.
+  return new Promise((resolve, reject) => {
+  let listening = false;
   server.on('error', e => {
     if (e && e.code === 'EADDRINUSE') {
       console.error(`[ERROR] HTTP port ${HTTP_PORT} is already in use - change HTTP_PORT in .env or stop the process holding that port, then retry.`);
     } else {
       console.error(`[ERROR] HTTP server error: ${e && e.message ? e.message : e}`);
     }
-    flushExit(1);
+    if (listening) flushExit(1);
+    else reject(e);
   });
   server.listen(HTTP_PORT, HTTP_BIND, () => {
+    listening = true;
     console.log(`7coder HTTP OpenAI-compatible endpoint ready at http://${HTTP_BIND}:${HTTP_PORT}`);
     if (HTTP_API_KEY) console.log('[AUTH] API key required (Authorization: Bearer <HTTP_API_KEY>).');
     console.log('Built-in web UI: open http://127.0.0.1:' + HTTP_PORT + '/ in your browser (Chinese-friendly chat).');
     console.log('Streaming (stream: true) and multi-turn client histories are supported.');
     console.log('Note: in default permission mode non-interactive approvals are declined - use PERMISSION_MODE=auto for server-driven tool use.');
+    resolve(server);
+  });
   });
 }
 
@@ -6219,15 +6260,25 @@ async function main() {
   if (ENABLE_HTTP_SERVER) {
     console.log('\n7coder HTTP server mode');
     const modelContext = createModelContext();
-    await triggerDreamIfNeeded(modelContext);
-    if (promptArg) {
-      console.log(`Running startup task first: ${promptArg}`);
-      currentRawPrompt = promptArg;
-      messages = prepareMessagesForPrompt(currentRawPrompt);
-      await executeTask(modelContext);
-    }
+    const releaseStartup = promptArg ? await requestGate() : null;
+    serverStartupState.phase = promptArg ? 'startup-task' : 'starting';
     rl.close();
-    startHttpServer();
+    try {
+      await startHttpServer();
+      if (promptArg) {
+        console.log(`Running startup task first: ${promptArg}`);
+        currentRawPrompt = promptArg;
+        messages = prepareMessagesForPrompt(currentRawPrompt);
+        const completed = await executeTask(modelContext);
+        serverStartupState.phase = completed ? 'completed' : 'failed';
+        if (!completed) serverStartupState.error = 'Explicit startup task failed; inspect server log.';
+      }
+    } finally {
+      if (releaseStartup) releaseStartup();
+    }
+    // Optional maintenance starts only after a successful bind. It owns the
+    // same execution gate as chats and yields on valid foreground demand.
+    if (!promptArg) runServerDream(modelContext).catch(error => console.warn('[STARTUP] ' + error.message));
     return;
   }
 

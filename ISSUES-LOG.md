@@ -612,7 +612,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-19 | Medium／确认 | **会话保存与失败历史完整性**：保存有 dirty/最新快照补存、失败可见、容量一致；保存 failed/cancelled 回合、部分正文及已完成副作用；活动按回合保留，手动/自动恢复一致。慢保存、413/500、停止后刷新不能静默丢最新状态。 | R1 M03/M04；OPT-16、A2-12；不自动重开 OPT-6 多客户端保存设计 |
 | 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：当前 **48/53工具名**，包含本日auto_debug全部终态显式迁移。子代理取消/异常、命令stderr/exitCode收尾保留。余下mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/bickering_tool，以及computer_use输入分支显式状态、MCP external完整结果核对仍待实施；不以注册数代替分支正确性。 | R1 M05；A2-07；INC-24-01；本日第四批记录 |
 | ⬜ | T22-21 | Medium／确认 | **统一有效权限、审批展示与生命周期**：执行前复核 mode/cancel；界面反映 --danger 强制项；收到成功审批响应才显示批准；工作流展示真实嵌套 steps/参数再继承批准；停止/切会话 dispose 审批倒计时。denial切换、迟到审批、400/401、具体命令预览均有验收。 | R1 M09/L05；R2 N05；P0-3/P2-12；取消实现复用 T22-06 |
-| 🔶 | T22-22 | Medium／确认＋风险 | **启动失败与 dream 恢复闭环**：T22-14启动门/顶层失败保留；10-24第三批补dream独占owner锁、finally清理、自身deadline、已识别旧owner立即恢复（工作区独占前提）、同进程防重入、不删除替代锁、失败不标记成功交互；HTTP主任务成功更新interaction。辅助10/10＋REPL26/26＋旧dream/sec2 15/15。仍待启动HTTP ready与dream解耦、目录不可写/退出全链路及实Win7；旧格式新锁仍保留4小时兼容宽限。 | R1 M12；A2-08、A10；本日第三批记录，保持部分完成 |
+| 🔶 | T22-22 | Medium／确认＋风险 | **启动失败与 dream 恢复闭环**：T22-14启动门及dream owner/finally/deadline已做；10-24再补HTTP先bind再启动维护/显式任务、页面/诊断就绪；可选dream最多120秒且前台请求可取消，等待settle后交门；显式startup-task优先但状态可见，失败标failed且允许恢复。新startup-readiness13/13含真实端口失败零模型调用、dream挂起/抢占/超时、显式任务和直属Agent强杀重启锁恢复。仍待真实ACL/目录不可写、关机注销/进程树退出全链路及Win7；旧格式新锁保留4小时宽限。 | R1 M12；A2-08、A10；本日辅助/启动批记录，保持部分完成 |
 
 ### P2：近期补齐
 
@@ -1202,3 +1202,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - Node13单次验证：新queue-admission **25/25**：准入count/bytes/幂等释放、FIFO/取消/排队超时、正文限额/超时/abort+error、摘要数量/字节/路由/控制清理/过龄降级/短回复/原截止与活动取消；真实隔离Agent的流式DONE后摘要挂起而下一任务成功、8项满后429且健康可读、排队断连从未进入模型、实际16MiB共享预算/部分正文abort释放、多模态摘要。B bodycap/bodycap-edge/bg-summary **15/15**（含UTF8末字符跨chunk、chunked及多个POST路由）；C stress **1/1**（6个流/非流请求无串线）；E summary-race **1/1**（日志结构及两条摘要）。均首跑通过，无失败复跑。Node13三份相关JS语法与diff静态检查通过。
 - T22-16实现与所列定向故障路径关闭。不是完整发布验收：未跑全套A–J/UI/test-all、真实模型质量、Win7/24/72h、配置极限大小或打包；完整Agent输入/输出/日志/文件的总内存和磁盘预算仍归T22-15/26，进程树仍归T22-07。简短降级会丢失正文细节并有显式标记，现场需要结合原会话/审计排查。
 - 本批按授权提交`fix(T22-16): bound summary queues and admit cancellable chats`；未推送，继续下一项启动ready与dream解耦。
+
+### 2026-10-24 —— T22-22启动ready与可选维护解耦
+
+- T22-16队列批已提交`dc60339`。HTTP现在await实际listen成功，再开始可选dream或显式startup prompt；端口失败先报明确诊断并非零退出，不会先调用模型/执行启动任务。页面/GET诊断在初始化任务执行期间可用。
+- 可选启动dream在后台运行，复用核心执行门，最多120秒且不超过全局EXECUTION_TIMEOUT_MS。有效聊天到来会取消queued-dream/dream，等待其模型/工具返回及owner锁清理后交门，避免仅把await移除而导致权限状态/文件并发。triggerDreamIfNeeded可使用外部控制而不自行dispose它，独立CLI/REPL仍保留自有控制；成功交互标记前再检查取消。删除无运行保证的“2.5小时”展示与提示。
+- 显式--server --prompt在监听后优先占门执行，前台聊天排队；该启动不再先运行可选dream。executeTask返回成功/失败供startup状态使用，保留原输出/退出码。显式任务失败不是HTTP初始化失败：/api/info明确failed并给诊断提示，核心门释放后可通过正常聊天恢复。startup.phase/error不含控制对象或密钥。
+- 新startup-readiness专项Node13 **13/13**、单次首跑：原调度/门/控制函数的EROFS故障注入释放与抢占；真实隔离Agent在dream上游挂起时UI/info可读、前台抢占关闭上游并删锁；1秒截止无成功标记且下次聊天恢复；端口占用时零模型调用；显式任务优先且诊断可读、完成/失败后下一聊天；真实直属Agent强终止留下owner锁、同工作区/端口立即重启恢复并再次让出前台。Node13相关三份JS语法与diff静态检查通过。
+- 未重复已通过的辅助/REPL/dream、queue-admission或旧eaddr测试，未跑完整A–J/UI/test-all。EROFS为原调度函数注入，不等于Windows ACL实测；强终止对象只有Agent直属进程，不证明任意工具后代清理。Win7、注销关机/硬件断电、目录真实权限、24/72h及打包仍未验收，T22-22保持部分完成。未推送。
+- 本批按授权提交`fix(T22-22): expose HTTP readiness before optional dream`，继续T22-17 HTTP持久shell状态隔离。
