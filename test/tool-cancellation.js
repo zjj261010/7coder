@@ -56,7 +56,7 @@ function networkContext(name) {
     MCP_SERVER_URLS: [], MCP_NPX_PKGS: [], mcpServers: {}, DANGER_MODE: false,
     effectivePermissionMode: () => 'bypass', isProtectedTarget: () => false, matchPermRule: () => null,
     getToolMetadata: () => ({ autoSafe: true, trackChanges: false }), taskChanges: [],
-    audit: value => audits.push(value), sanitizeAuditLine: String
+    audit: value => audits.push(value), sanitizeAuditLine: String, beginRuntimeOperation: () => () => {}
   });
   vm.runInContext(cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
     cut('async function describeWithVision(', '// GAP-4: read a screenshot') +

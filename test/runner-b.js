@@ -2764,7 +2764,7 @@ scenarios.push({
     let throwNext = false;
     class ClockDate extends Date { static now() { return now; } }
     const ctx = {
-      Date: ClockDate, cronJobs: jobs, launchDir: freshCwd('b-cron-overlap'),
+      Date: ClockDate, cronJobs: jobs, launchDir: freshCwd('b-cron-overlap'), recordRuntimeEvent() {},
       isSuperDangerous: () => false, shuttingDown: false, withUtf8Codepage: command => command, CRON_MAX_JOBS: 32,
       setTimeout: (fn, delay) => ({ fn, delay, unref() {} }),
       child_process: { exec: (command, opts, done) => {

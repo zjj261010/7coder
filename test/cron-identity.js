@@ -16,7 +16,7 @@ class FrozenDate extends Date {
 }
 const ctx = vm.createContext({ Buffer, Date: FrozenDate, console, process: { platform: 'unit-owned-handle' },
   launchDir: S.freshCwd('jobs'), shuttingDown: false, cronSeq: 0, cronJobs: new Map(),
-  CRON_MAX_JOBS: 32, isSuperDangerous: () => false, withUtf8Codepage: x => x,
+  CRON_MAX_JOBS: 32, isSuperDangerous: () => false, withUtf8Codepage: x => x, recordRuntimeEvent() {},
   setTimeout(fn, ms) { const t = { fn, ms, unref() {} }; timers.add(t); return t; },
   clearTimeout(t) { timers.delete(t); },
   makeToolResult: (status, text) => ({ status, text }),

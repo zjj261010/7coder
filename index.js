@@ -612,6 +612,66 @@ function audit(entry) {
   } catch (e) {}
 }
 
+// Bounded operating diagnostics: no request payload, model config or history.
+// Error messages may contain input fragments, so scrub and limit each field.
+const RUNTIME_LOG_LIMIT = 1024 * 1024;
+const runtimeDiagnostics = { since: new Date().toISOString(), activeTasks: 0, activeTools: 0,
+  completed: 0, failed: 0, lastSuccess: null, lastError: null, lastEvent: null, loggingError: null };
+let runtimeLogWarnAt = null;
+function runtimeText(value, limit = 500) {
+  return String(value == null ? '' : value).slice(0, 8192)
+    .replace(/Bearer\s+\S+/gi, 'Bearer ***').replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
+    .replace(/((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+/gi, '$1***').slice(0, limit);
+}
+function recordRuntimeEvent(scope, status, details = {}) {
+  // Logging is best effort and must never change an operation's outcome.
+  try {
+    const event = { ts: new Date().toISOString(), scope: runtimeText(scope, 80), status: runtimeText(status, 40) };
+    for (const key of ['message', 'code', 'syscall', 'path', 'signal', 'id']) {
+      if (details[key] != null) event[key] = runtimeText(details[key], key === 'path' ? 1000 : 500);
+    }
+    for (const key of ['pid', 'exitCode']) if (Number.isFinite(details[key])) event[key] = details[key];
+    runtimeDiagnostics.lastEvent = event;
+    if (status === 'ok') { runtimeDiagnostics.completed++; runtimeDiagnostics.lastSuccess = event; }
+    else { runtimeDiagnostics.failed++; runtimeDiagnostics.lastError = event; }
+    // Successful tool calls already have audit records; avoid a second copy.
+    if (scope === 'tool' && status === 'ok') return;
+    const file = internalStatePath('.7coder', 'runtime.jsonl');
+    const old = internalStatePath('.7coder', 'runtime.old.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const line = JSON.stringify(event) + '\n';
+    let size = 0;
+    try { size = fs.statSync(file).size; } catch (error) { if (error.code !== 'ENOENT') throw error; }
+    if (size + Buffer.byteLength(line, 'utf8') > RUNTIME_LOG_LIMIT) {
+      // If rotation fails, skip this write. Appending after failed rotation
+      // would turn a diagnostic aid into an unbounded disk consumer.
+      try { fs.unlinkSync(old); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+      fs.renameSync(file, old);
+    }
+    fs.appendFileSync(file, line, 'utf8');
+    runtimeDiagnostics.loggingError = null;
+  } catch (error) {
+    runtimeDiagnostics.loggingError = { ts: new Date().toISOString(), code: runtimeText(error.code, 40), message: runtimeText(error.message) };
+    if (runtimeLogWarnAt === null || Date.now() - runtimeLogWarnAt >= 60000) {
+      runtimeLogWarnAt = Date.now();
+      console.warn('[DIAGNOSTIC] Runtime log unavailable: ' + runtimeDiagnostics.loggingError.code + ' ' + runtimeDiagnostics.loggingError.message);
+    }
+  }
+}
+function beginRuntimeOperation(scope) {
+  const counter = scope === 'tool' ? 'activeTools' : 'activeTasks';
+  runtimeDiagnostics[counter]++;
+  let finished = false;
+  return (status, details) => {
+    if (finished) return;
+    finished = true; runtimeDiagnostics[counter]--;
+    recordRuntimeEvent(scope, status, details);
+  };
+}
+function runtimeSnapshot() {
+  return JSON.parse(JSON.stringify(runtimeDiagnostics));
+}
+
 // No-key is a valid setup for local endpoints (LMStudio/Ollama/vLLM/liteLLM);
 // only warn when the endpoint looks remote, where a missing key means 401s.
 const localEndpoint = /127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0/.test(OPENAI_ENDPOINT);
@@ -2111,14 +2171,17 @@ function grepSearch(pattern, searchPath = '', opts = null) {
 // Win32 taskkill remains best effort, only while the direct child is known
 // live. Its PID-reuse race requires native Job Object ownership to eliminate.
 const ownedChildStates = new WeakMap();
-function observeOwnedChild(child) {
+function observeOwnedChild(child, scope = 'child', id = '') {
   let state = ownedChildStates.get(child);
   if (state) return state;
   state = { exited: child.exitCode != null || child.signalCode != null, closed: false, error: null, waiters: new Set(), stopping: null };
   ownedChildStates.set(child, state);
-  const closed = () => {
+  const closed = (code, signal) => {
     if (state.closed) return;
     state.closed = true;
+    recordRuntimeEvent(scope, code === 0 && !state.error ? 'ok' : 'error', { id, pid: child.pid, exitCode: code, signal,
+      code: state.error && state.error.code, path: state.error && state.error.path, syscall: state.error && state.error.syscall,
+      message: state.error ? state.error.message : 'Direct child closed; descendant state is unverified.' });
     for (const notify of Array.from(state.waiters)) notify();
     state.waiters.clear();
   };
@@ -2126,6 +2189,7 @@ function observeOwnedChild(child) {
   child.once('close', closed);
   child.on('error', error => {
     state.error = error;
+    recordRuntimeEvent(scope, 'error', { id, pid: child.pid, message: error.message, code: error.code, path: error.path, syscall: error.syscall });
     // Node 13 EMFILE/ENFILE may omit stdio and close. No child was created.
     if (!child.pid) closed();
   });
@@ -2254,7 +2318,7 @@ function scheduleCronJob(jobId, schedule, command) {
         if (err) job.lastError = err.message;
       });
       const child = job.child;
-      const state = observeOwnedChild(child);
+      const state = observeOwnedChild(child, 'cron-child', jobId);
       const release = () => {
         if (job.child !== child) return;
         job.child = null;
@@ -3359,7 +3423,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         appendTaskOutput(task, `\n[Task failed] ${task.commandError}`);
       }
     });
-    const state = observeOwnedChild(child);
+    const state = observeOwnedChild(child, 'background-child', taskId);
     const complete = () => {
       task.status = task.outputExceeded ? 'failed' : (task.stopRequested ? 'stopped' : (task.commandError || state.error ? 'failed' : 'completed'));
       task.endedAt = new Date().toISOString();
@@ -4382,6 +4446,8 @@ let lastDeclineReason = '';
 // Auditing wrapper: records every tool call (args preview, status, duration)
 // to .7coder/audit.jsonl, then delegates to the real implementation.
 async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled, modelContext) {
+  const finishRuntime = beginRuntimeOperation('tool');
+  try {
   const t0 = Date.now();
   const func = toolCall.function;
   let argsPreview = {};
@@ -4403,7 +4469,9 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   // A2-18: scrub BEFORE truncating, so a token cut by the 160-char limit can
   // never survive as a recognizable prefix either.
   audit({ ts: new Date().toISOString(), type: 'tool', tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: sanitizeAuditLine(first).substring(0, 160) });
+  finishRuntime(status, { id: func.name, message: status === 'ok' ? undefined : first, exitCode: res && res.data && res.data.exitCode });
   return res;
+  } catch (error) { finishRuntime('error', error); throw error; }
 }
 
 async function safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled, modelContext) {
@@ -5493,10 +5561,11 @@ function updateCompleteSummary(newSummary) {
 async function executeTask(modelContext = createModelContext()) {
   if (shuttingDown) return;
   const cancelled = createExecutionControl();
-  resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
-  createTaskGitCheckpoint();
-  console.log(`7coder is ${getRandomSpinner()}`);
+  const finishRuntime = beginRuntimeOperation('cli-task');
   try {
+    resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
+    createTaskGitCheckpoint();
+    console.log(`7coder is ${getRandomSpinner()}`);
     let streamed = false;
     const onDelta = (t) => { streamed = true; process.stdout.write(t); };
     let displayReply = await processWithTools(messages, { onDelta, modelContext, cancel: cancelled });
@@ -5531,8 +5600,10 @@ async function executeTask(modelContext = createModelContext()) {
     else console.log(`\n7coder: ${displayReply}`);
     printTaskChanges(); // GAP-12: silent when the task changed nothing
     logSessionUsage(); // GAP-8
+    finishRuntime('ok');
     return true;
   } catch (err) {
+    finishRuntime(cancelled() ? 'cancelled' : 'error', err);
     const exiting = shuttingDown && cancelled();
     console.error(`${exiting ? '[CANCELLED]' : '[ERROR]'} Error: ${err.message}`);
     printTaskChanges(); // GAP-12: failure path reports what did happen too
@@ -5742,6 +5813,7 @@ function startHttpServer() {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(),
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
+      runtime: runtimeSnapshot(),
       startup: { phase: serverStartupState.phase, error: serverStartupState.error },
       capabilities: { persistentShell: !ENABLE_HTTP_SERVER },
       usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
@@ -6043,6 +6115,7 @@ function startHttpServer() {
     readJsonBody(req, res, 10 * 1024 * 1024, async body => {
         bodyReceived = true;
         let wantsStream = false;
+        let finishRuntime = null;
         try {
         const data = JSON.parse(body);
         const reqModel = (typeof data.model === 'string' && data.model.trim()) ? data.model.trim().substring(0, 200) : HEAVY_MODEL;
@@ -6103,6 +6176,7 @@ function startHttpServer() {
             // interval (keep-alive writes on a dead response) and the approvals.
             try {
               releaseGate = await requestGate(execution); // AST-03: permission globals remain serialized
+              finishRuntime = beginRuntimeOperation('http-task');
               if (clientGone) return;
               checkExecution(execution);
               createTaskGitCheckpoint();
@@ -6127,6 +6201,7 @@ function startHttpServer() {
               writeChunk({}, 'stop');
               res.write('data: [DONE]\n\n');
               res.end();
+              finishRuntime('ok');
               actionSummaryQueue.enqueue({ id: responseId, rawPrompt, result, modelContext, deadlineAt: execution.deadlineAt });
             } finally {
               clearInterval(ka);
@@ -6137,6 +6212,7 @@ function startHttpServer() {
           }
 
           const releaseGate = await requestGate(execution); // AST-03
+          finishRuntime = beginRuntimeOperation('http-task');
           let result;
           try {
             checkExecution(execution);
@@ -6160,8 +6236,11 @@ function startHttpServer() {
               finish_reason: 'stop'
             }]
           }));
+          finishRuntime('ok');
           actionSummaryQueue.enqueue({ id: responseId, rawPrompt, result, modelContext, deadlineAt: execution.deadlineAt });
         } catch (e) {
+          if (finishRuntime) finishRuntime(execution() ? 'cancelled' : 'error', e);
+          else recordRuntimeEvent('http-request', execution() ? 'cancelled' : 'error', e);
           console.error('HTTP error:', e);
           if (res.destroyed || res.writableEnded) return;
           if (wantsStream && res.headersSent) {
@@ -6175,6 +6254,7 @@ function startHttpServer() {
             res.end(JSON.stringify({ error: { message: e.message } }));
           }
         } finally {
+          if (finishRuntime) finishRuntime('cancelled', { message: 'Client disconnected before task completion.' });
           cleanup();
         }
       }, { cancelled: execution, addBytes: n => reservation.addBytes(n), readTimeoutMs: 30000, onFailure: cleanup });
@@ -6224,6 +6304,7 @@ function startHttpServer() {
   return new Promise((resolve, reject) => {
   let listening = false;
   server.on('error', e => {
+    recordRuntimeEvent('http-server', 'error', e);
     if (e && e.code === 'EADDRINUSE') {
       console.error(`[ERROR] HTTP port ${HTTP_PORT} is already in use - change HTTP_PORT in .env or stop the process holding that port, then retry.`);
     } else {
@@ -6234,6 +6315,7 @@ function startHttpServer() {
   });
   server.listen(HTTP_PORT, HTTP_BIND, () => {
     listening = true;
+    recordRuntimeEvent('http-ready', 'ok');
     console.log(`7coder HTTP OpenAI-compatible endpoint ready at http://${HTTP_BIND}:${HTTP_PORT}`);
     if (HTTP_API_KEY) console.log('[AUTH] API key required (Authorization: Bearer <HTTP_API_KEY>).');
     console.log('Built-in web UI: open http://127.0.0.1:' + HTTP_PORT + '/ in your browser (Chinese-friendly chat).');

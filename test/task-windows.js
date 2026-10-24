@@ -7,7 +7,7 @@ const S = require('./_shared').create({ suite: 'task-windows' });
 const source = fs.readFileSync(S.IDX, 'utf8');
 const start = source.indexOf('const ownedChildStates ='), end = source.indexOf('async function stopBackgroundTask(', start);
 assert.ok(start >= 0 && end > start);
-const ctx = vm.createContext({ process, child_process: cp, setTimeout, clearTimeout });
+const ctx = vm.createContext({ process, child_process: cp, setTimeout, clearTimeout, recordRuntimeEvent() {} });
 vm.runInContext(source.slice(start, end), ctx);
 let checks = 0, root = null, port = null;
 const nonce = require('crypto').randomBytes(16).toString('hex');

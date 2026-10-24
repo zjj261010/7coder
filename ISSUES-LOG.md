@@ -627,7 +627,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：10-24先将relative路径分隔符归一为/再匹配例外；原函数＋实际私有磁盘写入证实反斜杠memory在default模式可自动写，普通source仍需审批，deny/denial/protected-extra不被绕过，外指junction仍拒绝；新路径25/25、旧权限8/8。 | R1 L02；GAP-9；本日路径批记录 |
 | ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。同步readdir分配和正则CPU预算未解决，详见疑点。 | R1 L03；P2-3、A2-20保护保留；本日扫描批记录 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
-| ⬜ | T22-32 | Improvement | **补最低运行诊断**：记录当前运行/排队、最后成功/错误、关键 errno/路径/child exit；故障日志有限额。完整 runId 架构与跨会话提交统计仍留 OPT-3/DS-13 暂缓，不借此启动大拆分。 | R1 日志/长期运行章节；R2 N04；DS-13/OPT-3 |
+| ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
 | 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：10-24修pshell先决条件为6秒内建watchdog/1秒工具期限；新独立真实Bash专项首跑暴露bin/bash启动器残留，修产品后获现有自动复测授权复跑8/8，必须观察close、下一环境与命令可用性，SKIP单列。旧pshell修后未重复跑。其余仍待：信息/skip不记PASS、D按调用ID、stderr预览假命中、MAX_TOOL_STEPS=0、K/R真实workflow/第二模型、严格tool配对、mock错序。 | R1 §10.3；R2 N01/N02/N03；本日INC-24-03及超时oracle记录 |
 
 ### V22：验证与发布门槛（均未执行）
@@ -1269,3 +1269,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 搜索批已提交`a470cb6`。实际源码在T22-15的`b190d26`中已经引入cronSeq后缀和重复ID拒绝；本批没有重复改写已正确的调度器。修正工具分支中过时的“仅Unsupported schedule会失败”注释，保留全部失败状态映射。
 - 新cron-identity只加载源码原创建/调度/删除/子进程观察函数，冻结Date.now及Date构造时间，替换timer为可手动触发的句柄、child为明确记录kill/exit/close的自有夹具。Node13首次单次 **9/9**：两个创建别名在同一毫秒生成不同ID，Map和timer均保留；显式重复不替换；独立执行；各自running跳过tick且仅保留一个后续timer；删除第一个只关闭自己的child/timer，迟到旧callback不复活；第二个close后可再运行且独立删除，最终timer/Map无残留。
 - 新专项登记npm/test-all，相关JS Node13语法及diff检查通过。没有重跑task-budget/cron-overlap或全套A–J/UI/test-all；此处是确定性调度与句柄身份验证，不宣称真实OS后代或Win7/休眠/时钟跳变、24/72h已验收。T22-31关闭；不关闭T22-07/验证门槛。按授权提交本批，未推送；继续T22-32最低运行诊断。
+
+### 2026-10-24 —— T22-32最低运行诊断与有界故障记录
+
+- cron身份批已提交`8d04d9b`。/api/info保留已有chat准入/核心排队/摘要队列指标，新增runtime：活动CLI/HTTP任务、活动工具、累计完成/非成功操作、最后成功/错误/事件及日志可用性。finish幂等；工具wrapper即使异常抛出也释放计数，CLI初始化checkpoint纳入原try/finally；HTTP流式/非流式响应、失败、断连均落终态。最后成功不会擦掉最后错误，进程重启后内存状态重新计数。
+- UTF8 `.7coder/runtime.jsonl`独立于可关闭的audit，记录CLI/HTTP终态、工具非成功、HTTP ready/server错误及background/cron直属child close/spawn error。可用时保留scope、任务ID、errno/syscall/path、PID、真实exitCode/signal，字段白名单/长度有界及常见token形式脱敏；成功工具继续由原audit记录，不双写成功工具日志。不专门拷贝正文/模型配置，但错误文本可能带输入片段；不是完整保密过滤或跨会话追踪。
+- 写前按UTF8字节预算轮转，保留current/old各最多1MiB；旧代替换失败/rename失败就跳过append，防日志故障反而无限增长。磁盘满/权限失败不影响原任务结果，记录loggingError且console最多每分钟提示一次，下次写成功清除故障。保持原审计机制，不把本批新增runtime限额冒充T22-26全部磁盘策略。
+- Node13新runtime-diagnostics首次单次 **21/21**：活动计数/幂等、成功失败并存、UTF8 errno/path、字段脱敏/截断及快照不可变、连续轮转、EACCES阻止append/告警限频、ENOSPC结果不变/恢复；真实自有Node exit7与无PID spawn错误；真实HTTP ready、活动＋排队、503失败恢复、流式成功、AUDIT_LOG=false仍记工具失败、断连取消和日志终态。旧tool-cancellation **20/20**、B cron-overlap **6/6**单次，确认工具取消/审计契约及独立cron继续；无失败复测。为提取源码的旧夹具显式补新诊断依赖的空实现，不改原业务断言；新专项另行加载并检查真实诊断函数。收尾静态核对工具退出码来源为res.data.exitCode，非顶层属性。
+- 新专项登记npm/test-all，README写明日志位置/预算/降级。相关JS Node13语法及diff检查通过。未重复其它task/Win32专项，未跑完整A–J/UI/test-all、真实CLI执行诊断链、Win7/实际ACL/磁盘耗尽/强制终止、24/72h或打包。故障注入不等于真实磁盘满验收；早期配置加载失败尚未进入诊断初始化，仍依赖stderr/启动脚本日志。MCP/持久shell/任意树的全部进程事件未纳入，close仍只证明直属句柄；完整runId和跨会话提交统计按OPT-3/DS-13暂缓。T22-32最低范围关闭，按授权提交本批、未推送。

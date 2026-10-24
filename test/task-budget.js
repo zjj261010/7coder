@@ -19,7 +19,7 @@ function close(child, code = 0) { child.exitCode = code; child.emit('exit', code
 function context(exec) {
   const calls = [], timers = new Set();
   const ctx = vm.createContext({ Buffer, Date, console, process: { platform: 'unit-direct' },
-    launchDir: S.freshCwd('budget'), shuttingDown: false, backgroundTasks: new Map(), cronJobs: new Map(), taskSeq: 0, cronSeq: 0,
+    launchDir: S.freshCwd('budget'), shuttingDown: false, backgroundTasks: new Map(), cronJobs: new Map(), taskSeq: 0, cronSeq: 0, recordRuntimeEvent() {},
     setTimeout(fn, ms) { const t = setTimeout(fn, ms === 5000 ? 30 : ms); timers.add(t); return t; },
     clearTimeout(timer) { clearTimeout(timer); timers.delete(timer); },
     child_process: { exec(command, options, done) { const child = exec ? exec(command, options, done) : fakeChild(); calls.push({ child, options, done }); return child; } },
