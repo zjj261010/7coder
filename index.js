@@ -4301,7 +4301,7 @@ function inGitRepo() {
     try {
       // Pre-commit snapshot for recovery: stash create keeps it retrievable without touching the tree
       let snapshot = "";
-      try { const sh = git(["stash", "create"]).trim(); if (sh) { git(["update-ref", "-m", "7coder pre-commit snapshot", "refs/7coder/snapshots/" + sh, sh], { stdio: "pipe" }); snapshot = sh; } } catch (e) { console.warn('[WARN] pre-commit snapshot failed: ' + e.message); }
+      try { snapshot = recordOwnedGitSnapshot(git, 'commit'); } catch (e) { console.warn('[WARN] pre-commit snapshot failed: ' + e.message); }
       // AST-04: .7coder/ holds secrets (models.json apiKeys, audit log).
       // Keep it out of commits via pathspec exclusion - we never edit the
       // user's .gitignore and never untrack files they committed on purpose;
@@ -5207,6 +5207,56 @@ function printTaskChanges() {
   console.log('[CHANGES] this task: ' + ok + ' ok, ' + (taskChanges.length - ok) + ' blocked/failed');
   for (const c of taskChanges.slice(0, 20)) console.log('  ' + c.tool + ' ' + c.path + ' -> ' + c.status);
 }
+function ownedGitSnapshotPolicy(kind) {
+  if (kind !== 'task' && kind !== 'commit') throw new Error('Unknown snapshot kind');
+  const real = fs.realpathSync(launchDir);
+  const canonical = process.platform === 'win32' ? path.normalize(real).toLowerCase() : real;
+  const workspace = crypto.createHash('sha256').update(canonical, 'utf8').digest('hex').slice(0, 16);
+  return { prefix: 'refs/7coder/' + (kind === 'task' ? 'task-snapshots' : 'snapshots') + '/v1/' + workspace + '/',
+    marker: '7coder owned ' + kind + ' snapshot v1' };
+}
+function readOwnedGitSnapshots(gitCommand, policy) {
+  const text = gitCommand(['for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(contents:subject)', policy.prefix]);
+  const owned = [];
+  for (const line of String(text).split(/\r?\n/)) {
+    const fields = line.split('\0'), ref = fields[0] || '';
+    if (fields.length !== 5 || !ref.startsWith(policy.prefix) || fields[2] !== 'commit' || fields[3]) continue;
+    const name = /^(\d{16})-([a-f0-9]{16})-([a-f0-9]{12})$/.exec(ref.slice(policy.prefix.length));
+    if (!name || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(fields[1]) || !fields[1].startsWith(name[3]) ||
+        !fields[4].startsWith('On ') || !fields[4].endsWith(': ' + policy.marker)) continue;
+    const stamp = Number(name[1]);
+    if (Number.isSafeInteger(stamp)) owned.push({ ref, sha: fields[1], stamp });
+  }
+  return owned;
+}
+function recordOwnedGitSnapshot(gitCommand, kind) {
+  const policy = ownedGitSnapshotPolicy(kind);
+  const sha = gitCommand(['stash', 'create', policy.marker]).trim();
+  if (!sha) return '';
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha)) throw new Error('Git returned an invalid snapshot object ID');
+  const previous = readOwnedGitSnapshots(gitCommand, policy);
+  // Existing owned names keep creation order monotonic even across a restart,
+  // coarse/frozen Win7 clock or rollback. Nonces also avoid accidental overwrite.
+  let stamp = Math.max(0, Date.now());
+  for (const record of previous) stamp = Math.max(stamp, record.stamp + 1);
+  if (!Number.isSafeInteger(stamp)) throw new Error('Snapshot sequence exhausted');
+  const ref = policy.prefix + String(stamp).padStart(16, '0') + '-' + crypto.randomBytes(8).toString('hex') + '-' + sha.slice(0, 12);
+  gitCommand(['update-ref', '--no-deref', '-m', policy.marker, ref, sha, '0'.repeat(sha.length)], { stdio: 'pipe' });
+  const records = previous.concat({ ref, sha, stamp }).sort((a, b) => a.stamp - b.stamp || a.ref.localeCompare(b.ref));
+  let excess = records.length - 50;
+  try {
+    for (const record of records) {
+      if (excess <= 0) break;
+      if (record.ref === ref) continue;
+      // Never follow a ref changed into a symbolic reference to a user branch.
+      // Compare the old OID so an external rewrite fails instead of being erased.
+      gitCommand(['update-ref', '--no-deref', '-d', record.ref, record.sha], { stdio: 'pipe' });
+      excess--;
+    }
+  } catch (e) { console.warn('[WARN] snapshot retention stopped; current snapshot retained: ' + e.message); }
+  return sha;
+}
+
 // GAP-12: create a lightweight, recoverable pre-task checkpoint without
 // touching the working tree. This complements the git_commit_tool checkpoint
 // Tracked working-tree and index changes are preserved; untracked files are
@@ -5218,10 +5268,8 @@ function createTaskGitCheckpoint() {
     if (gitTask(['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe' }).trim() !== 'true') return '';
   } catch (e) { return ''; } // ordinary non-Git workspaces are silent
   try {
-    const snapshot = gitTask(['stash', 'create']).trim();
+    const snapshot = recordOwnedGitSnapshot(gitTask, 'task');
     if (!snapshot) return '';
-    const ref = 'refs/7coder/task-snapshots/' + Date.now() + '-' + snapshot.substring(0, 12);
-    gitTask(['update-ref', '-m', '7coder task checkpoint', ref, snapshot], { stdio: 'pipe' });
     console.log('[CHECKPOINT] git task snapshot ' + snapshot.substring(0, 12));
     return snapshot;
   } catch (e) {
