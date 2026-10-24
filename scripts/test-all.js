@@ -62,6 +62,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'vision-budget.js', args: [path.join(ROOT, 'test', 'vision-budget.js')] },
     { name: 'tool-http-budget.js', args: [path.join(ROOT, 'test', 'tool-http-budget.js')] },
     { name: 'html-deadline.js', args: [path.join(ROOT, 'test', 'html-deadline.js')] },
+    { name: 'config-admission.js', args: [path.join(ROOT, 'test', 'config-admission.js')] },
     { name: 'debug-prerequisites.js', args: [path.join(ROOT, 'test', 'debug-prerequisites.js')] },
     { name: 'tool-result-evidence.js', args: [path.join(ROOT, 'test', 'tool-result-evidence.js')] },
     { name: 'git-snapshot-retention.js', args: [path.join(ROOT, 'test', 'git-snapshot-retention.js')] },

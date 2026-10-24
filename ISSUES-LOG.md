@@ -1493,3 +1493,15 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 工具HTTP批已提交`43ccbb6`。复用Node13已用于grep的VM timeout能力，不依赖新版Node/浏览器API；每次调用独立context，无全局HTML对象缓存。不会因为页面含脚本而执行它；VM仅用于固定CPU期限，不是权限/内存安全沙箱。解析期间主线程仍可占用至200ms，需真实Win7负载验证该阈值；同步IO/其它计算的硬期限仍归T22-06。
 - 新html-deadline首次单次 **12/12**：全部危险文本只在所属子进程中，独立2秒监督期限，原产品分支坏anchor、坏script清理、DDG各返回200ms error；更早25ms调用期限正确取消/控制器dispose，同子进程下一正常页面成功，script/style去除、中文emoji、3000字符及20/10链接/trim保持；超大/已过期限零VM context，迟到取消不报成功。实际私有Agent对同样600KB坏页在2秒内完成SSE回复，audit按确切call ID记error；同Agent下一正常页面completed、health可用且活动归零。不是通过截断输入绕过坏页。
 - 新npm/test-all登记，Node13语法及diff检查通过；原tool-http-budget22/状态41等已通过专项未重跑，未做完整A–J/UI/test-all、真实搜索/模型、Win7/浏览器、24/72h或打包。前一批“HTML CPU尚未解决”的历史记录由本批局部补齐，不追改其当时范围；全局资源与取消闭环仍未整体关闭。按授权提交本批、未推送，继续读取配置与启动故障的预算/降级路径。
+
+### 2026-10-25 —— INC-25-02配置静默降级与T22-15启动准入
+
+| ID | 确认依据与影响 | 处理与范围 |
+|---|---|---|
+| INC-25-02 | **High／已确认错误路径**：原loadPermRules对坏JSON/读取失败仅WARN后continue，非数组bucket或无效rule忽略；已配置的用户deny/protected-extra可能丢失而Agent照常运行。loadMcpServers同样忽略坏workspace层后保留install层，可连接/启动错误的旧配置。不是公网鉴权模型，而是本机明确规则/实际进程路由被错误降级。 | 已修：只有ENOENT可缺省；1MiB bounded lossless UTF8/BOM JSON与已识别字段/规则全部校验成功才发布两层合并配置，其它读取/解析/类型/路径错误在ready前非零退出、保留文件。手工配置不自动修复/覆盖；显式修复后再启动。 |
+
+- HTML解析批已提交`f1d5fc9`。MCP最多32个合并服务名，command非空string、args string数组、cwd string、env对象；保持bare-map与workspace覆盖。服务器map和client cache改null-prototype，constructor/toString/__proto__不再返回继承函数或污染映射。服务器上限限制可配置client数，不意味着全MCP JSON/schema/stderr或进程树已有全局内存上限。
+- permissions最多1000个跨bucket/层去重规则，单条4096 UTF16单位，已识别bucket必须array且rule必须有效非空string；不再忽略坏项。全部先构建next，失败保留此前规则数组/map，跨bucket相同文字仍独立。未知metadata仍兼容忽略，不能保证识别所有字段拼写/语义错误；1MiB/条目预算不解决复杂通配符正则的CPU问题，另行检查。
+- 新config-admission首次前 **18项**通过：BOM/1MiB、两层MCP覆盖、12类坏MCP字段、32与跨层33拒绝、原型名字client缓存真实对象、10类坏permission字段/规则零部分发布、1000及跨层1001、超大配置零对应data-read/close、EACCES，以及4个真实Agent坏JSON/超限启动exit1、不ready、不泄露parser输入且原件未动。
+- 随后集成断言失败；仅integration范围重跑加实际SSE诊断，发现fixture双调用漏index，被流协议拼成write_filewrite_file＋拼接参数，并非规则合并失败。补0/1 index后按授权仅integration **2/2**：有效修复配置启动，真实同请求两call ID分别blocked/completed，workspace deny压过安装allow且无blocked.txt，另一个allow真实写scratch文件。旧B perm-rules首次单次 **8/8**，未随夹具失败重跑；前18项也未重跑。输出明确所选integration，不声称修后全20项又一次通过。
+- npm/test-all登记、Node13语法与diff检查通过；未重跑其它已通过专项、旧MCP8/完整A–J/UI/test-all、Win7/真实ACL/.NET/浏览器、24/72h或打包。新server-name cache检查用实际getMcpClient＋所属fake客户端，不在HTTP Agent里创建无法由测试确认关闭的额外MCP后代。T22-15/21只补上述范围，实际全局资源、原生进程树、剩余同步配置/日志读取及通配符CPU仍开放。按授权提交本批、未推送，继续通配符匹配的隔离验证与有界实现。

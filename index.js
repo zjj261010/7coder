@@ -343,32 +343,39 @@ function authHeadersFor(key) {
 //   .7coder/mcp.json in the workspace   (same shape, or a bare map)
 // Server entry: { "command": "npx", "args": ["-y", "@modelcontextprotocol/
 // server-filesystem", "D:\\somewhere"], "env": {}, "cwd": "" }
-let mcpServers = {};
+let mcpServers = Object.create(null);
 function loadMcpServers() {
-  mcpServers = {};
+  const next = Object.create(null);
   const files = [path.join(appDir, 'mcp.json')];
-  try { files.push(internalStatePath('.7coder', 'mcp.json')); } catch (e) { console.warn('[WARN] workspace mcp.json rejected: ' + e.message); }
+  files.push(internalStatePath('.7coder', 'mcp.json'));
   for (const f of files) {
-    try {
-      if (!fs.existsSync(f)) continue;
-      const j = JSON.parse(fs.readFileSync(f, 'utf8'));
-      const servers = (j && j.servers && typeof j.servers === 'object') ? j.servers : j;
-      for (const k of Object.keys(servers || {})) {
-        const sv = servers[k];
-        if (sv && typeof sv.command === 'string') mcpServers[k] = sv;
-      }
-    } catch (e) {
-      console.warn('[WARN] failed to read ' + f + ': ' + e.message);
+    const j = readOptionalJsonConfig(f, 'MCP configuration');
+    if (j === undefined) continue;
+    if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('Invalid MCP configuration object: ' + f);
+    const servers = Object.prototype.hasOwnProperty.call(j, 'servers') ? j.servers : j;
+    if (!servers || typeof servers !== 'object' || Array.isArray(servers)) throw new Error('Invalid MCP servers map: ' + f);
+    const names = Object.keys(servers);
+    if (names.length > 32) throw new Error('MCP configuration exceeds 32 servers: ' + f);
+    for (const k of names) {
+      const sv = servers[k];
+      if (!k.trim() || !sv || typeof sv !== 'object' || Array.isArray(sv) || typeof sv.command !== 'string' || !sv.command.trim() ||
+          (sv.args !== undefined && (!Array.isArray(sv.args) || sv.args.some(a => typeof a !== 'string'))) ||
+          (sv.cwd !== undefined && typeof sv.cwd !== 'string') ||
+          (sv.env !== undefined && (!sv.env || typeof sv.env !== 'object' || Array.isArray(sv.env)))) throw new Error('Invalid MCP server fields: ' + f);
+      next[k] = sv;
     }
+    if (Object.keys(next).length > 32) throw new Error('Merged MCP configuration exceeds 32 servers: ' + f);
   }
+  mcpServers = next;
 }
-loadMcpServers();
+try { loadMcpServers(); }
+catch (e) { console.error('[ERROR] MCP configuration load failed: ' + e.message); process.exit(1); }
 const MCP_CALL_TIMEOUT = parseInt(process.env.MCP_CALL_TIMEOUT, 10) || 120000;
 const MCP_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 
 // One lazily-created client per configured server, kept alive for the
 // process lifetime and disposed at shutdown.
-const mcpClients = {};
+const mcpClients = Object.create(null);
 function mcpContentToText(result) {
   const parts = [];
   for (const c of ((result && result.content) || [])) {
@@ -1426,6 +1433,13 @@ function readFileBytesBounded(file, maxBytes, label = 'File') {
 }
 function stateFileByteLimit() { return 8 * 1024 * 1024; }
 function readStateBytes(file) { return readFileBytesBounded(file, stateFileByteLimit(), 'State file ' + file); }
+function readOptionalJsonConfig(file, label) {
+  let bytes;
+  try { bytes = readFileBytesBounded(file, 1024 * 1024, label + ' ' + file); }
+  catch (e) { if (e.code === 'ENOENT') return undefined; throw e; }
+  try { return parseStateJson(decodeUtf8Text(bytes)); }
+  catch (e) { throw new Error(label + ' ' + file + ': ' + e.message); }
+}
 function guardStateFile(file, owner = file) {
   file = path.resolve(file); owner = path.resolve(owner);
   if (path.dirname(file) !== path.dirname(owner)) throw new Error('Security: state companion escaped its parent');
@@ -1673,25 +1687,30 @@ function compilePermRule(raw, bucket) {
   return { raw: s, bucket: bucket, toolRe: toolRe, argRe: argRe };
 }
 function loadPermRules() {
-  permRules.allow = []; permRules.deny = []; permRules.protectedExtra = [];
+  const next = { allow: [], deny: [], protectedExtra: [] };
+  let count = 0;
   const seen = {};
   const files = [path.join(appDir, 'permissions.json')];
-  try { files.push(internalStatePath('.7coder', 'permissions.json')); } catch (e) { console.warn('[WARN] workspace permissions.json rejected: ' + e.message); }
+  files.push(internalStatePath('.7coder', 'permissions.json'));
   for (const f of files) {
-    let j = null;
-    try { if (fs.existsSync(f)) j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (e) { console.warn('[WARN] failed to read ' + f + ': ' + e.message); }
-    if (!j || typeof j !== 'object') continue;
+    const j = readOptionalJsonConfig(f, 'Permission configuration');
+    if (j === undefined) continue;
+    if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('Invalid permission configuration object: ' + f);
     for (const bucket of ['deny', 'allow', 'protected_extra']) {
       const list = j[bucket];
-      if (!Array.isArray(list)) continue;
-      const target = bucket === 'protected_extra' ? permRules.protectedExtra : permRules[bucket];
-      for (const raw of list) {
+      if (list === undefined) continue;
+      if (!Array.isArray(list)) throw new Error('Permission field ' + bucket + ' must be an array: ' + f);
+      const target = bucket === 'protected_extra' ? next.protectedExtra : next[bucket];
+      for (let i = 0; i < list.length; i++) {
+        const raw = list[i];
+        if (typeof raw !== 'string' || !raw.trim() || raw.length > 4096) throw new Error('Invalid permission rule size/type in ' + bucket + ' index ' + i + ': ' + f);
         // A2-02: the dedup key MUST include the bucket - a bare-string key
         // let an install-level allow swallow a workspace deny of the SAME
         // rule text (the deny was read second and silently dropped).
         const seenKey = bucket + '|' + String(raw);
         if (seen[seenKey]) continue;
         seen[seenKey] = true;
+        if (++count > 1000) throw new Error('Merged permission configuration exceeds 1000 rules: ' + f);
         let c = null;
         if (bucket === 'protected_extra') {
           // pure path pattern - no tool prefix. Matches the relative path
@@ -1706,15 +1725,17 @@ function loadPermRules() {
           c = compilePermRule(raw, bucket);
         }
         if (c) target.push(c);
-        else console.warn('[WARN] ignoring invalid permission rule: ' + JSON.stringify(raw));
+        else throw new Error('Invalid permission rule in ' + bucket + ' index ' + i + ': ' + f);
       }
     }
   }
+  permRules.allow = next.allow; permRules.deny = next.deny; permRules.protectedExtra = next.protectedExtra;
   if (permRules.allow.length || permRules.deny.length || permRules.protectedExtra.length) {
     console.log('[PERM] user permission rules loaded: ' + permRules.deny.length + ' deny, ' + permRules.allow.length + ' allow, ' + permRules.protectedExtra.length + ' protected-extra (deny holds in every mode; allow never overrides the hard rails)');
   }
 }
-loadPermRules();
+try { loadPermRules(); }
+catch (e) { console.error('[ERROR] permission configuration load failed: ' + e.message); process.exit(1); }
 function permRuleArgText(name, args) {
   // Normalized to forward slashes on BOTH sides so patterns written as
   // "forbidden/**" match on Windows paths too.
