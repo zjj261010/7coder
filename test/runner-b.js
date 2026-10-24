@@ -1943,17 +1943,19 @@ scenarios.push({
 // real desktop it would call the vision endpoint - both are environment-
 // dependent, hence NOTE ONLY (no assertion). What IS asserted: the newly
 // extracted screenshotToDataUrl() returns a proper data URL for a real PNG
-// (runner-i style source extraction + direct eval) and null for a missing
-// file - that is the exact value describeWithVision would receive.
+// with its actual bounded-reader dependencies and optional null-on-error;
+// strict screenshot dispatch is covered separately without a real desktop.
 scenarios.push({
   name: 'vision-loop',
   fn: async () => {
     const src = fs.readFileSync(IDX, 'utf8');
-    const mfn = src.match(/function screenshotToDataUrl\(p\) \{[\s\S]*?\n\}/);
+    const mfn = src.match(/function screenshotToDataUrl\(p, strict = false\) \{[\s\S]*?\n\}/);
     record('vision: screenshotToDataUrl present in index.js', !!mfn, '');
     if (!mfn) return;
-    const screenshotToDataUrl = eval('(' + mfn[0] + ')');
     const cwd = freshCwd('b-vision');
+    const ctx = require('./download-commit').loadContext(src, cwd, null, { Buffer });
+    require('vm').runInContext(mfn[0], ctx);
+    const screenshotToDataUrl = ctx.screenshotToDataUrl;
     // 1x1 transparent PNG
     const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
     const p1 = path.join(cwd, 'onepixel.png');
@@ -1964,7 +1966,7 @@ scenarios.push({
     record('vision: data URL round-trips to the original bytes',
       !!d1 && Buffer.from(d1.substring('data:image/png;base64,'.length), 'base64').equals(png), '');
     const d2 = await screenshotToDataUrl(path.join(cwd, 'no-such-shot.png'));
-    record('vision: unreadable path -> null (caller keeps path-only reply)', d2 === null, String(d2));
+    record('vision: unreadable path -> null for optional helper callers', d2 === null, String(d2));
   }
 });
 

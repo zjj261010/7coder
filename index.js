@@ -2673,6 +2673,8 @@ async function describeWithVision(imageUrl, modelContext, cancelled) {
     return makeToolResult('error', `[IMAGE] Image at ${imageUrl} - (VISION_MODEL not set in .env - configure it to enable vision)`);
   }
   try {
+    if (typeof imageUrl !== 'string' || !imageUrl.trim()) throw new Error('Vision image URL must be a nonempty string');
+    if (Buffer.byteLength(imageUrl, 'utf8') > 6 * 1024 * 1024) throw fileByteLimitError('Vision image URL', 6 * 1024 * 1024);
     const mcfg = (modelContext && modelContext.routes[String(VISION_MODEL).toLowerCase()]) || resolveModelConfig(VISION_MODEL);
     const base = mcfg.endpoint.replace(/\/+$/, '');
     const payload = {
@@ -2688,6 +2690,7 @@ async function describeWithVision(imageUrl, modelContext, cancelled) {
     };
     const response = await executionHttp({ method: 'post', url: `${base}/chat/completions`, data: payload,
       headers: authHeadersFor(mcfg.apiKey),
+      maxBodyLength: MODEL_RESPONSE_MAX_BYTES,
       maxContentLength: MODEL_RESPONSE_MAX_BYTES,
       timeout: 30000
     }, cancelled);
@@ -2702,13 +2705,15 @@ async function describeWithVision(imageUrl, modelContext, cancelled) {
 
 // GAP-4: read a screenshot back as a data URL so it can be fed straight to an
 // OpenAI-compatible vision model (describeWithVision accepts any URL, and data
-// URLs are valid image_url values). Returns null when the file cannot be read;
-// the caller then keeps the path-only reply instead of failing the tool.
-function screenshotToDataUrl(p) {
+// URLs are valid image_url values). Keep null-on-error for optional callers;
+// a requested vision operation uses strict mode so missing analysis is visible.
+function screenshotToDataUrl(p, strict = false) {
   try {
-    const buf = fs.readFileSync(p);
+    const buf = readFileBytesBounded(p, 4 * 1024 * 1024, 'Screenshot image');
+    if (buf.length < 8 || !buf.slice(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) throw new Error('Screenshot image has no PNG signature');
     return 'data:image/png;base64,' + buf.toString('base64');
   } catch (e) {
+    if (strict) throw e;
     return null;
   }
 }
@@ -3896,7 +3901,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       // the workspace root (shots are one-off, so no migration is needed).
       const shotsDir = internalStatePath('.7coder/screenshots');
       try { fs.mkdirSync(shotsDir, { recursive: true }); } catch (e) {}
-      const shotPath = path.join(shotsDir, `screenshot_${Date.now()}.png`);
+      const shotPath = path.join(shotsDir, `screenshot_${Date.now()}_${crypto.randomBytes(8).toString('hex')}.png`);
       try {
         if (process.platform === 'darwin') {
           child_process.execSync(`screencapture -x "${shotPath}"`);
@@ -3923,10 +3928,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         // the description to the tool result. Without VISION_MODEL the reply
         // stays path-only (the previous behavior).
         if (VISION_MODEL) {
-          const dataUrl = screenshotToDataUrl(shotPath);
-          if (dataUrl) {
+          try {
+            const dataUrl = screenshotToDataUrl(shotPath, true);
             const desc = await describeWithVision(dataUrl, modelContext, cancelled);
             return makeToolResult(toolResultStatus(desc), `Screenshot saved to ${shotPath}.\nVision: ${toolResultText(desc)}`, { screenshotPath: shotPath });
+          } catch (e) {
+            if (cancelled && cancelled()) throw e;
+            return makeToolResult('error', `Screenshot saved to ${shotPath}.\nVision unavailable: ${e.message}`, { screenshotPath: shotPath });
           }
         }
         return makeToolResult('ok', `Screenshot saved to ${shotPath}`);

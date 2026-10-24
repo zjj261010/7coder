@@ -7,7 +7,7 @@ let checks = 0;
 function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
 function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, a); assert.ok(a >= 0 && b > a, from); return source.slice(a, b); }
 const cwd = S.freshCwd('中文 空格 % ! & 单\'引号');
-const ctx = vm.createContext({ Buffer, fs, path, process, console: { log() {} }, DANGER_MODE: false,
+const ctx = vm.createContext({ Buffer, fs, path, process, crypto: require('crypto'), console: { log() {} }, DANGER_MODE: false,
   effectivePermissionMode: () => 'default', checkExecution() {}, VISION_MODEL: '', launchDir: cwd,
   internalStatePath: (...p) => path.join(cwd, ...p), makeToolResult: (status, text, data) => ({ status, text, data }),
   child_process: { execSync() { throw Error('shell dispatch is forbidden in fixture'); }, execFileSync(file, args, opts) { calls.push({ file, args, opts }); } },

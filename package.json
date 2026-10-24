@@ -75,6 +75,7 @@
     "test:read-window": "node test/read-window.js",
     "test:mcp-budget": "node test/mcp-budget.js",
     "test:model-response-budget": "node test/model-response-budget.js",
+    "test:vision-budget": "node test/vision-budget.js",
     "test:debug-prerequisites": "node test/debug-prerequisites.js",
     "test:tool-result-evidence": "node test/tool-result-evidence.js",
     "test:git-snapshot-retention": "node test/git-snapshot-retention.js",
