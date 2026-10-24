@@ -788,7 +788,11 @@ function requestGate(cancelled) {
 }
 
 function effectivePermissionMode() {
-  return subAgentModeOverride || PERMISSION_MODE;
+  if (PERMISSION_MODE === 'denial') return 'denial';
+  if (DANGER_MODE) return 'bypass';
+  // The override marks an active sub-agent; derive its policy from the live
+  // configured mode so a later denial/default change cannot retain old auto.
+  return subAgentModeOverride !== null && PERMISSION_MODE === 'default' ? 'auto' : PERMISSION_MODE;
 }
 
 // Runs a sub-agent: a FRESH conversation with full tool access. Never touches
@@ -845,6 +849,7 @@ function latestTask() {
 }
 
 const DANGER_MODE = dangerMode;
+const PERMISSION_SESSION = crypto.randomBytes(12).toString('hex');
 const INTERACTIVE = !promptArg && !serverMode && !backgroundMode;
 
 if (DANGER_MODE) {
@@ -4519,6 +4524,20 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
   try {
     const name = func.name;
     const mode = effectivePermissionMode();
+    const modeRevision = effectivePermissionMode.revision || 0;
+    const policyResult = () => {
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: execution cancelled]');
+      const current = effectivePermissionMode();
+      if (current === 'denial') return makeToolResult('blocked', 'Permission mode = denial. Action blocked.');
+      if (current !== mode || (effectivePermissionMode.revision || 0) !== modeRevision) {
+        return makeToolResult('declined', 'Permission mode changed while awaiting a decision; request a fresh approval before executing.');
+      }
+      return null;
+    };
+    const dispatch = async () => {
+      const blocked = policyResult();
+      return blocked || await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
+    };
 
     // Denial blocks EVERY tool call, including otherwise auto-safe ones.
     if (mode === 'denial') return 'Permission mode = denial. Action blocked.';
@@ -4557,7 +4576,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
     }
     if (!protectedRead && !protectedWrite && (getToolMetadata(name).autoSafe || isAutoLogWrite)) {
       console.log(`[TOOL] Auto-executing safe tool: ${name}`);
-      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
+      return await dispatch();
     }
 
     // OP2-2/A2-17: EVERY tool that ultimately reaches a shell command goes
@@ -4580,7 +4599,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       const allowHit = matchPermRule('allow', name, args);
       if (allowHit) {
         console.log(`[PERM] auto-executing per user allow rule: ${allowHit.raw}`);
-        return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
+        return await dispatch();
       }
     }
 
@@ -4588,12 +4607,13 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       console.log(`[TOOL] [DANGER MODE] Executing tool: ${name}`);
       // A2-06: bypass used to drop the cancellation token - a client that
       // hit Stop mid-command still ran it to completion in bypass/danger.
-      return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
+      return await dispatch();
     }
 
     // Fixed policy and model fallbacks share the same tool declaration.
     const meta = getToolMetadata(name);
     const risk = (protectedWrite || protectedRead) ? 'HIGH' : (meta.risk || await classifyRisk(name, args, modelContext, cancelled));
+    const afterRisk = policyResult(); if (afterRisk) return afterRisk;
     if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: execution cancelled]');
 
     if (mode === 'auto') {
@@ -4609,6 +4629,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
         // AST-R2: structured verdict - the decline carries the light model's
         // reason so the caller (and the audit log) can explain the veto.
         const verdict = await isAutoApprovalSafe(name, args, risk, modelContext, cancelled);
+        const afterVerdict = policyResult(); if (afterVerdict) return afterVerdict;
         if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: execution cancelled]');
         if (!verdict.safe) {
           lastDeclineReason = verdict.reason || 'no reason given';
@@ -4649,14 +4670,17 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       if (workflowStepDepth > 0 && !protectedWrite) {
         console.log('[PERM] workflow inner step inherits plan approval: ' + name);
       } else {
-      const approved = await askApproval(`Execute ${name}${protectedWrite ? ' (PROTECTED FILE - make sure you really want this)' : ''}? (y/n) `, approvalBridge, cancelled);
+      const beforeQuestion = policyResult(); if (beforeQuestion) return beforeQuestion;
+      const detail = name === 'workflow_tool' ? JSON.stringify(args.steps, null, 2) : (preview || JSON.stringify(args, null, 2));
+      if (detail && detail.length > 65536) return makeToolResult('declined', 'Approval preview exceeds 64 KiB; split the action or workflow into smaller reviewable steps.');
+      const approved = await askApproval(`Execute ${name}${protectedWrite ? ' (PROTECTED FILE - make sure you really want this)' : ''}?\n${detail || ''}\n(y/n) `, approvalBridge, cancelled);
       if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: execution cancelled]');
       if (!approved) return 'User declined the tool action.';
       }
     }
 
     console.log(`[TOOL] Executing approved tool: ${name}`);
-    return await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
+    return await dispatch();
   } catch (e) {
     // Never let a tool exception kill the whole conversation - feed the error
     // back to the model so it can react.
@@ -4679,24 +4703,26 @@ function createHttpApprovalBridge(res, cancelled) {
   const bridge = {
     prefix: 'apr-' + Math.random().toString(36).substring(2, 8) + '-',
     pending: new Set(),
-    ask(question) {
+    ask(question, permissionRevision = 0, permissionSession = '') {
       if (closed || res.destroyed || (cancelled && cancelled())) return Promise.resolve(false);
       return new Promise(resolve => {
         const id = bridge.prefix + (++approvalSeq);
         const item = { timer: null, finish: null };
         let done = false;
         item.finish = approved => {
-          if (done) return;
+          if (done) return false;
           done = true;
           clearTimeout(item.timer);
           pendingApprovals.delete(id);
           bridge.pending.delete(item);
-          resolve(!!approved && !(cancelled && cancelled()));
+          const accepted = !!approved && !(cancelled && cancelled());
+          resolve(accepted);
+          return accepted;
         };
         pendingApprovals.set(id, item.finish);
         bridge.pending.add(item);
         item.timer = setTimeout(() => item.finish(false), 120000);
-        try { res.write('data: ' + JSON.stringify({ approval_request: { id, question } }) + '\n\n'); }
+        try { res.write('data: ' + JSON.stringify({ approval_request: { id, question, permissionRevision, permissionSession } }) + '\n\n'); }
         catch (e) { item.finish(false); }
       });
     },
@@ -4754,7 +4780,7 @@ function createCliQuestionQueue(write) {
 async function askApproval(question, approvalBridge, cancelled) {
   if (cancelled && cancelled()) return false;
   if (approvalBridge) {
-    return approvalBridge.ask(question, cancelled);
+    return approvalBridge.ask(question, effectivePermissionMode.revision || 0, PERMISSION_SESSION);
   }
   if (!INTERACTIVE || rlClosed) {
     console.log(`\n[PERM] ${question} (auto-skipped in non-interactive mode)`);
@@ -5850,7 +5876,9 @@ function startHttpServer() {
   }
   function hInfo(req, res) {
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(),
+    res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir,
+      mode: effectivePermissionMode(), configuredMode: PERMISSION_MODE, dangerMode: DANGER_MODE, modeForced: DANGER_MODE && PERMISSION_MODE !== 'denial', permissionRevision: effectivePermissionMode.revision || 0, permissionSession: PERMISSION_SESSION,
+      keyRequired: !!HTTP_API_KEY, models: modelList(),
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
       runtime: runtimeSnapshot(),
       startup: { phase: serverStartupState.phase, error: serverStartupState.error },
@@ -5942,9 +5970,9 @@ function startHttpServer() {
         if (!pendingApprovals.has(id)) throw new Error('no pending approval with id: ' + id);
         const resolve = pendingApprovals.get(id);
         pendingApprovals.delete(id);
-        resolve(!!j.approved);
+        const accepted = resolve(!!j.approved);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, approved: !!j.approved }));
+        res.end(JSON.stringify({ ok: true, approved: !!accepted }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: e.message } }));
@@ -6125,10 +6153,15 @@ function startHttpServer() {
         }
         const prev = PERMISSION_MODE;
         PERMISSION_MODE = wanted;
+        if (prev !== wanted) {
+          effectivePermissionMode.revision = (effectivePermissionMode.revision || 0) + 1;
+          for (const finish of Array.from(pendingApprovals.values())) finish(false);
+        }
         console.log('[PERM] permission mode changed: ' + prev + ' -> ' + wanted);
         audit({ ts: new Date().toISOString(), type: 'mode', from: prev, to: wanted });
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, mode: PERMISSION_MODE }));
+        res.end(JSON.stringify({ ok: true, mode: effectivePermissionMode(), configuredMode: PERMISSION_MODE,
+          dangerMode: DANGER_MODE, modeForced: DANGER_MODE && PERMISSION_MODE !== 'denial', permissionRevision: effectivePermissionMode.revision || 0, permissionSession: PERMISSION_SESSION }));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: { message: e.message } }));

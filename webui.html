@@ -151,7 +151,7 @@ details.think[open] summary::before { content: '▾ '; }
 .stream-error, .stream-stopped { margin-top: 8px; color: var(--err); font-size: 12px; }
 .stream-stopped { color: var(--warn); }
 .approval-box { padding: 14px; border-radius: 10px; margin: 10px 0; background: var(--panel); border: 1px solid var(--warn); font-size: 13px; }
-.approval-box .q { margin-bottom: 9px; }
+.approval-box .q { margin-bottom: 9px; white-space: pre-wrap; max-height: 320px; overflow: auto; }
 .approval-cd { color: var(--warn); font-size: 11px; }
 .approval-box .btns { display: flex; gap: 8px; margin-top: 10px; }
 .approval-box .btns button { flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--line); font-size: 12px; background: var(--panel); }
@@ -363,6 +363,9 @@ body.dark .primary-btn { color: #231b16; }
   var autoSaving = false;
   var saveRevision = 0, saveFailedRevision = 0, saveDirty = false, pendingSave = null, saveTimer = null, turnSeq = 0;
   var mode = 'auto';
+  var modeSeenRevision = -1, modeRequestSeq = 0, modeUpdating = false;
+  var modeSeenSession = null, modeObservationSeq = 0, modeAppliedObservation = 0;
+  var disposeActiveApprovals = function () {};
   var sessions = [], sessionLoading = false, composing = false, sessionActivities = [];
 
   /* ===== Markdown-lite ===== */
@@ -782,8 +785,11 @@ body.dark .primary-btn { color: #231b16; }
     var streamEl = document.createElement('div');
     streamEl.className = 'stream'; bubble.appendChild(streamEl);
     var contentEl = null, thinkEl = null, thinkBody = null, thinkAcc = '';
-    var acc = '', segmentAcc = '', lastEvent = '', activityRecords = sessionActivities, streamDone = false;
+    var acc = '', segmentAcc = '', lastEvent = '', activityRecords = sessionActivities, streamDone = false, approvalItems = [];
     ctrl = new AbortController();
+    var requestCtrl = ctrl;
+    disposeActiveApprovals = disposeApprovals;
+    requestCtrl.signal.addEventListener('abort', function () { disposeApprovals(); });
 
     function appendReasoning(text) {
       if (!thinkEl || lastEvent !== 'reasoning') {
@@ -893,10 +899,24 @@ body.dark .primary-btn { color: #231b16; }
       finish();
     });
 
-    function finish() { setBusy(false); ctrl = null; statusEl.textContent = ''; refreshSessions(); refreshInfo(); }
+    function finish() {
+      disposeApprovals();
+      if (disposeActiveApprovals === disposeApprovals) disposeActiveApprovals = function () {};
+      setBusy(false); ctrl = null; statusEl.textContent = ''; refreshSessions(); refreshInfo();
+    }
+    function disposeApprovals(revision) {
+      approvalItems.forEach(function (item) {
+        if (revision !== undefined && item.revision >= revision) return;
+        item.dispose();
+      });
+    }
 
     // 审批处理: SSE 收到 approval_request 时显示按钮并等待用户操作
     function handleApproval(req) {
+      if (req.permissionSession && req.permissionSession !== modeSeenSession) {
+        disposeApprovals(); modeSeenSession = req.permissionSession; modeSeenRevision = -1;
+        modeAppliedObservation = ++modeObservationSeq;
+      }
       var box = document.createElement('div');
       box.className = 'approval-box';
       box.innerHTML = '<div class="q">' + esc(req.question) + '</div>' +
@@ -907,10 +927,19 @@ body.dark .primary-btn { color: #231b16; }
       // P2-12: 服务端 120 秒无操作会自动拒绝 - 前端同拍倒计时提示
       var cdLeft = 120;
       var cdSpan = box.querySelector('.approval-cd');
+      var item = { revision: Number(req.permissionRevision) || 0, done: false, sending: false, timer: null,
+        dispose: function () {
+          if (item.timer) { clearInterval(item.timer); item.timer = null; }
+          if (item.done) return;
+          item.done = true; cdSpan.textContent = '审批等待已结束，请查看工具执行记录';
+          box.querySelectorAll('button').forEach(function (btn) { btn.disabled = true; });
+        } };
+      approvalItems.push(item);
       var cdTimer = setInterval(function () {
         cdLeft -= 1;
         if (cdLeft <= 0) {
           clearInterval(cdTimer);
+          item.timer = null; item.done = true;
           cdSpan.textContent = '已超时自动拒绝';
           var ab = box.querySelector('.approve'), db = box.querySelector('.deny');
           if (ab) ab.disabled = true;
@@ -919,20 +948,34 @@ body.dark .primary-btn { color: #231b16; }
           cdSpan.textContent = '剩余 ' + cdLeft + ' 秒';
         }
       }, 1000);
-      var clearCd = function () { if (cdTimer) { clearInterval(cdTimer); cdTimer = null; } };
+      item.timer = cdTimer;
       box.querySelector('.approve').addEventListener('click', function () {
-        clearCd();
-        respondApproval(req.id, true, box);
+        respondApproval(req.id, true, box, item);
       });
       box.querySelector('.deny').addEventListener('click', function () {
-        clearCd();
-        respondApproval(req.id, false, box);
+        respondApproval(req.id, false, box, item);
       });
+      if (item.revision < modeSeenRevision) item.dispose();
     }
-    function respondApproval(id, approved, box) {
-      box.querySelector('.btns').innerHTML = approved ? '<span style="color:var(--ok)">✓ 已批准</span>' : '<span style="color:var(--err)">✗ 已拒绝</span>';
+    function respondApproval(id, approved, box, item) {
+      if (item.done || item.sending) return;
+      item.sending = true;
+      box.querySelectorAll('button').forEach(function (btn) { btn.disabled = true; });
+      box.querySelector('.approval-cd').textContent = '正在发送审批决定…';
       fetch('/api/approve', { method: 'POST', headers: headers(), body: JSON.stringify({ id: id, approved: approved }) })
-        .catch(function (e) { addMsg('err', '审批发送失败: ' + e.message); });
+        .then(readJSON).then(function (j) {
+          if (item.done) return;
+          if (!j || !j.ok || typeof j.approved !== 'boolean') throw new Error('服务器未确认审批结果');
+          item.dispose();
+          box.querySelector('.approval-cd').textContent = j.approved ? '服务器已确认批准' : '服务器已确认拒绝或审批已失效';
+          box.querySelector('.btns').textContent = j.approved ? '✓ 已批准' : '✗ 已拒绝';
+        }).catch(function (e) {
+          if (item.done) return;
+          item.sending = false;
+          box.querySelector('.approval-cd').textContent = '发送失败或结果未知：' + e.message;
+          box.querySelectorAll('button').forEach(function (btn) { btn.disabled = false; });
+          addMsg('err', '审批发送失败，请检查工具执行记录后重试：' + e.message);
+        });
     }
   }
 
@@ -948,6 +991,24 @@ body.dark .primary-btn { color: #231b16; }
   }
 
   /* ===== Init ===== */
+  function applyModeInfo(info, observation) {
+    if (observation < modeAppliedObservation) return;
+    if (info.permissionSession && info.permissionSession !== modeSeenSession) {
+      disposeActiveApprovals(); modeSeenSession = info.permissionSession; modeSeenRevision = -1;
+    }
+    var revision = Number(info.permissionRevision);
+    if (isFinite(revision)) {
+      if (revision < modeSeenRevision) return;
+      if (revision > modeSeenRevision) disposeActiveApprovals(revision);
+      modeSeenRevision = revision;
+    }
+    modeAppliedObservation = observation;
+    mode = info.mode || 'auto'; modeSel.value = mode;
+    modeChip.textContent = (modes[mode] || mode) + (info.modeForced ? ' · --danger' : '');
+    modeChip.title = info.modeForced ? '启动参数 --danger 强制直接执行；拒绝模式仍可阻止新操作。' : '当前执行权限';
+    modeSel.querySelectorAll('option').forEach(function (option) { option.disabled = !!info.dangerMode && option.value !== 'bypass' && option.value !== 'denial'; });
+    modeSel.disabled = modeUpdating;
+  }
   try { keyInput.value = localStorage.getItem('7coder-key') || ''; } catch (e) {}
   keyInput.addEventListener('change', function () {
     try { keyInput.value ? localStorage.setItem('7coder-key', keyInput.value) : localStorage.removeItem('7coder-key'); } catch (e) {}
@@ -955,6 +1016,7 @@ body.dark .primary-btn { color: #231b16; }
   });
 
   function refreshInfo() {
+    var observation = ++modeObservationSeq;
     $('statusChip').textContent = '正在连接'; $('statusChip').className = 'chip';
     return fetch('/api/info', { headers: headers() }).then(readJSON).then(function (info) {
       var workspace = info.workspace || '未指定工作区';
@@ -964,7 +1026,7 @@ body.dark .primary-btn { color: #231b16; }
       if (!isFinite(totalTokens)) totalTokens = promptTokens + completionTokens;
       $('usageChip').textContent = '用量 ' + totalTokens.toLocaleString();
       $('usageChip').title = '本进程 token 用量：输入 ' + promptTokens.toLocaleString() + '，输出 ' + completionTokens.toLocaleString() + '，合计 ' + totalTokens.toLocaleString();
-      mode = info.mode || 'auto'; modeSel.value = mode; modeChip.textContent = modes[mode] || mode;
+      applyModeInfo(info, observation);
       modelSel.textContent = '';
       var models = info.models || [info.model || ''];
       models.forEach(function (m) { var opt = document.createElement('option'); opt.value = m; opt.textContent = m; modelSel.appendChild(opt); });
@@ -1112,15 +1174,19 @@ body.dark .primary-btn { color: #231b16; }
     var m = modeSel.value;
     if (!m) return;
     if (m === 'bypass' && !confirm('bypass 模式下 AI 的所有操作（含删除文件、执行命令）都不再询问，直接执行。\n确定切换吗？')) { modeSel.value = mode; return; }
+    var sequence = ++modeRequestSeq;
+    var observation = ++modeObservationSeq;
+    modeUpdating = true; modeSel.disabled = true;
     fetch('/api/mode', { method: 'POST', headers: headers(), body: JSON.stringify({ mode: m }) })
       .then(readJSON)
       .then(function (j) {
         if (j.error) throw new Error(j.error.message);
-        mode = j.mode;
-        modeChip.textContent = modes[j.mode] || j.mode;
-        toast('权限模式: ' + j.mode, 'ok');
+        if (sequence !== modeRequestSeq) return;
+        applyModeInfo(j, observation);
+        toast('权限模式: ' + mode, 'ok');
       })
-      .catch(function (e) { toast('切换失败: ' + e.message, 'err'); modeSel.value = mode; });
+      .catch(function (e) { if (sequence === modeRequestSeq) { toast('切换失败: ' + e.message, 'err'); modeSel.value = mode; } })
+      .then(function () { if (sequence === modeRequestSeq) { modeUpdating = false; modeSel.disabled = false; } });
   });
   $('openWs').addEventListener('click', function () {
     fetch('/api/open', { method: 'POST', headers: headers(), body: JSON.stringify({ target: 'workspace' }) })
