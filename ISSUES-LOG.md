@@ -618,7 +618,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
-| 🔶 | T22-23 | Medium／确认 | **内部工具复用随包运行时**：JS调试已用process.execPath；10-24测试自动识别补Node13明确错误零启动，支持--test的16.17/18.1+分支用execFile(process.execPath,argv)不依赖PATH；保留npm脚本优先及显式命令，损坏package配置不再吞错。新test-runtime11/11（含PATH为空中文/空格脚本）、旧测试解析6/6。现代版本分支为原函数选择/argv测试，非实际Node18运行。仍待npm/Git/Bash/Python/csc/tsc/eslint按功能预检与Win7依赖验收。 | R1 M02；本日debug/测试运行时批局部证据 |
+| 🔶 | T22-23 | Medium／确认 | **内部运行时与依赖诊断**：JS调试/自动--test已用当前Node，Node13拒绝不支持的--test；本日再补auto scripts.test先查npm，缺失零启动，找到后调用核对过的绝对路径；Git只把实际not-repository当正常空结果，缺Git/配置/权限/所有权错误显式error。新依赖12/12（原生无PATH＋私有Unicode npm夹具）、Git列9/9；此前test-runtime11/11保留为历史证据未重复。仍待真实npm Node版本匹配、Bash/Python/csc/tsc/eslint功能预检及Win7。chcp不是任意原生输出转码。 | R1 M02；本日测试运行时/可选依赖批局部证据 |
 | 🔶 | T22-24 | Medium／确认编码路径 | **PowerShell编码闭环**：10-24统一UTF16LE Base64/固定ASCII入口，解析用户脚本前设置UTF8 output；避开实测EncodedCommand的ANSI CLIXML stderr，保留最终Write-Error/throw/显式exit；input.ps1补UTF8 BOM，桌面/截图改execFile argv。新专项根因修复后14/14、旧命令契约21/21；现代宿主实测非真实Win7/PS2/CP936，目标机和自定义编码native工具仍待验收，保持部分完成。 | R1 M06；A2/chcp保护保留；本日PowerShell批 |
 | ✅ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：10-24用relative边界判断，排除父级/绝对结果，消除drive/UNC根末尾双分隔符误拒；保留Win大小写、不同卷/共享及realpath/junction门。新专项修夹具后25/25：纯路径边界＋映射到私有目录的drive/UNC根真实state/文件/备份IO及实际外指junction拒绝；无真实根/网络共享写入。Win7真实根/远程文件系统语义仍由V22-01/05实机验收。 | R1 M11；OPT-14原安全门保留；本日路径批记录 |
 | ⬜ | T22-26 | Medium／确认＋风险 | **磁盘保留与会话历史策略**：为 snapshot refs、Web会话、截图、background/BTW/TODO日志设时间/总字节策略；T22-13新增的不同损坏证据/骤停临时文件亦需保留策略，不能删活动实例文件；CLI/Web 不按文件名前缀误删对方历史；会话列表可分页/索引。保留现有审计轮转、每源5/全局200备份，不重复实现。 | R1 M14；GAP-12、OP5-5、C8；10-23第八批补充保留范围 |
@@ -1327,3 +1327,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 本批先出现我引入的const payload重名：Node13静态检查失败后未及时阻止后续两条命令，新专项因语法退出，真实B MCP为0/8（Agent未启动）。集中改responsePayload、确认语法通过后，按现有失败自动复测授权仅复跑两条失败项：新tool-results-complete **41/41**，B mcp-stdio **8/8**；I tool-result-contract **15/15**只首跑，未因其它失败重复。I只提取部分函数，所以可在整体主文件语法错误时全绿，这正说明其证据不能替代全文件语法/实际启动。
 - 新41项涵盖原构造器/原分支、实际本地HTTP /invoke与vision/503、部分发现、无配置、正常error样内容、legacy阻断、GUI捕获、JSON/模型/取消/裁决边界；B真实stdio握手/cache/三工具及isError/未知server，I语义/取消/可选workflow契约。没有重跑model-routing、D页面/vision、tool-cancellation或完整A–J/UI/test-all。相关JS Node13语法及diff通过；新npm/test-all登记，README/实时进度和OPT-13对应行同步，历史计数不改写。
 - 未运行真实GUI/第三方MCP业务协议/真实模型质量、Win7/24/72h或打包；legacy npx的参数/离线依赖和进程树等既有边界不由本批状态迁移解决。T22-20对应状态迁移范围关闭，不能据此放行总体发布。按授权提交本批、未推送。
+
+### 2026-10-24 —— T22-23可选依赖缺失与Git诊断局部闭环
+
+- 工具终态批已提交`9a857a0`。Git仓库探针仅把status128且实际not-a-git-repository诊断视为普通非仓库；只对探针固定C locale，不改变commit/hooks等调用环境。缺Git ENOENT、ACL/配置/unsafe ownership/加载失败不再伪装成正常“未发现.git”；三个Git工具都接住前置异常并返回error。普通非仓库仍保留status/diff提示、commit错误的既有契约，基础Agent无Git仍可使用。
+- 自动scripts.test需要npm时按当前PATH找到实际可执行文件，支持Windows exe/cmd/bat与带引号的路径项；未找到给出清楚的Agent生成错误、exitCode null且零测试进程，不去目标机下载或偷偷切换解释器。找到后quote实际绝对路径再执行test --silent，避免检测一个路径却由当前目录/另一个PATH命中其它文件；不猜测npm版本兼容。显式用户command仍保留，受原权限/取消/超时约束。测试运行shell复用既有codepage请求；chcp改走SystemRoot系统目录，避免依赖PATH。
+- 新tool-prerequisites初跑8项后验证原生cmd错误UTF8失败；改绝对chcp路径复跑仍在8项后看到GBK错误文本，证实“切换控制台代码页就能统一所有重定向错误编码”推断不成立。没有删除原始错误并假装已转码；改用上述npm前置可用性诊断避开这一依赖故障路径，保留native自带编码为T22-24未完成边界，并修正withUtf8Codepage夸大注释。没有按字节猜GBK并全局转码，因为同一管道可以包含不同来源编码。
+- 按当前失败自动复测授权，集中补前置诊断后仅复跑失败专项，最终 **12/12**。含三Git缺失、config/ACL/unsafe fault、真正非仓库、独立locale、真实PATH剥空Git、真实缺npm零子进程、私有中文/空格路径npm.cmd绝对命中并在无系统Node/npm的PATH执行自有Node fixture输出1 passing、系统chcp路径构造。此npm是明确的本地测试shim，不是实际npm版本兼容验收；没有安装/下载可选工具。旧git-status-columns **9/9**只本批首跑，未因新专项失败重复。
+- test-runtime提取夹具补find/quote/codepage依赖的显式identity stub，原断言保留，仅静态检查，未重跑11项；实际查找/路径执行由新专项覆盖。新npm/test-all登记，相关JS Node13语法及diff检查通过。未运行全套A–J/UI/test-all、真实npm/Git目标版/Python/csc/tsc/eslint/Bash矩阵、Win7/24/72h或打包。T22-23保持部分完成，T22-24的原生编码/CP936边界仍开放；不把本批窄预检扩写为所有开发工具都已解决。按授权提交本批、未推送。

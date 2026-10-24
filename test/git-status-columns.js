@@ -15,7 +15,7 @@ function cut(from, to) {
     for (const key of Object.keys(env)) if (/^GIT_/i.test(key)) delete env[key];
     env.GIT_CONFIG_NOSYSTEM = '1'; env.GIT_CONFIG_GLOBAL = config;
     const execFileSync = (file, args, options) => cp.execFileSync(file, args, Object.assign({}, options, { cwd, env }));
-    const ctx = vm.createContext({ launchDir: cwd, child_process: { execFileSync } });
+    const ctx = vm.createContext({ process, launchDir: cwd, child_process: { execFileSync } });
     vm.runInContext(cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
       cut('function git(argsArr, opts)', "  if (name === 'git_status_tool') {") +
       'function status(){const name="git_status_tool";\n' + cut("  if (name === 'git_status_tool') {", "  if (name === 'git_diff_tool') {") + '\n}', ctx);

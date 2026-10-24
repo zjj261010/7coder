@@ -1776,12 +1776,29 @@ function isSuperDangerous(cmd) {
   return dangerousPatterns.some(p => lower.includes(p));
 }
 
-// Windows: console commands emit the OEM/ANSI codepage (GBK on zh systems),
-// which execSync decodes as UTF-8 -> mojibake. Switching the child session to
-// chcp 65001 makes commands emit UTF-8 (verified: 14 -> 0 replacement chars).
-// Zero-dependency fix for A2.
+// Request UTF-8 from programs that honor the console codepage. This is not
+// a general transcoder: cmd's own redirected errors and some native tools
+// can still keep an OEM/ANSI encoder. No PATH lookup is needed for chcp.
 function withUtf8Codepage(cmd) {
-  return process.platform === 'win32' ? 'chcp 65001>nul & ' + cmd : cmd;
+  return process.platform === 'win32' ? '"%SystemRoot%\\System32\\chcp.com" 65001>nul & ' + cmd : cmd;
+}
+function findOptionalExecutable(command) {
+  const env = process.env || {};
+  const rawPath = Object.keys(env).find(key => key.toLowerCase() === 'path');
+  const extensions = process.platform === 'win32' ? ['.exe', '.cmd', '.bat'] : [''];
+  for (const entry of String(rawPath ? env[rawPath] : '').split(path.delimiter)) {
+    const dir = entry.trim().replace(/^"(.*)"$/, '$1');
+    if (!dir) continue;
+    for (const ext of extensions) {
+      const file = path.resolve(launchDir, dir, command + ext);
+      try {
+        if (!fs.statSync(file).isFile()) continue;
+        if (process.platform !== 'win32') fs.accessSync(file, fs.constants.X_OK);
+        return file;
+      } catch (e) {}
+    }
+  }
+  return null;
 }
 
 function powerShellExecutable() {
@@ -4016,6 +4033,7 @@ function supportsBuiltinTestRunner(version) {
   if (name === 'run_tests_tool') {
     let command = String(args.command || "").trim();
     let spec = null;
+    let autoNpm = false;
     if (!command) {
       try {
         const pkgPath = path.join(launchDir, 'package.json');
@@ -4023,7 +4041,7 @@ function supportsBuiltinTestRunner(version) {
           const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8").replace(/^\uFEFF/, ''));
           const script = pkg && pkg.scripts && pkg.scripts.test;
           if (script !== undefined && typeof script !== 'string') return makeToolResult('error', 'Tests error: package.json scripts.test must be a string.');
-          if (script && script.trim()) command = "npm test --silent";
+          if (script && script.trim()) { command = "npm test --silent"; autoNpm = true; }
         }
       } catch (e) { return makeToolResult('error', 'Tests error: cannot read/parse package.json: ' + e.message); }
     }
@@ -4038,6 +4056,12 @@ function supportsBuiltinTestRunner(version) {
       } catch (e) { return makeToolResult('error', 'Tests error: cannot inspect test files: ' + e.message); }
     }
     if (!command) return makeToolResult('error', "Tests error: no command given and nothing to auto-detect (no scripts.test, no *.test.js).");
+    if (autoNpm) {
+      const npm = findOptionalExecutable('npm');
+      if (!npm) return makeToolResult('error', 'Tests prerequisite error: package scripts.test requires npm, but npm was not found on PATH. The bundled Node runtime does not include npm. Prepare a compatible npm offline or supply an explicit framework command; no tests were started.', { exitCode: null });
+      try { command = quoteForShell(npm) + ' test --silent'; }
+      catch (e) { return makeToolResult('error', 'Tests prerequisite error: npm path cannot be safely passed to the shell: ' + e.message, { exitCode: null }); }
+    }
     const timeoutMs = Math.max(10, Math.min(600, parseInt(args.timeout_seconds, 10) || 120)) * 1000;
     console.log("[TESTS] running: " + command);
     let out = "";
@@ -4045,7 +4069,7 @@ function supportsBuiltinTestRunner(version) {
     // AST-09: async - a test run can hold the old sync call for up to 600s,
     // freezing the whole HTTP server for its entire duration.
     checkExecution(cancelled);
-    const { r: cmdR, aborted } = await awaitCommandCancellable(runCommandAsync(spec || { cmd: command }, { timeout: timeoutMs }), cancelled);
+    const { r: cmdR, aborted } = await awaitCommandCancellable(runCommandAsync(spec || { cmd: withUtf8Codepage(command) }, { timeout: timeoutMs }), cancelled);
     if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
     // callback-args stdout/stderr are authoritative on failure (the error
     // object's copies are not populated consistently across exec backends)
@@ -4161,12 +4185,21 @@ function git(argsArr, opts) {
   return child_process.execFileSync('git', argsArr, Object.assign({ encoding: "utf8", cwd: launchDir, timeout: 30000 }, opts || {}));
 }
 function inGitRepo() {
-  try { git(["rev-parse", "--is-inside-work-tree"], { stdio: "pipe" }); return true; } catch (e) { return false; }
+  try {
+    git(["rev-parse", "--is-inside-work-tree"], { stdio: "pipe", env: Object.assign({}, process.env, { LC_ALL: 'C', LANG: 'C' }) });
+    return true;
+  } catch (e) {
+    // Only the actual non-repository diagnosis is an ordinary empty result.
+    // Missing/broken Git, ACL/config errors and loader failures are faults.
+    if (e.status === 128 && /not a git repository/i.test(String(e.stderr || ''))) return false;
+    if (e.code === 'ENOENT') throw new Error('Git executable not found on PATH (ENOENT); prepare a Win7-compatible Git before using Git tools.');
+    throw e;
+  }
 }
 
   if (name === 'git_status_tool') {
-    if (!inGitRepo()) return makeToolResult('ok', "Not a git repository (no .git found in the workspace).");
     try {
+      if (!inGitRepo()) return makeToolResult('ok', "Not a git repository (no .git found in the workspace).");
       const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
       const last = git(["log", "-1", "--oneline"]).trim();
       // The leading space is the index column of XY, not presentation padding.
@@ -4186,8 +4219,8 @@ function inGitRepo() {
   }
 
   if (name === 'git_diff_tool') {
-    if (!inGitRepo()) return makeToolResult('ok', "Not a git repository.");
     try {
+      if (!inGitRepo()) return makeToolResult('ok', "Not a git repository.");
       const diffArgs = ["diff"];
       if (args.staged) diffArgs.push("--cached");
       const hasPath = typeof args.path === "string" && args.path.trim();
@@ -4199,7 +4232,8 @@ function inGitRepo() {
   }
 
   if (name === 'git_commit_tool') {
-    if (!inGitRepo()) return makeToolResult('error', "Not a git repository.");
+    try { if (!inGitRepo()) return makeToolResult('error', "Not a git repository."); }
+    catch (e) { return makeToolResult('error', 'Git prerequisite error: ' + e.message); }
     let message = (typeof args.message === "string" && args.message.trim()) ? args.message.trim() : "";
     if (!message) {
       // Generate from the session audit log (most common tool verbs of this session)

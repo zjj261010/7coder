@@ -9,7 +9,8 @@ function cut(from, to) {
 }
 function context(cwd) {
   const calls = [], ctx = vm.createContext({ fs, path, Buffer, launchDir: cwd, process: { versions: { node: '13.14.0' }, execPath: S.NODE_BIN },
-    console: { log() {} }, setTimeout, clearTimeout, setInterval, clearInterval,
+    console: { log() {} }, setTimeout, clearTimeout, setInterval, clearInterval, withUtf8Codepage: command => command,
+    findOptionalExecutable: () => 'npm', quoteForShell: file => file,
     runCommandAsync: (spec, options) => { calls.push({ spec, options }); return { promise: Promise.resolve({ stdout: '1 passing', stderr: '', error: null, exitCode: 0 }) }; } });
   vm.runInContext(cut('function executionCancelledError(', 'function parseSSEStream(') +
     cut('async function awaitCommandCancellable(', '// ====================== PERSISTENT SHELL') +
