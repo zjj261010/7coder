@@ -419,6 +419,7 @@ function createMcpStdioClient(name, cfg) {
     buf = '';
     for (const p of client.pending.values()) {
       clearTimeout(p.timer);
+      p.detach();
       p.reject(new Error('MCP server "' + name + '" unavailable: ' + client.deadErr + '; result unknown for sent requests; check side effects before retrying.'));
     }
     client.pending.clear();
@@ -476,6 +477,7 @@ function createMcpStdioClient(name, cfg) {
         const p = client.pending.get(msg.id);
         client.pending.delete(msg.id);
         clearTimeout(p.timer);
+        p.detach();
         if (msg.error) p.reject(new Error(typeof msg.error.message === 'string' ? msg.error.message : JSON.stringify(msg.error)));
         else p.resolve(msg.result);
       } else if (typeof msg.method === 'string' && msg.id !== undefined) {
@@ -493,53 +495,71 @@ function createMcpStdioClient(name, cfg) {
   });
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', d => console.warn('[MCP:' + name + '] ' + String(d).trim()));
-  client.request = function (method, params, timeoutMs) {
+  client.request = function (method, params, timeoutMs, cancelled) {
     return new Promise((resolve, reject) => {
+      if (cancelled && cancelled()) return reject(executionCancelledError(cancelled));
       if (client.dead) return reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
       const id = client.nextId++;
       const timer = setTimeout(() => {
         die('MCP ' + method + ' timed out after ' + timeoutMs + 'ms; session retired, next call starts a new client');
       }, timeoutMs);
-      client.pending.set(id, { resolve, reject, timer });
+      const entry = { resolve, reject, timer, detach: () => {} };
+      client.pending.set(id, entry);
+      if (cancelled) entry.detach = watchExecution(cancelled, () => die('execution cancelled; session retired'));
+      if (client.dead) return;
       try {
+        checkExecution(cancelled);
         send({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
       } catch (e) {
         clearTimeout(timer);
+        entry.detach();
         client.pending.delete(id);
         reject(e);
       }
     });
   };
-  client.ensureInit = function () {
+  client.ensureInit = function (cancelled) {
+    if (cancelled && cancelled()) return Promise.reject(executionCancelledError(cancelled));
     if (client.initialized) return Promise.resolve();
     if (client.initPromise) return client.initPromise;
     client.initPromise = client.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
       clientInfo: { name: '7coder', version: APP_VERSION }
-    }, 15000).then(() => {
+    }, 15000, cancelled).then(() => {
+      checkExecution(cancelled);
       send({ jsonrpc: '2.0', method: 'notifications/initialized' });
       client.initialized = true;
-    }).catch(e => { client.initPromise = null; throw e; });
+    }).catch(e => {
+      client.initPromise = null;
+      if (cancelled && cancelled()) die('initialization cancelled; session retired');
+      throw e;
+    });
     return client.initPromise;
   };
-  client.listTools = async function (force) {
+  client.listTools = async function (force, cancelled) {
+    checkExecution(cancelled);
     if (client.toolsCache && !force) return client.toolsCache;
-    await client.ensureInit();
-    const res = await client.request('tools/list', {}, 15000);
+    await client.ensureInit(cancelled);
+    checkExecution(cancelled);
+    const res = await client.request('tools/list', {}, 15000, cancelled);
+    checkExecution(cancelled);
     client.toolsCache = (res && Array.isArray(res.tools)) ? res.tools : [];
     return client.toolsCache;
   };
-  client.callTool = async function (toolName, toolArgs) {
-    await client.ensureInit();
-    const res = await client.request('tools/call', { name: toolName, arguments: toolArgs || {} }, MCP_CALL_TIMEOUT);
+  client.callTool = async function (toolName, toolArgs, cancelled) {
+    await client.ensureInit(cancelled);
+    checkExecution(cancelled);
+    const res = await client.request('tools/call', { name: toolName, arguments: toolArgs || {} }, MCP_CALL_TIMEOUT, cancelled);
+    checkExecution(cancelled);
     const text = mcpContentToText(res);
     if (res && res.isError) throw new Error(text || 'tool reported isError with no content');
     return text;
   };
   return client;
 }
-function getMcpClient(serverName) {
+function getMcpClient(serverName, cancelled) {
+  checkExecution(cancelled);
   if (!mcpServers[serverName]) return null;
   if (!mcpClients[serverName] || mcpClients[serverName].dead) {
     console.log('[MCP] starting stdio server "' + serverName + '": ' + mcpServers[serverName].command);
@@ -1634,15 +1654,15 @@ function runCommandAsync(spec, opts) {
   });
   return { promise, kill: () => { try { if (child) child.kill(); } catch (e) {} } };
 }
-// Race a running command against the request's cancellation token: poll and
-// kill the child, then surface the same aborted marker the step boundary uses.
+// Observe cancellation and kill the direct child, but keep awaiting the
+// command callback. Process-tree termination remains a separate guarantee.
 async function awaitCommandCancellable(runner, cancelled) {
   if (!cancelled) return { r: await runner.promise, aborted: false };
-  const poll = setInterval(() => { if (cancelled()) { try { runner.kill(); } catch (e) {} } }, 250);
+  const detach = watchExecution(cancelled, () => { try { runner.kill(); } catch (e) {} });
   try {
     const r = await runner.promise;
     return { r, aborted: cancelled() };
-  } finally { clearInterval(poll); }
+  } finally { detach(); }
 }
 
 // ====================== PERSISTENT SHELL (GAP-2) ======================
@@ -1665,8 +1685,9 @@ function shellSessionKey() {
   if (workflowStepDepth > 0) return 'wf-' + workflowStepDepth;
   return 'main';
 }
-function createPersistentShell(key) {
+function createPersistentShell(key, cancelled) {
   const bash = findBash();
+  checkExecution(cancelled);
   if (!bash) return null;
   // NOTE: NOT '-i' - an interactive bash on a pipe (non-TTY) stdin hangs on
   // this platform. A plain non-interactive bash reading commands from the
@@ -1727,7 +1748,8 @@ function createPersistentShell(key) {
   child.stderr.on('error', e => die('stderr: ' + e.message));
   child.stdout.on('end', () => die('stdout ended'));
   child.stdout.on('close', () => die('stdout closed'));
-  shell.run = function (cmd, timeoutMs) {
+  shell.run = function (cmd, timeoutMs, cancelled) {
+    if (cancelled && cancelled()) return Promise.resolve({ out: '[SHELL] execution cancelled; command not sent.', code: -1, restarted: false });
     if (shell.dead) return Promise.resolve({ out: '[SHELL] session is unavailable: ' + shell.deadErr, code: -1, restarted: false });
     if (shell.active) return Promise.resolve({ out: '[SHELL] session is busy; command not sent.', code: -1, restarted: false });
     const marker = '7CODER-SHELL-END-' + (++shell.seq) + '-' + Date.now();
@@ -1737,18 +1759,22 @@ function createPersistentShell(key) {
     const wrapped = cmd.replace(/\r?\n$/, '') + '\nprintf "\\n' + marker + ' %s\\n" "$?"\n';
     return new Promise(resolve => {
       let done = false;
-      const active = { marker, out: '', tail: '', bytes: 0, code: null, quiet: null, timer: null, finish: null };
+      const active = { marker, out: '', tail: '', bytes: 0, code: null, quiet: null, timer: null, finish: null, detach: () => {} };
       active.finish = result => {
         if (done) return;
         done = true;
         if (active.quiet) clearTimeout(active.quiet);
         clearTimeout(active.timer);
+        active.detach();
         if (shell.active === active) shell.active = null;
         resolve(result);
       };
       shell.active = active;
       active.timer = setTimeout(() => die('timeout after ' + timeoutMs + 'ms', 124), timeoutMs);
+      if (cancelled) active.detach = watchExecution(cancelled, () => die('execution cancelled'));
+      if (done) return;
       try {
+        checkExecution(cancelled);
         if (child.stdin.destroyed || child.stdin.writableEnded) { die('stdin is closed'); return; }
         child.stdin.write(wrapped, error => { if (error) die('stdin write: ' + error.message); });
       } catch (e) {
@@ -1758,11 +1784,12 @@ function createPersistentShell(key) {
   };
   return shell;
 }
-function getPersistentShell(key) {
+function getPersistentShell(key, cancelled) {
+  checkExecution(cancelled);
   let sh = persistentShells.get(key);
   if (!sh || sh.dead) {
     const previous = sh;
-    sh = createPersistentShell(key);
+    sh = createPersistentShell(key, cancelled);
     if (!sh) return null;
     if (!sh.dead) persistentShells.set(key, sh);
     else if (persistentShells.get(key) === previous) persistentShells.delete(key);
@@ -2199,7 +2226,8 @@ Rules (strict, no exceptions):
 }
 
 // ====================== VISION HELPER ======================
-async function describeWithVision(imageUrl, modelContext) {
+async function describeWithVision(imageUrl, modelContext, cancelled) {
+  checkExecution(cancelled);
   if (!VISION_MODEL) {
     return `[IMAGE] Image at ${imageUrl} - (VISION_MODEL not set in .env - add e.g. gpt-4o to enable real vision)`;
   }
@@ -2217,12 +2245,13 @@ async function describeWithVision(imageUrl, modelContext) {
       }],
       max_tokens: 500
     };
-    const response = await axios.post(`${base}/chat/completions`, payload, {
+    const response = await executionHttp({ method: 'post', url: `${base}/chat/completions`, data: payload,
       headers: authHeadersFor(mcfg.apiKey),
       timeout: 30000
-    });
+    }, cancelled);
     return response.data.choices[0].message.content.trim();
   } catch (e) {
+    if (cancelled && cancelled()) throw e;
     return `Vision error: ${e.message}`;
   }
 }
@@ -2781,12 +2810,12 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // cwd/env/aliases survive across calls (cd, export...). Default stays the
     // stateless one-shot mode - deterministic and safe for scripts.
     if (args.persistent === true) {
-      const sh = getPersistentShell(shellSessionKey());
+      const sh = getPersistentShell(shellSessionKey(), cancelled);
       if (!sh) {
         return makeToolResult('error', 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.', { exitCode: null });
       }
       const limit = Math.max(1000, Math.min(300000, parseInt(args.timeout_ms, 10) || 120000));
-      const r = await sh.run(String(cmd), limit);
+      const r = await sh.run(String(cmd), limit, cancelled);
       if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: client disconnected]', { exitCode: null });
       // Negative codes are shell bookkeeping; a retired session (including
       // synthetic timeout 124) has no confirmed command exit status.
@@ -2797,6 +2826,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
 
     const bash = findBash();
+    checkExecution(cancelled);
     if (!bash) {
       return makeToolResult('error', 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.', { exitCode: null });
     }
@@ -2874,11 +2904,14 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
   if (name === 'web_fetch_tool') {
     try {
-      const res = await axios.get(args.url, { timeout: 10000 });
+      const res = await executionHttp({ method: 'get', url: args.url, timeout: 10000 }, cancelled);
       // Fetched page content passes through verbatim - its leading text must
       // never decide the status, so success is marked explicitly.
       return makeToolResult('ok', typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2));
-    } catch (e) { return makeToolResult('error', `Fetch error: ${e.message}`); }
+    } catch (e) {
+      if (cancelled && cancelled()) throw e;
+      return makeToolResult('error', `Fetch error: ${e.message}`);
+    }
   }
   if (name === 'download_tool') {
     // T22-09: close and flush a unique sibling, snapshot the old version, then
@@ -2889,42 +2922,48 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     let writerClosed = null;
     let response = null;
     try {
+      checkExecution(cancelled);
       const destRel = sanitizePath(args.path);
       if (!destRel) return makeToolResult('error', 'Download error: destination path required');
       if (!args.url || !/^https?:\/\//i.test(args.url)) return makeToolResult('error', 'Download error: url must start with http:// or https://');
       const dest = path.join(launchDir, destRel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
       const MAX_BYTES = 500 * 1024 * 1024;
-      response = await axios({ method: 'get', url: args.url, responseType: 'stream', timeout: 60000 });
-      temp = dest + '.part-' + process.pid + '-' + crypto.randomBytes(8).toString('hex');
-      // Node 13 _destroy waits for 'open' when fd is null, even after open
-      // failed. Acquire exclusively first, so every created writer owns a
-      // real fd and its close can be awaited without that permanent wait.
-      const tempFd = fs.openSync(temp, 'wx');
-      tempOwned = true;
-      try { writer = fs.createWriteStream(temp, { fd: tempFd, autoClose: true, emitClose: true }); }
-      catch (e) { fs.closeSync(tempFd); throw e; }
-      writerClosed = new Promise(resolve => writer.once('close', resolve));
-      let writerError = null;
-      writer.on('error', error => { writerError = error; });
-      let received = 0;
-      const limiter = new Transform({ transform(chunk, encoding, callback) {
-        received += chunk.length;
-        callback(received > MAX_BYTES ? new Error('download exceeds 500 MB cap') : null, chunk);
-      } });
-      await new Promise((resolve, reject) => {
-        pipeline(response.data, limiter, writer, error => error ? reject(error) : resolve());
+      return await executionHttp({ method: 'get', url: args.url, responseType: 'stream', timeout: 60000 }, cancelled, async res => {
+        response = res;
+        checkExecution(cancelled);
+        temp = dest + '.part-' + process.pid + '-' + crypto.randomBytes(8).toString('hex');
+        // Node 13 _destroy waits for 'open' when fd is null, even after open
+        // failed. Acquire exclusively first, so every created writer owns a
+        // real fd and its close can be awaited without that permanent wait.
+        const tempFd = fs.openSync(temp, 'wx');
+        tempOwned = true;
+        try { writer = fs.createWriteStream(temp, { fd: tempFd, autoClose: true, emitClose: true }); }
+        catch (e) { fs.closeSync(tempFd); throw e; }
+        writerClosed = new Promise(resolve => writer.once('close', resolve));
+        let writerError = null;
+        writer.on('error', error => { writerError = error; });
+        let received = 0;
+        const limiter = new Transform({ transform(chunk, encoding, callback) {
+          received += chunk.length;
+          callback(received > MAX_BYTES ? new Error('download exceeds 500 MB cap') : null, chunk);
+        } });
+        await new Promise((resolve, reject) => {
+          pipeline(response.data, limiter, writer, error => error ? reject(error) : resolve());
+        });
+        // On Node 13 finish/pipeline completion can precede the file close.
+        // A close error must fail before backup/commit, especially on Windows.
+        await writerClosed;
+        if (writerError) throw writerError;
+        checkExecution(cancelled);
+        flushDownloadFile(temp);
+        const previous = backupExistingFile(dest);
+        checkExecution(cancelled); // backup/flush can outlast the shared deadline
+        fs.renameSync(temp, dest);
+        temp = null; // ownership transferred - the catch path must not delete it
+        return makeToolResult('ok', `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)` +
+          (previous ? `\nPrevious version: ${path.relative(launchDir, previous)} (restore with /undo ${destRel})` : ''));
       });
-      // On Node 13 finish/pipeline completion can precede the file close.
-      // A close error must fail before backup/commit, especially on Windows.
-      await writerClosed;
-      if (writerError) throw writerError;
-      flushDownloadFile(temp);
-      const previous = backupExistingFile(dest);
-      fs.renameSync(temp, dest);
-      temp = null; // ownership transferred - the catch path must not delete it
-      return makeToolResult('ok', `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)` +
-        (previous ? `\nPrevious version: ${path.relative(launchDir, previous)} (restore with /undo ${destRel})` : ''));
     } catch (e) {
       if (response && response.data) { try { response.data.destroy(); } catch (e2) {} }
       if (writer) {
@@ -2936,6 +2975,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         try { fs.unlinkSync(temp); }
         catch (e2) { if (e2.code !== 'ENOENT') residue = `; temporary file retained at ${temp}: ${e2.message}`; }
       }
+      if (cancelled && cancelled()) return makeToolResult('cancelled', `[aborted: download cancelled]${residue}`);
       return makeToolResult('error', `Download error: ${e.message}${residue}`);
     }
   }
@@ -2951,24 +2991,27 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       if (SEARCH_PROVIDER === 'searxng') {
         const base = SEARCH_ENDPOINT.replace(/\/+$/, '');
         if (!base) return makeToolResult('error', 'Search error (provider): SEARCH_ENDPOINT is required when SEARCH_PROVIDER=searxng (check SEARCH_* configuration)');
-        const res = await axios.get(`${base}/search?q=${q}&format=json`, { timeout: 10000 });
+        const res = await executionHttp({ method: 'get', url: `${base}/search?q=${q}&format=json`, timeout: 10000 }, cancelled);
         const rows = (((res.data || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
         return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       if (SEARCH_PROVIDER === 'brave') {
-        const res = await axios.get(`https://api.search.brave.com/res/v1/web/search?q=${q}`, { timeout: 10000, headers: SEARCH_API_KEY ? { 'X-Subscription-Token': SEARCH_API_KEY } : {} });
+        const res = await executionHttp({ method: 'get', url: `https://api.search.brave.com/res/v1/web/search?q=${q}`, timeout: 10000, headers: SEARCH_API_KEY ? { 'X-Subscription-Token': SEARCH_API_KEY } : {} }, cancelled);
         const rows = ((((res.data || {}).web || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
         return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       if (SEARCH_PROVIDER === 'bing') {
-        const res = await axios.get(`https://api.bing.microsoft.com/v7.0/search?q=${q}`, { timeout: 10000, headers: SEARCH_API_KEY ? { 'Ocp-Apim-Subscription-Key': SEARCH_API_KEY } : {} });
+        const res = await executionHttp({ method: 'get', url: `https://api.bing.microsoft.com/v7.0/search?q=${q}`, timeout: 10000, headers: SEARCH_API_KEY ? { 'Ocp-Apim-Subscription-Key': SEARCH_API_KEY } : {} }, cancelled);
         const rows = ((((res.data || {}).webPages || {}).value) || []).slice(0, 10).map(r => `${r.name} -> ${r.url}`);
         return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
-      const res = await axios.get(`https://lite.duckduckgo.com/lite?q=${q}`, { timeout: 10000 });
+      const res = await executionHttp({ method: 'get', url: `https://lite.duckduckgo.com/lite?q=${q}`, timeout: 10000 }, cancelled);
       const links = [...res.data.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].slice(0, 10).map(m => `${m[2]} -> ${m[1]}`);
       return makeToolResult('ok', `Search results:\n${links.join('\n')}`);
-    } catch (e) { return makeToolResult('error', `Search error (provider): ${e.message} (check SEARCH_PROVIDER/SEARCH_ENDPOINT/SEARCH_API_KEY configuration)`); }
+    } catch (e) {
+      if (cancelled && cancelled()) throw e;
+      return makeToolResult('error', `Search error (provider): ${e.message} (check SEARCH_PROVIDER/SEARCH_ENDPOINT/SEARCH_API_KEY configuration)`);
+    }
   }
 
   if (name === 'web_browser_tool') {
@@ -2979,11 +3022,11 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     try {
       const isImage = url.match(/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i);
       if (isImage) {
-        const desc = await describeWithVision(url, modelContext);
+        const desc = await describeWithVision(url, modelContext, cancelled);
         return `[IMAGE] Image viewed at ${url}\nVision description:\n${desc}`;
       }
 
-      const res = await axios.get(url, { timeout: 15000, responseType: 'text' });
+      const res = await executionHttp({ method: 'get', url, timeout: 15000, responseType: 'text' }, cancelled);
       let pageContent = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
 
       const linkMatches = [...pageContent.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)];
@@ -3004,6 +3047,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       }
       return result;
     } catch (e) {
+      if (cancelled && cancelled()) throw e;
       return `[WEB] Browser error for ${url}: ${e.message}`;
     }
   }
@@ -3250,8 +3294,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         return `MCP error: unknown server "${sv}". Configured: ${names.length ? names.join(', ') : '(none - add one to .7coder/mcp.json)'}.`;
       }
       try {
-        return await getMcpClient(sv).callTool(String(toolName || ''), toolArgs);
+        return await getMcpClient(sv, cancelled).callTool(String(toolName || ''), toolArgs, cancelled);
       } catch (e) {
+        if (cancelled && cancelled()) return makeToolResult('cancelled', `[aborted: MCP cancelled; sent requests may have unknown effects] ${e.message}`);
         return `MCP tool error (${sv}/${toolName}): ${e.message}`;
       }
     }
@@ -3263,12 +3308,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       console.log(`[WEB] Calling external MCP server: ${effectiveUrl} / ${toolName}`);
       try {
         const payload = { tool: toolName, arguments: toolArgs };
-        const res = await axios.post(`${effectiveUrl.replace(/\/$/, '')}/invoke`, payload, {
+        const res = await executionHttp({ method: 'post', url: `${effectiveUrl.replace(/\/$/, '')}/invoke`, data: payload,
           headers: { 'Content-Type': 'application/json' },
           timeout: 30000
-        });
+        }, cancelled);
         return typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
       } catch (e) {
+        if (cancelled && cancelled()) return makeToolResult('cancelled', `[aborted: MCP cancelled; remote result unknown] ${e.message}`);
         return `MCP external error (${effectiveUrl}): ${e.message}`;
       }
     } else if (effectiveNpx) {
@@ -3302,14 +3348,16 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (!names.length) return 'No MCP servers configured. Add one to .7coder/mcp.json:\n{"servers":{"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}}';
     const out = [];
     for (const sv of names) {
+      checkExecution(cancelled);
       try {
-        const tools = await getMcpClient(sv).listTools();
+        const tools = await getMcpClient(sv, cancelled).listTools(false, cancelled);
         out.push(sv + ':');
         for (const t of tools) {
           out.push('  ' + (t.name || '?') + ' - ' + String(t.description || '').substring(0, 120));
           if (t.inputSchema) out.push('    args: ' + JSON.stringify(t.inputSchema).substring(0, 300));
         }
       } catch (e) {
+        if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: MCP discovery cancelled]');
         out.push(sv + ': [ERROR] ' + e.message);
       }
     }
@@ -3318,7 +3366,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
   if (name === 'sleep_tool') {
     const ms = parseInt(args.ms) || 1000;
-    await new Promise(r => setTimeout(r, ms));
+    await waitForExecution(ms, cancelled);
     return makeToolResult('ok', `[OK] Slept ${ms}ms`);
   }
 
@@ -3433,7 +3481,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         if (VISION_MODEL) {
           const dataUrl = screenshotToDataUrl(shotPath);
           if (dataUrl) {
-            const desc = await describeWithVision(dataUrl, modelContext);
+            const desc = await describeWithVision(dataUrl, modelContext, cancelled);
             return makeToolResult('ok', `Screenshot saved to ${shotPath}.\nVision: ${desc}`);
           }
         }
@@ -4064,7 +4112,10 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   const func = toolCall.function;
   let argsPreview = {};
   try { const a = JSON.parse(func.arguments || '{}'); for (const k of Object.keys(a)) argsPreview[k] = String(JSON.stringify(a[k])).substring(0, 200); } catch (e) { argsPreview = { raw: String(func.arguments || '').substring(0, 200) }; }
-  const raw = await safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled, modelContext);
+  let raw = await safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled, modelContext);
+  if (cancelled && cancelled() && toolResultStatus(raw) !== 'cancelled') {
+    raw = makeToolResult('cancelled', '[aborted: execution cancelled; check completed side effects]\n' + toolResultText(raw));
+  }
   // Pilot tools are structured even when permission/argument checks return
   // early. Other tools retain their string interface and legacy inference.
   const res = STRUCTURED_RESULT_TOOLS.has(func.name) ? normalizeToolResult(raw) : raw;

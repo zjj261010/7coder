@@ -8,7 +8,7 @@ const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
 const S = require('./_shared').create({ suite: 'pipe-lifecycle' });
 const source = fs.readFileSync(S.IDX, 'utf8');
-const contexts = [], bashChildren = [];
+const contexts = [], bashChildren = [], controls = [];
 let checks = 0, skipped = 0;
 function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
 function cut(from, to) {
@@ -35,12 +35,13 @@ function fakeChild() {
   return child;
 }
 function environment(spawn, cwd) {
-  const ctx = { Buffer, process, fs, path, setTimeout, clearTimeout, console: { log() {}, warn() {} },
+  const ctx = { Buffer, process, fs, path, setTimeout, clearTimeout, setInterval, clearInterval, console: { log() {}, warn() {} },
     APP_VERSION: 'fixture', launchDir: cwd || S.freshCwd('unit'), agentDepth: 0, workflowStepDepth: 0,
     mcpServers: { fixture: { command: 'fixture' } }, mcpClients: {}, resolveCommandOnWindows: () => false,
     findBash: () => 'fixture-bash', child_process: { spawn, execSync: cp.execSync } };
   vm.createContext(ctx);
-  vm.runInContext(cut('const MCP_CALL_TIMEOUT =', '// One lazily-created client') +
+  vm.runInContext(cut('function executionCancelledError(', 'function parseSSEStream(') +
+    cut('const MCP_CALL_TIMEOUT =', '// One lazily-created client') +
     cut('function mcpContentToText(', '// A2-19:') + cut('function createMcpStdioClient(', '// Redact secrets') +
     cut('const persistentShells =', '// Converts a glob pattern') +
     '\nthis.state={shells:persistentShells,mcpLimit:MCP_MAX_FRAME_BYTES,shellLimit:SHELL_MAX_OUTPUT_BYTES};', ctx);
@@ -53,10 +54,44 @@ function unit() {
   return { ctx, children };
 }
 const reply = (child, id, result) => child.stdout.write(JSON.stringify({ jsonrpc: '2.0', id, result }) + '\n');
+function control(ctx) { const token = ctx.createExecutionControl(5000); controls.push(token); return token; }
 function marker(child) { const match = child.writes[child.writes.length - 1].match(/7CODER-SHELL-END-\d+-\d+/); assert.ok(match, 'shell marker exists'); return match[0]; }
 function shellReply(child, out, code) { child.stdout.write(out + '\n' + marker(child) + ' ' + code + '\n'); }
 (async () => {
   try {
+    const pre = unit(), preToken = control(pre.ctx); preToken.cancel('already cancelled');
+    let preError;
+    try { pre.ctx.getMcpClient('fixture', preToken); } catch (e) { preError = e; }
+    check('cancelled MCP entry never spawns a client', preError && preError.code === 'EXECUTION_CANCELLED' && pre.children.length === 0);
+
+    const init = unit(), initClient = init.ctx.getMcpClient('fixture'), initToken = control(init.ctx);
+    const initResult = observed(initClient.callTool('echo', {}, initToken));
+    reply(init.children[0], 1, {}); initToken.cancel('cancel between init reply and initialized notification');
+    check('cancel after initialize reply retires half-initialized client and sends no tools/call',
+      !!(await bounded(initResult)).error && initClient.dead && !init.ctx.mcpClients.fixture &&
+      init.children[0].writes.length === 1 && JSON.parse(init.children[0].writes[0]).method === 'initialize');
+
+    const activeMcp = unit(), activeClient = activeMcp.ctx.getMcpClient('fixture'), mcpToken = control(activeMcp.ctx);
+    activeClient.initialized = true;
+    const activeResult = observed(activeClient.callTool('echo', {}, mcpToken));
+    await new Promise(resolve => setImmediate(resolve)); mcpToken.cancel('cancel active RPC');
+    check('active MCP cancellation retires pending requests once with unknown-result evidence',
+      (await bounded(activeResult)).error.includes('result unknown') && activeClient.pending.size === 0 &&
+      activeMcp.children[0].kills === 1 && !activeMcp.ctx.mcpClients.fixture);
+    const afterCancel = activeMcp.ctx.getMcpClient('fixture');
+    activeMcp.children[0].emit('exit', 9);
+    check('late cancelled MCP exit cannot evict replacement or replay request',
+      activeMcp.ctx.mcpClients.fixture === afterCancel && activeMcp.children[0].writes.length === 1 && activeMcp.children[1].writes.length === 0);
+
+    const cancelledShell = unit(), cs = cancelledShell.ctx.getPersistentShell('main'), shellToken = control(cancelledShell.ctx);
+    const shellWait = cs.run('pending', 5000, shellToken); shellToken.cancel('cancel active shell');
+    check('shell cancellation settles active command and retires direct child once',
+      (await bounded(shellWait)).restarted && cs.active === null && cs.dead && cancelledShell.children[0].kills === 1 && !cancelledShell.ctx.state.shells.has('main'));
+    const freshShell = cancelledShell.ctx.getPersistentShell('main');
+    const notSent = await freshShell.run('never send', 5000, shellToken);
+    check('already-cancelled shell call sends no bytes and preserves unused session',
+      notSent.out.includes('command not sent') && cancelledShell.children[1].writes.length === 0 && !freshShell.dead);
+
     for (const kind of ['MCP', 'shell']) {
       let incomplete;
       const f = environment(() => {
@@ -159,6 +194,17 @@ function shellReply(child, out, code) { child.stdout.write(out + '\n' + marker(c
     check('shell dispose settles active request and kills direct child once', (await bounded(disposing)).out.includes('disposed') && nextChild.kills === 1 && nextShell.active === null);
 
     const nativeCwd = S.freshCwd('native-mcp');
+    const stalledNative = environment((command, argv, opts) => S.spawn(command, argv, opts), nativeCwd);
+    stalledNative.mcpServers.fixture = { command: S.NODE_BIN, args: ['-e', 'process.stdin.resume();'] };
+    const stalledClient = stalledNative.getMcpClient('fixture'), nativeToken = control(stalledNative);
+    const nativeClosed = new Promise(resolve => stalledClient.child.once('close', resolve));
+    const nativeWait = observed(stalledClient.callTool('echo', {}, nativeToken));
+    nativeToken.cancel('cancel real stalled initialization');
+    const nativeResult = await bounded(nativeWait, 3000);
+    await bounded(nativeClosed, 3000);
+    check('real stalled MCP child closes after cancellation without leaving pending calls',
+      nativeResult.error.includes('result unknown') && stalledClient.pending.size === 0 && stalledClient.dead && !stalledNative.mcpClients.fixture);
+
     const native = environment((command, argv, opts) => S.spawn(command, argv, opts), nativeCwd);
     native.mcpServers.fixture = { command: S.NODE_BIN, args: [path.join(__dirname, 'mcp-echo-server.js')], env: { MCP_ECHO_LOG: path.join(nativeCwd, 'rx.jsonl') } };
     const realClient = native.getMcpClient('fixture');
@@ -192,6 +238,7 @@ function shellReply(child, out, code) { child.stdout.write(out + '\n' + marker(c
     console.log('PIPE/LIFECYCLE: ' + checks + '/' + checks + '; skipped scenarios=' + skipped);
   } finally {
     clearTimeout(suiteDeadline);
+    for (const token of controls) token.dispose();
     for (const ctx of contexts) { ctx.disposeMcpClients(); ctx.disposePersistentShells(); }
     stopOwnedBash();
     const closed = await Promise.allSettled(bashChildren.map(child => child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : bounded(new Promise(resolve => child.once('close', resolve)), 3000)));

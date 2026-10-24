@@ -17,13 +17,15 @@ function loadContext(source, cwd, overrides, extra) {
   // OPT-13: the extracted branches return structured ToolResults now - give
   // the sandbox the constructor (plain object; the suites assert on .text).
   const ctx = Object.assign({ fs: Object.assign({}, fs, overrides), path, process, console,
-    crypto, pipeline, Transform, axios, launchDir: cwd,
+    crypto, pipeline, Transform, axios, launchDir: cwd, setTimeout, clearTimeout, setInterval, clearInterval,
+    EXECUTION_TIMEOUT_MS: 5000,
     makeToolResult: (status, text) => ({ status, text }) }, extra || {});
   vm.createContext(ctx);
-  vm.runInContext(cut(source, 'function isInsideDir(', '// Files the AI must never edit') +
+  vm.runInContext(cut(source, 'function executionCancelledError(', 'function parseSSEStream(') +
+    cut(source, 'function isInsideDir(', '// Files the AI must never edit') +
     cut(source, 'function recursiveReaddir(', '// P2-3: grep budgets') +
     cut(source, 'const backupsDir =', '// Small unified-ish diff') +
-    'async function download(args) { const name = "download_tool";\n' +
+    'async function download(args, cancelled) { const name = "download_tool";\n' +
     cut(source, "  if (name === 'download_tool') {", "  if (name === 'web_search_tool') {") + '\n}', ctx);
   return ctx;
 }
