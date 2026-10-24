@@ -68,6 +68,7 @@
     "test:review-oracles": "node test/review-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",
+    "test:tool-correlation": "node test/tool-correlation.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",

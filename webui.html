@@ -856,7 +856,7 @@ body.dark .primary-btn { color: #231b16; }
       var command = args.command || args.cmd || args.script;
       detail.textContent = command ? String(command) : JSON.stringify(args);
       tcDiv.appendChild(detail); streamEl.appendChild(tcDiv);
-      activityRecords.push({ type: 'tool_call', name: name, args: args, status: 'requested', turnId: turnId }); touchSession();
+      activityRecords.push({ type: 'tool_call', callId: call.callId || undefined, name: name, args: args, status: 'requested', turnId: turnId }); touchSession();
       lastEvent = 'tool_call'; log.scrollTop = log.scrollHeight;
     }
     function appendToolResult(result) {
@@ -864,7 +864,7 @@ body.dark .primary-btn { color: #231b16; }
       var div = document.createElement('div'); div.className = 'tool-call tool-result ' + status;
       var title = document.createElement('strong'); title.textContent = '工具结果 · ' + (tr.name || 'tool') + ' · ' + status; div.appendChild(title);
       var output = document.createElement('pre'); output.className = 'tool-output'; output.textContent = String(tr.result == null ? '' : tr.result).substring(0, 12000); div.appendChild(output);
-      streamEl.appendChild(div); activityRecords.push({ type: 'tool_result', name: tr.name || 'tool', status: status, result: output.textContent, turnId: turnId }); touchSession();
+      streamEl.appendChild(div); activityRecords.push({ type: 'tool_result', callId: tr.callId || undefined, name: tr.name || 'tool', status: status, result: output.textContent, turnId: turnId }); touchSession();
       lastEvent = 'tool_result'; log.scrollTop = log.scrollHeight;
     }
 

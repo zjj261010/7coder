@@ -628,7 +628,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。后续INC-24-04另补正则期限并定向回归21/21；同步文件IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20保护保留；本日扫描批和INC-24-04 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
-| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell见INC-24-03；零轮20/20＋J2/2；统计/逐ID/stdio见反例12/12＋D9/9＋I2/2。10-25完整配对/严格mock30/30＋C3/H3/F4；再修K/R隔离、workflow与真正第二profile请求，本地分段8传输＋5判据＋8集成验证。仍待旧位置mock逐个迁移、旧SSE/audit逐调用关联和实际模型质量验收；不据严格模式可用或本地fixture宣称全套/真实端点已验收。 | R1 §10.3；R2 N01/N02/N03；10-24/25各定向记录 |
+| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对与严格mock、K/R本地正反例见10-24/25记录。10-25再补SSE/audit/保存活动callId，重复正文/同名/长ID实际专项10/10，B pilot改逐ID且11/11单次。仍待旧位置mock及B2–B7正文关联逐个迁移、跨请求execution ID和真实模型质量验收；不据本地fixture宣称全套/真实端点已验收。 | R1 §10.3；R2 N01/N02/N03；各定向记录 |
 
 ### V22：验证与发布门槛（均未执行）
 
@@ -1386,3 +1386,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新endpoint-oracles首跑13项通过后，K正例失败：我误以为现有SSE args保留workflow数组；源码实际把它变为[object Object]预览。修oracle使用实际步骤结果，补子测试失败输出。按现有授权仅续跑integration段 **8/8**，包含实际K workflow正例与同名文件直接写反例、修复目标输出正反例、实际R5第二端点＋上游model观测、无第二模型零请求SKIP、REAL_TEST=0两runner零初始化。判据发生变化后单独复核workflow段 **5/5**；首轮未变化的SSE/HTTP **8项**未重跑。没有宣称修后又全跑一遍21项。
 - 全部端点均为所属本地fixture；第二profile验证观察到默认端点零请求、第二端点恰一次且body.model正确。这是验收代码和路由证据，**没有进行真实外部模型评测**，也不能识别外部网关把不同名字映射到相同权重。K/R其余模型质量场景未实际运行；R1/2/3/4改动静态核对，不能标作通过。
 - npm/test-all登记、相关Node13语法及diff检查通过；未运行完整A–J/UI/test-all、Win7/真实浏览器/24/72h或打包。T22-33仍有旧位置mock迁移、SSE/audit逐调用关联；本批workflow事件仅对单次唯一workflow判据，不声称一般并发调用已精确关联。按授权提交本批、未推送，继续逐调用状态证据。
+
+### 2026-10-25 —— T22-33模型调用ID贯穿状态证据
+
+- K/R批已提交`1def4bb`。processWithTools通知额外传原始model call ID，顺序与并行路径一致；HTTP SSE与safeExecuteTool审计用同一toolCallIdentity生成callId，Web活动记录/服务端保存白名单保留它。长度≤256原样、更长使用SHA256，避免无限字段或相同前缀碰撞；缺ID保持null/未关联，不为workflow内部步骤伪造模型ID。原回调前3参数和页面展示保留，旧无ID会话仍可读。
+- B tool-results pilot从正文相同命中改callId唯一匹配，审计也按callId＋工具＋状态＋预览恰一条；拒绝审批的审计核对blocked调用ID，不再捡任意同名blocked行。B2–B7旧关联尚未逐个改造，不据pilot迁移关闭全部证据缺口。
+- 新tool-correlation Node13首次单次 **10/10**：原identity helper缺ID/短ID/同长前缀不同后缀digest，真实Agent5个同名read_file（相同正文与独立失败）、顺序workflow父ID＋无ID内部步骤，SSE每ID与实际audit恰一条同状态；原页面在受控DOM中重放真实SSE，经实际HTTP保存/加载以及恢复后再保存，10条工具活动ID均保留。页面部分不是物理浏览器，实际命令/副作用只在私有fixture；工具结果正文不再用作身份。
+- 旧B tool-results本批首次单次 **11/11**：测试解析失败、诊断、可选workflow、非法参数/危险命令和denial等原状态契约均保留，并用真实新ID核对。新增npm/test-all登记，Node13语法与diff检查通过；未重跑已通过的旧B2–B7/UI/会话专项或完整A–J/test-all。
+- callId来自模型，只在所属请求/turn上下文中关联；同一模型ID在不同请求重用时，audit尚无全局execution ID，内部workflow也尚无父子span。这些限制明确保留，不能宣称全链路分布式追踪。未运行Win7/真实浏览器/24/72h或打包；按授权提交本批、未推送，继续T22-15单轮工具扇出与批次完整性。

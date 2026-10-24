@@ -4598,7 +4598,7 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   }
   // A2-18: scrub BEFORE truncating, so a token cut by the 160-char limit can
   // never survive as a recognizable prefix either.
-  audit({ ts: new Date().toISOString(), type: 'tool', tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: sanitizeAuditLine(first).substring(0, 160) });
+  audit({ ts: new Date().toISOString(), type: 'tool', callId: toolCallIdentity(toolCall.id), tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: sanitizeAuditLine(first).substring(0, 160) });
   finishRuntime(status, { id: func.name, message: status === 'ok' ? undefined : first, exitCode: res && res.data && res.data.exitCode });
   return res;
   } catch (error) { finishRuntime('error', error); throw error; }
@@ -4904,6 +4904,12 @@ const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', '
   'sleep_tool', 'snip_tool', 'tool_search_tool', 'cron_list_tool', 'git_commit_tool',
   'auto_approval_return', 'ask_user_question_tool', 'web_search_tool', 'auto_debug_tool',
   'mcp_tool', 'mcp_list_tools_tool', 'web_browser_tool', 'plan_mode', 'bickering_tool']);
+// Call identity is shared by SSE/audit/saved UI activities. Long model IDs
+// use a stable digest instead of retaining an unbounded field or a colliding prefix.
+function toolCallIdentity(id) {
+  if (typeof id !== 'string' || !id) return null;
+  return id.length <= 256 ? id : 'sha256:' + crypto.createHash('sha256').update(id, 'utf8').digest('hex');
+}
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };
@@ -5104,7 +5110,7 @@ async function processWithTools(currentMessages, opts = {}) {
           try {
             var preview = {};
             try { preview = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
-            onToolCall(tc.function.name, preview);
+            onToolCall(tc.function.name, preview, tc.id);
           } catch (e) {}
         }
       }
@@ -5118,7 +5124,7 @@ async function processWithTools(currentMessages, opts = {}) {
           if (onToolResult) {
             let preview = {};
             try { preview = JSON.parse(calls[i].function.arguments || '{}'); } catch (e) {}
-            onToolResult(calls[i].function.name, preview, results[i]);
+            onToolResult(calls[i].function.name, preview, results[i], calls[i].id);
           }
           currentMessages.push({ role: 'tool', tool_call_id: calls[i].id, content: capToolResult(results[i]) });
         }
@@ -5130,7 +5136,7 @@ async function processWithTools(currentMessages, opts = {}) {
         if (onToolResult) {
           let preview = {};
           try { preview = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
-          onToolResult(tc.function.name, preview, result);
+          onToolResult(tc.function.name, preview, result, tc.id);
         }
         currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(result) });
       }
@@ -6111,7 +6117,7 @@ function startHttpServer() {
         fs.mkdirSync(sdir, { recursive: true });
         if (Array.isArray(parsed.activities) && parsed.activities.length > 2000) throw new Error('session activity limit exceeded (2000); nothing was overwritten');
         const activities = Array.isArray(parsed.activities) ? parsed.activities.filter(a => a && typeof a.type === 'string')
-          .map(a => ({ type: a.type, turnId: a.turnId === undefined ? undefined : sessionMessageRecord({ turnId: a.turnId }).turnId, name: a.name ? String(a.name).substring(0, 80) : undefined,
+          .map(a => ({ type: a.type, callId: toolCallIdentity(a.callId) || undefined, turnId: a.turnId === undefined ? undefined : sessionMessageRecord({ turnId: a.turnId }).turnId, name: a.name ? String(a.name).substring(0, 80) : undefined,
             status: a.status ? String(a.status).substring(0, 24) : undefined,
             text: a.text ? String(a.text).substring(0, 12000) : undefined,
             args: a.args && typeof a.args === 'object' ? sanitizeAuditArgs(a.args) : undefined,
@@ -6384,12 +6390,12 @@ function startHttpServer() {
               const result = await processWithTools(tempMessages, {
                 onDelta: t => writeChunk({ content: t }, null), cancel: execution, modelContext,
                 onReasoning: t => writeChunk({ reasoning: t }, null),
-                onToolCall: (name, args) => writeChunk({ tool_call: { name: name, args: sanitizeAuditArgs(args) } }, null),
-                onToolResult: (name, args, output) => {
+                onToolCall: (name, args, callId) => writeChunk({ tool_call: { callId: toolCallIdentity(callId), name: name, args: sanitizeAuditArgs(args) } }, null),
+                onToolResult: (name, args, output, callId) => {
                   const resultText = sanitizeAuditLine(toolResultText(output)).substring(0, 12000);
                   const resultStatus = toolResultStatus(output);
                   const status = resultStatus === 'ok' ? 'completed' : resultStatus;
-                  writeChunk({ tool_result: { name: name, args: sanitizeAuditArgs(args), result: resultText, status: status } }, null);
+                  writeChunk({ tool_result: { callId: toolCallIdentity(callId), name: name, args: sanitizeAuditArgs(args), result: resultText, status: status } }, null);
                 },
                 approvalBridge: approvalBridge
               });

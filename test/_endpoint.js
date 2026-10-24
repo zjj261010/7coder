@@ -49,7 +49,7 @@ function create(options) {
     const probe=http.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));port=probe.address().port;await new Promise(r=>probe.close(r));
     child=S.spawn(S.NODE_BIN,[S.IDX,'--server'],{cwd,env:Object.assign({},process.env,{
       OPENAI_API_KEY:options.key,OPENAI_ENDPOINT:options.endpoint,HEAVY_MODEL:options.model,LIGHT_MODEL:options.model,SUMMARY_MODEL:options.model,
-      MAX_RETRIES:'2',MAX_TOKENS:'4000',PERMISSION_MODE:process.env.REAL_PERM||'auto',HTTP_PORT:String(port),HTTP_BIND:'127.0.0.1',HTTP_API_KEY:'',
+      MAX_RETRIES:'2',MAX_TOKENS:'4000',PERMISSION_MODE:options.permissionMode||process.env.REAL_PERM||'auto',HTTP_PORT:String(port),HTTP_BIND:'127.0.0.1',HTTP_API_KEY:'',
       DREAM_ALLOW:'false',ENABLE_RALPH_MODE:'false',AUDIT_LOG:'true'
     })});
     const current=child;current.once('close',()=>closed.add(current));
@@ -62,7 +62,7 @@ function create(options) {
     }
     throw Error('Agent readiness deadline: '+output);
   }
-  return {S,start,stop,request:(body,timeout)=>request(port,'/v1/chat/completions',body,timeout),
+  return {S,start,stop,api:(route,body=null,timeout)=>request(port,route,body,timeout),request:(body,timeout)=>request(port,'/v1/chat/completions',body,timeout),
     chat:async(messages,timeout,model)=>parseSSE((await request(port,'/v1/chat/completions',Object.assign({stream:true,messages},model?{model}:{}),timeout)).body)};
 }
 function workflowObserved(parsed) {
