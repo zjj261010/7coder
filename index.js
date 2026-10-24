@@ -649,6 +649,11 @@ const mcpResourcesDir = path.join(launchDir, '.mcp');
 const skillsDir = path.join(launchDir, '.7coder', 'skills');
 const backgroundTasks = new Map();
 let taskSeq = 0;
+let cronSeq = 0;
+const TASK_MAX_ACTIVE = 4;
+const TASK_OUTPUT_LIMIT = 8 * 1024 * 1024;
+const TASK_OUTPUT_TAIL = 128 * 1024;
+const CRON_MAX_JOBS = 32;
 // Set when the REPL is quitting - blocks new background work (A10).
 let shuttingDown = false;
 
@@ -2072,7 +2077,7 @@ async function stopBackgroundTask(task) {
   task.stopRequested = true;
   task.status = 'stopping';
   const result = await stopOwnedChild(task.child);
-  task.status = result.closed ? 'stopped' : 'stop-unknown';
+  task.status = result.closed ? (task.outputExceeded ? 'failed' : 'stopped') : 'stop-unknown';
   task.endedAt = result.closed ? new Date().toISOString() : null;
   task.stopMessage = result.message;
   pruneTasks();
@@ -2086,6 +2091,33 @@ async function stopCronJob(job) {
   const result = await stopOwnedChild(job.child);
   if (!result.closed) job.lastError = result.message;
   return result;
+}
+
+function appendTaskOutput(task, text) {
+  const tail = Buffer.from(String(text), 'utf8');
+  const prior = Buffer.from(task.output, 'utf8');
+  let combined;
+  if (tail.length >= TASK_OUTPUT_TAIL) combined = tail;
+  else combined = Buffer.concat([prior, tail]);
+  let offset = Math.max(0, combined.length - TASK_OUTPUT_TAIL);
+  if (offset) {
+    task.outputTruncated = true;
+    // Start on a complete UTF-8 character, never a continuation byte.
+    while (offset < combined.length && (combined[offset] & 0xc0) === 0x80) offset++;
+  }
+  if (tail.length >= TASK_OUTPUT_TAIL && prior.length) task.outputTruncated = true;
+  task.output = combined.slice(offset).toString('utf8');
+}
+
+function captureTaskOutput(task, text) {
+  if (task.outputExceeded) return; // keep draining streams without retaining
+  task.outputBytes = Math.min(TASK_OUTPUT_LIMIT + 1, task.outputBytes + Buffer.byteLength(text, 'utf8'));
+  appendTaskOutput(task, text);
+  if (task.outputBytes > TASK_OUTPUT_LIMIT) {
+    task.outputExceeded = true;
+    appendTaskOutput(task, '\n[Task failed] Combined stdout/stderr exceeded 8 MB; stop requested, check side effects.\n');
+    stopBackgroundTask(task).catch(error => console.warn('[TASK] Output-limit stop: ' + error.message));
+  }
 }
 
 // ====================== CRON SCHEDULING ======================
@@ -2105,6 +2137,10 @@ function parseSchedule(schedule) {
 }
 
 function scheduleCronJob(jobId, schedule, command) {
+  if (shuttingDown) return '[ERROR] Cron refused: 7coder is shutting down.';
+  if (cronJobs.has(jobId)) return '[ERROR] Cron id already exists: ' + jobId;
+  if (cronJobs.size >= CRON_MAX_JOBS) return '[ERROR] Cron limit reached (' + CRON_MAX_JOBS + '); delete a job first.';
+  if (typeof command !== 'string' || !command.trim() || command.length > 32768) return '[ERROR] Cron requires a nonempty command up to 32768 characters.';
   const parsed = parseSchedule(schedule);
   if (!parsed) {
     return `[ERROR] Unsupported schedule "${schedule}". Supported formats: "30s", "5m", "2h", "every 10m", "daily 09:30".`;
@@ -3204,49 +3240,57 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (shuttingDown) return makeToolResult('error', 'Task refused: 7coder is shutting down.');
     const command = String(args.command || '').trim();
     if (!command) return makeToolResult('error', 'Task error: command is required (e.g. "npm test")');
+    if (command.length > 32768) return makeToolResult('error', 'Task error: command exceeds 32768 characters.');
+    const activeCount = Array.from(backgroundTasks.values()).filter(t => t.child && !observeOwnedChild(t.child).closed).length;
+    if (activeCount >= TASK_MAX_ACTIVE) return makeToolResult('error', 'Task error: active task limit reached (' + TASK_MAX_ACTIVE + '); stop or finish an existing task first.');
     const taskId = `task-${Date.now()}-${++taskSeq}`;
     const task = {
       id: taskId,
-      description: String(args.description || command),
+      description: String(args.description || command).slice(0, 2000),
       command,
       status: 'running',
       output: '',
+      outputBytes: 0,
+      outputTruncated: false,
+      outputExceeded: false,
       startedAt: new Date().toISOString(),
       endedAt: null,
       child: null,
       stopRequested: false
     };
-    const child = child_process.exec(withUtf8Codepage(command), { cwd: launchDir, timeout: 1800000, maxBuffer: 20 * 1024 * 1024 }, (err) => {
+    const child = child_process.exec(withUtf8Codepage(command), { cwd: launchDir, timeout: 1800000, maxBuffer: TASK_OUTPUT_LIMIT }, (err) => {
       if (err) {
-        task.commandError = err.message;
-        task.output += `\n[Task failed] ${err.message}`;
+        task.commandError = String(err.message).slice(0, 2000);
+        appendTaskOutput(task, `\n[Task failed] ${task.commandError}`);
       }
     });
     const state = observeOwnedChild(child);
     const complete = () => {
-      task.status = task.stopRequested ? 'stopped' : (task.commandError || state.error ? 'failed' : 'completed');
+      task.status = task.outputExceeded ? 'failed' : (task.stopRequested ? 'stopped' : (task.commandError || state.error ? 'failed' : 'completed'));
       task.endedAt = new Date().toISOString();
       task.child = null;
       pruneTasks();
     };
     if (child.stdout) {
       child.stdout.setEncoding('utf8');
-      child.stdout.on('data', d => { task.output += d.toString(); });
+      child.stdout.on('data', d => captureTaskOutput(task, d.toString()));
     }
     if (child.stderr) {
       child.stderr.setEncoding('utf8');
-      child.stderr.on('data', d => { task.output += d.toString(); });
+      child.stderr.on('data', d => captureTaskOutput(task, d.toString()));
     }
     task.child = child;
     backgroundTasks.set(taskId, task);
     if (state.closed) complete();
     else state.waiters.add(complete);
+    pruneTasks();
     return makeToolResult('ok', `[OK] Background task ${taskId} started: ${command}`);
   }
   if (name === 'task_get_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
     if (!t) return makeToolResult('error', 'Task not found');
-    return makeToolResult('ok', JSON.stringify({ id: t.id, description: t.description, command: t.command, status: t.status, startedAt: t.startedAt, endedAt: t.endedAt, stopMessage: t.stopMessage }, null, 2));
+    return makeToolResult('ok', JSON.stringify({ id: t.id, description: t.description, command: t.command, status: t.status, startedAt: t.startedAt, endedAt: t.endedAt, stopMessage: t.stopMessage,
+      outputBytes: t.outputBytes, outputTruncated: t.outputTruncated, outputExceeded: t.outputExceeded }, null, 2));
   }
   if (name === 'task_list_tool') {
     if (!backgroundTasks.size) return makeToolResult('ok', 'No tasks');
@@ -3259,10 +3303,11 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     if (!t) return makeToolResult('error', 'Task not found');
     const MAXSHOW = 8000;
     const out = t.output || '(no output yet)';
+    const notice = t.outputExceeded ? '[Task output limit exceeded; check task status and side effects]\n' : (t.outputTruncated ? '[Earlier output discarded; retained tail only]\n' : '');
     if (out.length > MAXSHOW) {
-      return makeToolResult('ok', `...(output truncated, showing last ${MAXSHOW} chars)\n` + out.substring(out.length - MAXSHOW));
+      return makeToolResult('ok', notice + `...(output truncated, showing last ${MAXSHOW} chars)\n` + out.substring(out.length - MAXSHOW));
     }
-    return makeToolResult('ok', out);
+    return makeToolResult('ok', notice + out);
   }
   if (name === 'task_stop_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
@@ -3491,7 +3536,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'schedule_cron_tool' || name === 'cron_create_tool') {
-    const jobId = `cron-${Date.now()}`;
+    const jobId = `cron-${Date.now()}-${++cronSeq}`;
     // scheduleCronJob's only failure text is the '[ERROR] Unsupported
     // schedule' form; the '[OK] Cron job ... scheduled' form is success.
     const text = scheduleCronJob(jobId, args.schedule, args.command);

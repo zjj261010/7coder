@@ -25,10 +25,10 @@ function fakeChild() {
 function close(child, code = 0) { child.exitCode = code; child.emit('exit', code); child.emit('close', code); }
 function context(exec) {
   const ctx = vm.createContext({ Buffer, Date, console, process: { platform: 'unit-direct' }, setTimeout: (fn, ms) => setTimeout(fn, ms === 5000 ? 30 : ms), clearTimeout,
-    launchDir: S.freshCwd('task 中文 空格'), shuttingDown: false, backgroundTasks: new Map(), cronJobs: new Map(), taskSeq: 0,
+    launchDir: S.freshCwd('task 中文 空格'), shuttingDown: false, backgroundTasks: new Map(), cronJobs: new Map(), taskSeq: 0, cronSeq: 0,
     child_process: { exec, execSync() { throw Error('numeric PID cleanup forbidden'); } },
     withUtf8Codepage: command => command, isSuperDangerous: () => false });
-  vm.runInContext(cut('function pruneTasks()', 'const DANGER_MODE =') +
+  vm.runInContext(cut('const TASK_MAX_ACTIVE =', '// Set when the REPL') + cut('function pruneTasks()', 'const DANGER_MODE =') +
     cut('const ownedChildStates =', '// ====================== DREAM HELPERS') +
     cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
     'async function tool(name,args) {\n' + cut("  if (name === 'task_create_tool') {", "  if (name === 'todo_write_tool') {") +

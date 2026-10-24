@@ -605,7 +605,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
 | ✅ | T22-14 | High／数据风险 | **建立工作区多实例协调**：2026-10-23 第九批采用同机真实工作区单Agent，Windows命名管道独占在配置读取/恢复前获取，大小写/junction同身份；OS随进程释放，无持久锁/PID删除。冲突/冻结/未知身份拒绝启动，不误杀；后台父子显式交接并确认子进程持锁。共享安装配置只读回退。专项首跑19项后夹具关闭超时，修夹具后获准仅复跑一次25/25，无跳过。实Win7/跨账户及会话/复杂进程树待验收。 | R1 H10多实例部分；T22-13；不含旧版Agent/外部写入、跨主机共享或重叠工作区；详见第九批；提交5fb6d38 |
-| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell每次8MB/单活动、MCP每帧4MB已做；10-24 debug又补每周期stdout+stderr合计8MB，超限停止且不自动修复重启。仍待后台任务输出、总并发/总字节预算、MCP待发积压及大文件窗口；局部限制不等于全进程有界。 | R1 H06；C8；T22-12与本日debug批局部证据 |
+| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell每次8MB/单活动、MCP每帧4MB、debug每周期合计8MB已做；10-24再补后台task合计8MiB触发停止、128KiB UTF8尾部、4活动/50历史，未知停止继续占名额；exec兜底8MiB/stream、错误文本限长；cron32项且ID不覆盖。task-budget18/18、B内容透传6/6、C带后台任务/bye1/1通过。仍待全Agent总字节预算、MCP待发积压/并发、摘要/HTTP准入、大文件窗口；局部限制不等于全进程有界。 | R1 H06；C8；T22-12及本日debug/后台预算批局部证据 |
 | ⬜ | T22-16 | High风险＋Medium确认 | **有界摘要队列与聊天准入**：流式 DONE 后摘要不占核心执行门；后台队列有数量/字节/队龄/截止时间及过期合并策略；取消的排队请求可移除。不能把 M01 简单改成追加到无界 summaryChain。慢摘要时主任务可继续且积压受限。 | R1 M01；R2 N04；AST-R1，AST-15 串行主任务语义保留 |
 | ⬜ | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：shell 归属真实后端会话；新建/恢复/结束时正确释放，cwd/env 不跨对话或不同子代理串扰。身份协议未定义前可先禁用 HTTP persistent。 | R1 H05；OPT-16、GAP-2、A2-14；不要求取消请求门串行 |
 | 🔶 | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：10-24已补pid/error/exit/close及退出码、仅操作未退出直属ChildProcess句柄、5秒close确认/未知结果、取消贯穿编译/观察/fixer/重启边界、3轮修复上限与递归拒绝、stdout+stderr合计8MB；失败明确error。JS用随包Node；C#每轮重编译（INC-24-02）。模板默认禁用，GUI仅被动观察，停用无目标确认的随机输入且不宣称验证UI。专项21/21、A定向20/20、B sec2 9/9。仍待进程树确认和真实Win7/GUI/C#环境验收，保持部分完成。 | R1 H11；R2疑点4；A2-09、C1/C3；本日第四批记录 |
@@ -1182,3 +1182,13 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - Node13最小验证：新task-lifecycle **19/19**（直属handle、重复停止、exit但pipe未close、kill拒绝/异常、EMFILE缺stdio、未知/迟到状态、cron注册表、prune与真实Node直属关闭）；随后保留Windows树停分支，单元fixture明确走直属分支，新增task-windows **6/6**验证实际异步taskkill、失败未知、已知exit不重杀以及真实两层Node子树释放端口。B的cron-overlap/tool-results-b4 **13/13**，旧cron假child补EventEmitter/close事件。auxiliary-lifecycle **10/10**作为dream锁局部检查，不能计作/bye进程树验收。以上专项各单次，无失败复跑；Node13语法及diff静态检查通过。
 - 新npm/test-all登记两个专项（Windows树专项只在Windows完整入口加入）。未运行全套A–J/UI/test-all、真实REPL带后台进程的/bye、Win7/关窗口/注销/强杀后的多层树、one-shot收尾或长时间运行。T22-07保持部分完成；不把两层夹具通过当成内核所有权证明，不推送/打包。
 - 本批按授权提交为 `fix(T22-07): retain task ownership until observed close`，接着推进T22-15后台任务输出预算。
+
+### 2026-10-24 —— T22-15后台采集预算与任务准入
+
+- T22-07首批已提交`c7840e1`。本批不重复已通过的生命周期19/Windows6/B13，而以新增预算故障路径和未跑的旧定向场景验证。
+- 后台task最多4个活动直属child，stop-unknown不释放名额，真正close后可继续创建。保留50条已结束历史，创建时即裁剪；每条最多128KiB完整UTF8尾部，原先展示截断却持续保存全文的路径已消除。超过stdout+stderr累计8MiB仅触发一次停止，后续data继续排空但不再累积，close后状态failed；不能确认停止则保留unknown。task_get提供字节数/丢弃标志，task_output始终显示预算失败提示。
+- exec内部maxBuffer从20MiB改为8MiB/stream兜底；它仍会额外保留有界stdout/stderr，不据此宣称消除全部内存副本。exec错误消息限定2000字符并走相同尾部预算，防止错误携带整段输出绕过上限；命令限制32768字符、描述2000字符。
+- cron最多32项、重复id拒绝；模型工具ID加入单调序号，防止同毫秒创建覆盖旧timer/child。校验空命令/过长命令；running防重叠及停止未知时保留注册表继续有效。
+- Node13单次验证：新`test/task-budget.js` **18/18**（含真实连续输出Node producer、合计stdout/stderr超限、UTF8边界、错误体、未知名额、释放名额、60任务历史、cron数量/重复id）；B `tool-results-b3` **6/6**（错误样任务正文仍ok、workflow继续）；C `bye-hang` **1/1**（真实REPL携带30秒后台命令/bye及时exit0）。Node13五个相关JS语法及diff静态检查通过。旧task-lifecycle/cron-overlap夹具补新常量与编号上下文，仅静态检查，不计本批重跑通过。
+- 新npm/test-all入口登记预算专项。T22-15保持部分完成：未验证所有MCP pending/待发总量、摘要/聊天排队、大文件读取、全部常驻数据与日志；没有统一RSS硬上限。taskkill仍存在PID竞态/无法内核绑定后代，T22-07不关闭；C的及时退出只证明该场景不挂住，不证明强杀后的所有进程树清理。
+- 未运行完整A–J/UI/test-all、Win7/关机注销/断电、24/72小时或打包；未推送。本批按授权提交`fix(T22-15): bound task output and background admission`，下一项推进T22-16摘要队列与HTTP准入。
