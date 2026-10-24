@@ -626,7 +626,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-28 | Low／确认 | **修 git status 首行 trim**：10-24只去末尾CR/LF，保留首项XY的index空格；CRLF按行计数。旧Git集成断言由错误staged:1/modified:0改为staged:0/modified:1并检查实际前导空格。新真实隔离Git专项9/9（未暂存/已暂存/MM/未跟踪/clean/CRLF/故障）、旧Git集成4/4，Node13均单次。 | R1 L01；DS-4/P2-11原分列保留；本日Git首列记录 |
 | ✅ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：10-24先将relative路径分隔符归一为/再匹配例外；原函数＋实际私有磁盘写入证实反斜杠memory在default模式可自动写，普通source仍需审批，deny/denial/protected-extra不被绕过，外指junction仍拒绝；新路径25/25、旧权限8/8。 | R1 L02；GAP-9；本日路径批记录 |
 | ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。同步readdir分配和正则CPU预算未解决，详见疑点。 | R1 L03；P2-3、A2-20保护保留；本日扫描批记录 |
-| ⬜ | T22-31 | Low／潜在风险 | **cron ID 唯一**：固定时钟下同毫秒创建两个 job 不覆盖 Map，不丢 timer，二者可独立删除/回收。 | R1 L04；NEW-2 不因新增ID问题重开 |
+| ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ⬜ | T22-32 | Improvement | **补最低运行诊断**：记录当前运行/排队、最后成功/错误、关键 errno/路径/child exit；故障日志有限额。完整 runId 架构与跨会话提交统计仍留 OPT-3/DS-13 暂缓，不借此启动大拆分。 | R1 日志/长期运行章节；R2 N04；DS-13/OPT-3 |
 | 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：10-24修pshell先决条件为6秒内建watchdog/1秒工具期限；新独立真实Bash专项首跑暴露bin/bash启动器残留，修产品后获现有自动复测授权复跑8/8，必须观察close、下一环境与命令可用性，SKIP单列。旧pshell修后未重复跑。其余仍待：信息/skip不记PASS、D按调用ID、stderr预览假命中、MAX_TOOL_STEPS=0、K/R真实workflow/第二模型、严格tool配对、mock错序。 | R1 §10.3；R2 N01/N02/N03；本日INC-24-03及超时oracle记录 |
 
@@ -1263,3 +1263,9 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - grep显式输入可为普通文件或目录；不存在的起始路径带errno返回Tool error，外指junction仍先被sanitizePath拒绝。显式大文件/二进制输入有跳过原因，不再误报无匹配；嵌套读取失败报告incomplete/errno。模型侧除5000实际文本文件和每文件50匹配行外，新增20000访问条目/深度12，跳过的二进制/重目录同样消耗条目预算，真实路径去重继续防junction循环。schema同步。
 - Node13新scan-budget首跑7项通过后，外指junction断言错误地期待返回文本，而原sanitizePath已抛Security异常，产品保护有效；改为assert.throws后按失败自动复测授权仅重跑该专项一次：**21/21**。包括实际中文/空格私有路径、文件/无匹配/缺失、binary/2MiB、匹配行cap、原regex lint、真实junction逃逸/循环、计数IO、无opts全量、深度及EACCES注入。旧B scan-caps/tool-results-b2 **13/13**首跑，未重复。Node13语法、diff静态检查通过；新专项登记npm/test-all。
 - 本项关闭不等于同步IO有硬时限：readdirSync仍一次分配目录清单，单次读/stat/regex仍可能阻塞；尤其歧义分支正则疑点仍开放。未跑全套A–J/UI/test-all、Win7/真实ACL/网络盘、24/72h或打包。按授权提交本批，未推送；继续T22-31固定时钟下cron ID和独立回收。
+
+### 2026-10-24 —— T22-31固定时钟cron身份验收
+
+- 搜索批已提交`a470cb6`。实际源码在T22-15的`b190d26`中已经引入cronSeq后缀和重复ID拒绝；本批没有重复改写已正确的调度器。修正工具分支中过时的“仅Unsupported schedule会失败”注释，保留全部失败状态映射。
+- 新cron-identity只加载源码原创建/调度/删除/子进程观察函数，冻结Date.now及Date构造时间，替换timer为可手动触发的句柄、child为明确记录kill/exit/close的自有夹具。Node13首次单次 **9/9**：两个创建别名在同一毫秒生成不同ID，Map和timer均保留；显式重复不替换；独立执行；各自running跳过tick且仅保留一个后续timer；删除第一个只关闭自己的child/timer，迟到旧callback不复活；第二个close后可再运行且独立删除，最终timer/Map无残留。
+- 新专项登记npm/test-all，相关JS Node13语法及diff检查通过。没有重跑task-budget/cron-overlap或全套A–J/UI/test-all；此处是确定性调度与句柄身份验证，不宣称真实OS后代或Win7/休眠/时钟跳变、24/72h已验收。T22-31关闭；不关闭T22-07/验证门槛。按授权提交本批，未推送；继续T22-32最低运行诊断。

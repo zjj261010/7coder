@@ -3632,8 +3632,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
   if (name === 'schedule_cron_tool' || name === 'cron_create_tool') {
     const jobId = `cron-${Date.now()}-${++cronSeq}`;
-    // scheduleCronJob's only failure text is the '[ERROR] Unsupported
-    // schedule' form; the '[OK] Cron job ... scheduled' form is success.
+    // Includes schedule, admission and duplicate-ID failures.
     const text = scheduleCronJob(jobId, args.schedule, args.command);
     return makeToolResult(text.startsWith('[ERROR]') ? 'error' : 'ok', text);
   }
