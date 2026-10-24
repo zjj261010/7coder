@@ -605,7 +605,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
 | ✅ | T22-14 | High／数据风险 | **建立工作区多实例协调**：2026-10-23 第九批采用同机真实工作区单Agent，Windows命名管道独占在配置读取/恢复前获取，大小写/junction同身份；OS随进程释放，无持久锁/PID删除。冲突/冻结/未知身份拒绝启动，不误杀；后台父子显式交接并确认子进程持锁。共享安装配置只读回退。专项首跑19项后夹具关闭超时，修夹具后获准仅复跑一次25/25，无跳过。实Win7/跨账户及会话/复杂进程树待验收。 | R1 H10多实例部分；T22-13；不含旧版Agent/外部写入、跨主机共享或重叠工作区；详见第九批；提交5fb6d38 |
-| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell/MCP帧/debug/task/cron见10-24；10-25工具批次64、分块read、MCP32pending/4MiB待写、模型/受管状态8MiB、文本源/结果8MiB及替换/缩进预算、prompt/skill1MiB、resource4MiB、截图4MiB/视觉URL6MiB/request8MiB；再补网页/搜索解压后2MiB、HTTP MCP双向4MiB及未知结果警告、JSON格式化8MiB，新22＋旧结构化状态41首次单次。各专项通过与精确范围见当日逐批记录。仍待全Agent总字节预算、全部MCP/cache/stderr、摘要输入准入、其它配置及HTML CPU期限；备份已有native copy，磁盘预算仍开放。 | R1 H06；C8；T22-12及各局部预算记录 |
+| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell/MCP帧/debug/task/cron见10-24；10-25工具批次64、分块read、MCP32pending/4MiB待写、模型/受管状态8MiB、文本源/结果8MiB及替换/缩进预算、prompt/skill1MiB、resource4MiB、截图4MiB/视觉URL6MiB/request8MiB；网页/搜索解压后2MiB、HTTP MCP双向4MiB及未知结果警告、JSON格式化8MiB，新22＋旧状态41；HTML固定解析200ms或更早期限，新12首次单次。各专项与精确范围见当日逐批记录。仍待全Agent总字节预算、全部MCP/cache/stderr、摘要输入准入、其它配置；备份已有native copy，磁盘预算仍开放。 | R1 H06；C8；T22-12及各局部预算记录 |
 | ✅ | T22-16 | High风险＋Medium确认 | **有界摘要队列与聊天准入**：10-24流/非流共用独立串行摘要队列，8项/2MiB（含活动与路由）、60秒排队/120秒或原截止时间，超载/排队过期写有界简短记录、原请求过期及shutdown不fallback；<200字符继续跳过。聊天读正文前最多8项、正文共享16MiB/每项10MiB/读取30秒，核心排队60秒，取消立即移除，仍串行权限状态。/api/info提供负载。新专项25/25、B正文/摘要15/15、C混合6并发1/1、E日志竞争1/1均Node13单次；24/72h/Win7仍由V22-08/01验收，不等于全Agent内存有界。 | R1 M01；R2 N04；AST-R1/AST-15；本日队列批记录 |
 | 🔶 | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：10-24落实受限方案，HTTP模式（含danger、子代理、workflow及启动维护）拒绝persistent=true，单次命令保留，schema/诊断明确提示；CLI主会话保留，子代理/根workflow结束finally退役自身shell、agent内workflow留到agent结束，不再让后续同深度scope继承cwd/env。新shell-scope17/17、B定向27/27、I定向24/24单次；超时oracle另经c033208修正、新真实Bash专项8/8；不等于树回收完成。**未完成**：HTTP跨请求持久会话身份/恢复/关闭协议，完整后代回收仍属T22-07；只能按persistent禁用的受限版本部署。 | R1 H05；OPT-16、GAP-2、A2-14；本日shell作用域记录 |
 | 🔶 | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：10-24已补pid/error/exit/close及退出码、仅操作未退出直属ChildProcess句柄、5秒close确认/未知结果、取消贯穿编译/观察/fixer/重启边界、3轮修复上限与递归拒绝、stdout+stderr合计8MB；失败明确error。JS用随包Node；C#每轮重编译（INC-24-02）。模板默认禁用，GUI仅被动观察，停用无目标确认的随机输入且不宣称验证UI。专项21/21、A定向20/20、B sec2 9/9。仍待进程树确认和真实Win7/GUI/C#环境验收，保持部分完成。 | R1 H11；R2疑点4；A2-09、C1/C3；本日第四批记录 |
@@ -1483,3 +1483,13 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新tool-http-budget Node13首次单次 **22/22**：真实本地plain/gzip超限按解压字节拒绝各一次、2MiB边界、搜索恢复与字面标题、20链接；真实compact JSON格式膨胀、MCP操作后大响应/提前close/格式化失败带未知结果且不重放、超大请求体服务端零调用；resource/skill超限零data-read和原件不动、GBK拒绝、正常UTF8/丢失/EACCES原因；实际私有Agent SSE＋audit逐调用error且远端恰一次，同Agent下一MCP成功/活动归零。所有端点为所属local fixture，没有外网或真实模型。
 - 原tool-results-complete本批首次单次 **41/41**，覆盖53工具registry、MCP JSON-RPC/isError与业务error字段、字面错误正文、视觉/网页正常及失败、计划/辩论等既有结构化状态；未因同一helper重复其它已通过专项。npm/test-all登记、Node13语法/diff通过。未运行旧下载专项或完整A–J/UI/test-all；download的request config和stream处理未改，不能把本批22项当下载验收。
 - 未跑Win7、真实模型/桌面、24/72h或打包。MCP cache/所有server总量/stderr、HTML固定正则CPU、全部配置/会话/目录全局预算仍开放；T22-15保持部分完成，远端副作用只能提示核对而不能回滚。按授权提交本批、未推送，继续HTML解析阻塞的隔离验证与边界。
+
+### 2026-10-25 —— INC-25-01 HTML固定正则阻塞与有界解析
+
+| ID | 确认依据与影响 | 处理与范围 |
+|---|---|---|
+| INC-25-01 | **High／高可信阻塞风险；1秒阻塞路径已确认**：原web_browser固定提取正则对约600KB的重复未闭合`<a `文（小于新2MiB响应上限）在所属独立Node13原函数中超过1秒仍未返回，被监督进程按直属句柄终止；有READY无DONE、close为SIGTERM。此时同步匹配挡住HTTP/取消timer。没有让真实Agent无限运行，也不声称已实测卡住数小时。相同模式还存在DDG提取、script/style/标签清理，字节限制与首20链接都不能中断首个坏匹配。 | 已修：browser与DDG HTML全部固定提取/清理同一个VM脚本，最多200ms或更早调用期限；page字符串仅作数据，不执行网页JS。超时明确error，无完整预览，不能当成功空结果。2MiB输入、20/10链接与3000字符原展示边界保持。 |
+
+- 工具HTTP批已提交`43ccbb6`。复用Node13已用于grep的VM timeout能力，不依赖新版Node/浏览器API；每次调用独立context，无全局HTML对象缓存。不会因为页面含脚本而执行它；VM仅用于固定CPU期限，不是权限/内存安全沙箱。解析期间主线程仍可占用至200ms，需真实Win7负载验证该阈值；同步IO/其它计算的硬期限仍归T22-06。
+- 新html-deadline首次单次 **12/12**：全部危险文本只在所属子进程中，独立2秒监督期限，原产品分支坏anchor、坏script清理、DDG各返回200ms error；更早25ms调用期限正确取消/控制器dispose，同子进程下一正常页面成功，script/style去除、中文emoji、3000字符及20/10链接/trim保持；超大/已过期限零VM context，迟到取消不报成功。实际私有Agent对同样600KB坏页在2秒内完成SSE回复，audit按确切call ID记error；同Agent下一正常页面completed、health可用且活动归零。不是通过截断输入绕过坏页。
+- 新npm/test-all登记，Node13语法及diff检查通过；原tool-http-budget22/状态41等已通过专项未重跑，未做完整A–J/UI/test-all、真实搜索/模型、Win7/浏览器、24/72h或打包。前一批“HTML CPU尚未解决”的历史记录由本批局部补齐，不追改其当时范围；全局资源与取消闭环仍未整体关闭。按授权提交本批、未推送，继续读取配置与启动故障的预算/降级路径。

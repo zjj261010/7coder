@@ -2821,6 +2821,38 @@ async function executionHttp(config, cancelled, consume) {
     detach();
   }
 }
+// Fixed HTML regexes can also backtrack on incomplete local/generated pages.
+// Run only this constant script, with page text as data; never evaluate HTML/JS.
+function htmlPreviewBounded(html, search = false, extract = true, cancelled = null) {
+  checkExecution(cancelled);
+  if (typeof html !== 'string') throw new Error('HTML response must be text');
+  if (Buffer.byteLength(html, 'utf8') > 2 * 1024 * 1024) throw fileByteLimitError('HTML response', 2 * 1024 * 1024);
+  const remaining = cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt - Date.now() : 200;
+  if (remaining <= 0) throw executionCancelledError(cancelled);
+  const budget = Math.max(1, Math.min(200, Math.floor(remaining)));
+  const context = vm.createContext({ html, search: !!search, extract: !!extract });
+  const script = new vm.Script(String.raw`
+    var re = search ? /<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g : /<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/gi;
+    var links = [], match, limit = search ? 10 : 20;
+    while ((match = re.exec(html)) !== null) {
+      links.push((search ? match[2] : match[2].trim()) + ' -> ' + match[1]);
+      if (links.length >= limit) break;
+    }
+    var text = extract ? html.replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, '')
+      .replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, '')
+      .replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 3000) : '';
+    ({ links: links, text: text });
+  `);
+  try {
+    const result = script.runInContext(context, { timeout: budget });
+    checkExecution(cancelled);
+    return result;
+  } catch (e) {
+    checkExecution(cancelled);
+    if (e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT') throw new Error('HTML parsing exceeded ' + budget + 'ms budget; no complete preview available');
+    throw e;
+  }
+}
 // Parses an OpenAI SSE stream and assembles a normal `choice` object.
 // Calls onDelta(text) for every content fragment (used for live output).
 function parseSSEStream(stream, onDelta, onReasoning) {
@@ -3448,10 +3480,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       const res = await executionHttp({ method: 'get', url: `https://lite.duckduckgo.com/lite?q=${q}`, timeout: 10000, maxContentLength: 2 * 1024 * 1024 }, cancelled);
-      const links = [];
-      for (const m of res.data.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g)) {
-        links.push(`${m[2]} -> ${m[1]}`); if (links.length >= 10) break;
-      }
+      const links = htmlPreviewBounded(res.data, true, false, cancelled).links;
       return makeToolResult('ok', `Search results:\n${links.join('\n')}`);
     } catch (e) {
       if (cancelled && cancelled()) throw e;
@@ -3475,22 +3504,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const res = await executionHttp({ method: 'get', url, timeout: 15000, responseType: 'text', maxContentLength: 2 * 1024 * 1024 }, cancelled);
       let pageContent = typeof res.data === 'string' ? res.data : stringifyJsonBounded(res.data, 'Page JSON');
 
-      const links = [];
-      for (const m of pageContent.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)) {
-        links.push(`${m[2].trim()} -> ${m[1]}`); if (links.length >= 20) break;
-      }
-      const linksSummary = links.join('\n');
+      const pagePreview = htmlPreviewBounded(pageContent, false, action === 'extract' || action === 'navigate', cancelled);
+      const linksSummary = pagePreview.links.join('\n');
 
       let result = `[PAGE] Page fetched successfully (${action})\nURL: ${url}\n\n[LINKS] Links found (infer from names):\n${linksSummary || 'No clickable links found'}\n\n`;
 
       if (action === 'extract' || action === 'navigate') {
-        let textContent = pageContent
-          .replace(/<script[^>]*>([\s\S]*?)<\/script>/gi, '')
-          .replace(/<style[^>]*>([\s\S]*?)<\/style>/gi, '')
-          .replace(/<[^>]+>/g, ' ')
-          .replace(/\s+/g, ' ')
-          .trim();
-        result += `Content preview (first 3000 chars):\n${textContent.substring(0, 3000)}...`;
+        result += `Content preview (first 3000 chars):\n${pagePreview.text}...`;
       } else if (action === 'click') {
         result += `[LINKS] Click simulated - navigated to the provided URL. Use the extracted links above for next steps.`;
       }
