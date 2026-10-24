@@ -106,7 +106,7 @@ supported, plus `/v1/models`. Client message histories are honored for multi-tur
 - `process_list_tool` / `process_kill_tool` — `tasklist` / `taskkill /T /F` on Windows (kills the whole child tree), `ps`/`kill` elsewhere
 - `computer_use` — **real screenshots**; mouse/keyboard input is really injected on Windows, other platforms warn
 - `schedule_cron_tool` / `cron_create_tool` — schedules like `30s`, `5m`, `2h`, `every 10m`, `daily 09:30`
-- `auto_debug_tool` (launch + observe + auto-fix loop; on Windows closes test apps with `taskkill /T /F`), `bickering_tool`, `plan_mode`
+- `auto_debug_tool` (explicit opt-in; bounded process observation and repair, passive GUI only), `bickering_tool`, `plan_mode`
 - `run_tests_tool` - runs a test suite and parses output into **structured pass/fail counts** (jest/mocha/karma and node:test formats) + failure lines; auto-detects `npm test` / `node --test`
 - `git_status_tool` / `git_diff_tool` / `git_commit_tool` - **native Git awareness**: see branch + dirty state, real diffs (auto-safe, read-only); commit with an audit-log-generated or explicit message, with a pre-commit `git stash create` snapshot for recovery (never pushes)
 - **MCP stdio servers** (see the MCP section below): `mcp_list_tools_tool` discovery + `mcp_tool { server, tool_name, args }` calls against real Model Context Protocol servers
@@ -288,7 +288,9 @@ Dream consolidation has its own bounded execution control and an exclusively cre
 
 Each BTW note has a deadline starting when it is queued. Clearing its draft cancels its request and prevents prompt/log injection; cancellation does not fall back to the original note. `/bye` cancels active execution controls and blocks new work. Ordinary stdin EOF retains the existing behavior of letting an already-started task finish.
 
-Cancellation is still partial: auto-debug internals remain open, and synchronous operations cannot be interrupted by a JavaScript timer. Startup still awaits dream consolidation before the HTTP listener starts, although the wait is now bounded. The deadline is not a guarantee that every process or side effect has stopped. Direct-child kill requests do not prove that descendants stopped; process-tree ownership and bounded summary/admission queues remain separate work.
+Auto-debug records actual process exit/close status, bounds combined stdout/stderr at 8 MB, refuses recursive debug and returns failure when repair attempts are exhausted. JS targets use the bundled executable; C# is recompiled after each repair and requires an installed `csc`. Missing launchers, output overflow and unconfirmed cleanup stop the repair loop. GUI observation sends no random clicks/typing and cannot validate UI functionality. Existing installations must explicitly set `ENABLE_AUTO_DEBUG=true`; the shipped configuration template defaults it to false. Error-text detection remains heuristic and can require manual review.
+
+Cancellation still has limits: synchronous operations cannot be interrupted by a JavaScript timer. Startup awaits dream consolidation before the HTTP listener starts, although the wait is now bounded. Auto-debug requests a stop through the live ChildProcess handle, never a saved PID after exit, and waits up to five seconds for close; unconfirmed cleanup is reported as unknown. This does not prove descendants stopped. Process-tree ownership and bounded summary/admission queues remain separate work.
 
 `npm run test:all` runs A–J and the dependency-free UI simulations in sequence using fixed offline defaults. Scenario-specific settings still override them. Set `NODE_BIN` to test the backend with another runtime; UI simulations use the modern Node running the entry point. Set `REAL_TEST=1` to append K/R and preserve real-endpoint settings.
 

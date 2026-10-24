@@ -26,6 +26,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'execution-cancel.js', args: [path.join(ROOT, 'test', 'execution-cancel.js')] },
     { name: 'tool-cancellation.js', args: [path.join(ROOT, 'test', 'tool-cancellation.js')] },
     { name: 'auxiliary-lifecycle.js', args: [path.join(ROOT, 'test', 'auxiliary-lifecycle.js')] },
+    { name: 'debug-lifecycle.js', args: [path.join(ROOT, 'test', 'debug-lifecycle.js')] },
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);

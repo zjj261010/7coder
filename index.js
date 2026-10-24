@@ -657,6 +657,7 @@ let shuttingDown = false;
 // for its tool calls. Cleared again when the sub-agent finishes.
 let subAgentModeOverride = null;
 let agentDepth = 0;
+let autoDebugActive = false;
 // >0 while workflow_tool inner steps execute: they inherit the plan approval
 // (soft per-step light-model checks are skipped; hard rails stay active).
 let workflowStepDepth = 0;
@@ -792,7 +793,7 @@ const tools = [
   { type: "function", function: { name: "auto_approval_return", description: "Lightweight model hands over to heavy model for auto-approval description.", parameters: { type: "object", properties: { description: { type: "string" } } } } },
   { type: "function", function: { name: "computer_use", description: "Real screen control: screenshot (real capture), mouse_move/click (real cursor + click), type_text/press_key (real SendKeys). Windows-only for input actions; requires ENABLE_COMPUTER_USE=true.", parameters: { type: "object", properties: { action: { type: "string", enum: ["screenshot", "mouse_move", "click", "type_text", "press_key"] }, x: { type: "number" }, y: { type: "number" }, text: { type: "string" }, key: { type: "string" } }, required: ["action"] } } },
   { type: "function", function: { name: "plan_mode", description: "Plan mode: light model improves prompt + specifies refinement loops for heavy model deep thinking. Use ONLY for complex tasks.", parameters: { type: "object", properties: { initial_task: { type: "string" } }, required: ["initial_task"] } } },
-  { type: "function", function: { name: "auto_debug_tool", description: "Launch app/script (compile if needed), test like a real user (GUI via desktop simulation or CLI via terminal) for 2-5 min, auto-fix errors until only warnings remain.", parameters: { type: "object", properties: { path: { type: "string" }, type: { type: "string", enum: ["gui", "cli", "script"] }, duration_minutes: { type: "number" } }, required: ["path"] } } },
+  { type: "function", function: { name: "auto_debug_tool", description: "Launch app/script, observe output and exit status for 2-5 min and attempt bounded repairs. GUI observation is passive: no automatic clicks or typing, and GUI functionality is not validated. Nested auto-debug is refused.", parameters: { type: "object", properties: { path: { type: "string" }, type: { type: "string", enum: ["gui", "cli", "script"] }, duration_minutes: { type: "number" } }, required: ["path"] } } },
   { type: "function", function: { name: "bickering_tool", description: "Two small-model PM sub-agents bicker/debate the current task until they reach agreement.", parameters: { type: "object", properties: { task: { type: "string" } }, required: ["task"] } } }
 ];
 
@@ -3999,127 +4000,143 @@ Reply with ONLY valid JSON:
     return `[OK] Bickering complete - ${agreement}`;
   }
 
-  // Automated Debug Tool - full launch + test + auto-fix loop
+  // Passive process observation plus bounded repair; never inject into an
+  // unverified foreground window or start another debug cycle recursively.
   if (name === 'auto_debug_tool') {
-    if (!ENABLE_AUTO_DEBUG) return 'Auto-debug disabled in .env (ENABLE_AUTO_DEBUG=false).';
-    const filePath = path.join(launchDir, sanitizePath(args.path));
-    let appType = args.type || (filePath.endsWith('.exe') || filePath.endsWith('.cs') ? 'gui' : 'cli');
-    const duration = Math.max(2, Math.min(5, args.duration_minutes || DEBUG_TEST_MINUTES));
-    const maxFix = 3;
-
-    // Compile if needed
-    if (filePath.endsWith('.cs')) {
-      console.log('[BUILD] Compiling C#...');
-      try {
-        const outPath = filePath.slice(0, -3) + '.exe';
-        child_process.execSync(`csc /target:winexe ${quoteForShell(filePath)} /out:${quoteForShell(outPath)}`, { cwd: launchDir, stdio: 'pipe', timeout: 120000 });
-      } catch (e) {
-        return `[ERROR] Compile failed: ${e.message}`;
+    if (!ENABLE_AUTO_DEBUG) return makeToolResult('blocked', 'Auto-debug disabled in .env (ENABLE_AUTO_DEBUG=false).');
+    if (autoDebugActive) return makeToolResult('error', 'Auto-debug reentry refused: another debug/repair cycle is active.');
+    autoDebugActive = true;
+    try {
+      const filePath = path.join(launchDir, sanitizePath(args.path));
+      const appType = args.type || (filePath.endsWith('.exe') || filePath.endsWith('.cs') ? 'gui' : 'cli');
+      const duration = Math.max(2, Math.min(5, Number(args.duration_minutes) || DEBUG_TEST_MINUTES));
+      let fixRound = 0;
+      while (true) {
+        checkExecution(cancelled);
+        if (filePath.endsWith('.cs')) {
+          // Recompile after every repair; retesting an old .exe cannot prove
+          // that a change to its .cs source fixed the failure.
+          const compiled = await awaitCommandCancellable(runCommandAsync({
+            cmd: `csc /target:winexe ${quoteForShell(filePath)} /out:${quoteForShell(filePath.slice(0, -3) + '.exe')}`
+          }, { timeout: 120000 }), cancelled);
+          checkExecution(cancelled);
+          if (compiled.r.error) return makeToolResult('error', `[ERROR] Compile failed: ${compiled.r.error.message}\n${compiled.r.stderr || ''}`);
+        }
+        const exePath = filePath.endsWith('.cs') ? filePath.slice(0, -3) + '.exe' : filePath;
+        const cycle = await runDebugCycle(exePath, filePath, appType, fixRound === 0 ? duration : 1, cancelled);
+        checkExecution(cancelled);
+        const finalLog = (cycle.log + '\nSTDOUT:\n' + cycle.stdout + '\nSTDERR:\n' + cycle.stderr).slice(0, 16000);
+        const data = { fixRounds: fixRound, exitCode: cycle.stoppedByAgent ? null : cycle.exitCode,
+          signal: cycle.signal, observationOnly: appType === 'gui', cleanupFailed: cycle.cleanupFailed };
+        const failed = cycle.spawnFailed || cycle.cleanupFailed || cycle.outputExceeded || cycle.ioError ||
+          (!cycle.stoppedByAgent && (cycle.exitCode !== 0 || !!cycle.signal)) || /error|exception|crash|failed/i.test(cycle.stdout + '\n' + cycle.stderr);
+        if (!failed) return makeToolResult('ok', `[OK] Auto-debug observation complete - ${fixRound} fix round(s).` +
+          (appType === 'gui' ? ' GUI behavior was not validated; no desktop input was sent.' : '') + `\n${finalLog}`, data);
+        if (cycle.spawnFailed || cycle.cleanupFailed || cycle.outputExceeded || cycle.ioError || fixRound >= 3) {
+          return makeToolResult('error', `[ERROR] Auto-debug did not complete cleanly after ${fixRound} fix round(s).\n${finalLog}`, data);
+        }
+        fixRound++;
+        const fixMessages = [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: `Repair the observed app failure. Do not invoke auto_debug_tool recursively.\nPath: ${args.path}\nRecent logs:\n${finalLog.slice(0, 8000)}\nRead the source and fix it via write_file.` }
+        ];
+        await processWithTools(fixMessages, { cancel: cancelled, modelContext });
+        checkExecution(cancelled);
       }
-    }
-    const exePath = filePath.endsWith('.cs') ? filePath.slice(0, -3) + '.exe' : filePath;
-
-    let fixRound = 0;
-    let finalLog = '';
-    while (true) {
-      const cycle = await runDebugCycle(exePath, filePath, appType, fixRound === 0 ? duration : 1);
-      finalLog = cycle.log + '\nSTDOUT:\n' + cycle.stdout + '\nSTDERR:\n' + cycle.stderr;
-      // A2-09: the app never launched - hand the spawn error back as the tool
-      // result instead of burning fix rounds (and LLM calls) on a ghost.
-      if (cycle.spawnFailed) break;
-      if (!/error|exception|crash|failed/i.test(finalLog) || fixRound >= maxFix) break;
-      fixRound++;
-      console.log(`[LOOP] Auto-debug fix round ${fixRound}/${maxFix}...`);
-      // Run the fixer in its OWN conversation so the caller's
-      // assistant(tool_calls) -> tool message pairing stays valid for the API.
-      const fixMessages = [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: `Fix all fatal errors in this app. Only warnings allowed at the end.\nPath: ${args.path}\nRecent logs:\n${finalLog.substring(0, 8000)}\nRead the file, fix it, and output the COMPLETE fixed code via write_file.` }
-      ];
-      await processWithTools(fixMessages, { cancel: cancelled, modelContext });
-    }
-
-    return `[OK] Auto-debug complete - ${fixRound} fix round(s) applied. Remaining issues: only warnings or benign.\nFull log:\n${finalLog}`;
+    } catch (e) {
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: auto-debug cancelled; check completed side effects]');
+      return makeToolResult('error', `[ERROR] Auto-debug failed: ${e.message}`);
+    } finally { autoDebugActive = false; }
   }
 
   return `Unknown tool: ${name}`;
 }
 
 // One launch + observe + kill cycle for auto_debug_tool.
-async function runDebugCycle(exePath, filePath, appType, durationMinutes) {
-  console.log(`Launching ${exePath}...`);
+async function runDebugCycle(exePath, filePath, appType, durationMinutes, cancelled) {
+  checkExecution(cancelled);
   let cmdToRun = exePath;
   let cmdArgs = [];
   if (filePath.endsWith('.js')) {
-    cmdToRun = 'node';
+    cmdToRun = process.execPath;
     cmdArgs = [filePath];
   } else if (filePath.endsWith('.py')) {
     cmdToRun = process.platform === 'win32' ? 'python' : 'python3';
     cmdArgs = [filePath];
   } else if (filePath.endsWith('.sh')) {
-    cmdToRun = 'bash';
+    cmdToRun = findBash() || 'bash';
     cmdArgs = [filePath];
   } else if (filePath.endsWith('.bat') || filePath.endsWith('.cmd')) {
-    cmdToRun = 'cmd.exe';
-    cmdArgs = ['/c', filePath];
+    cmdToRun = process.env.ComSpec || 'cmd.exe';
+    if (/["%!^&|<>\r\n]/.test(filePath)) throw new Error('Unsupported cmd script path characters');
+    cmdArgs = ['/d', '/s', '/c', '""' + filePath + '""'];
   }
 
-  let log = `[TOOL] Auto-debug cycle on ${filePath} (${appType}) for ${durationMinutes} min\n`;
-  let stdoutData = '';
-  let stderrData = '';
-  let processHandle = null;
-  let spawnFailed = false;
-  // A2-09: a missing binary emits an ASYNC 'error' event on the child. Without
-  // a listener that is an uncaught exception and kills the whole process
-  // (server mode: the request dies with ECONNRESET). Record it into the cycle
-  // log instead and null the handle so the observe/kill steps skip it.
-  const onSpawnError = e => { spawnFailed = true; log += '[ERROR] spawn failed: ' + e.message + '\n'; processHandle = null; };
-
-  if (appType === 'gui') {
-    processHandle = child_process.spawn(cmdToRun, cmdArgs, { detached: true, stdio: 'ignore', cwd: launchDir });
-    processHandle.on('error', onSpawnError);
-    if (processHandle.pid) processHandle.unref();
-    log += `[OK] GUI launched (PID ${processHandle.pid})\n`;
-  } else {
-    processHandle = child_process.spawn(cmdToRun, cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: launchDir });
-    processHandle.on('error', onSpawnError);
-    log += `[OK] CLI launched (PID ${processHandle.pid})\n`;
-    if (processHandle.stdout) {
-      processHandle.stdout.setEncoding('utf8');
-      processHandle.stdout.on('data', data => { stdoutData += data.toString(); });
-    }
-    if (processHandle.stderr) {
-      processHandle.stderr.setEncoding('utf8');
-      processHandle.stderr.on('data', data => { stderrData += data.toString(); });
-    }
-  }
-
-  await new Promise(r => setTimeout(r, 2000)); // settle
-  for (let i = 0; i < durationMinutes * 6; i++) { // ~10s intervals
-    if (!processHandle) break; // A2-09: spawn failed - nothing to observe, return immediately
-    if (appType === 'gui' && ENABLE_COMPUTER_USE) {
-      // Simulate normal user: random clicks, typing, etc.
-      // (computer_use input actions are REAL injection on Windows - user32
-      // mouse_event + SendKeys; on non-Windows they return a warning.)
-      await executeToolRaw('computer_use', { action: 'mouse_move', x: Math.random() * 800, y: Math.random() * 600 });
-      await executeToolRaw('computer_use', { action: 'click' });
-      if (Math.random() > 0.7) await executeToolRaw('computer_use', { action: 'type_text', text: 'test input ' + Date.now() });
-    }
-    await new Promise(r => setTimeout(r, 10000));
-  }
-
-  if (processHandle) {
-    try {
-      if (process.platform === 'win32' && processHandle.pid) {
-        // taskkill /T also kills children spawned by the app (plain SIGTERM cannot on Windows)
-        child_process.execSync(`taskkill /PID ${processHandle.pid} /T /F`, { stdio: 'ignore', timeout: 15000 });
-      } else {
-        processHandle.kill('SIGTERM');
+  checkExecution(cancelled);
+  const result = { log: appType === 'gui' ? '[WARN] Passive GUI observation only; automatic desktop input disabled.\n' : '',
+    stdout: '', stderr: '', spawnFailed: false, exitCode: null, signal: null,
+    stoppedByAgent: false, cleanupFailed: false, outputExceeded: false, ioError: false };
+  return new Promise(resolve => {
+    let child, exited = false, closed = false, finished = false, stopping = false;
+    let timer = null, closeTimer = null, detach = () => {}, bytes = 0;
+    const log = text => { result.log = (result.log + text + '\n').slice(-4000); };
+    const finish = () => {
+      if (finished) return;
+      finished = true; clearTimeout(timer); clearTimeout(closeTimer); detach();
+      resolve(result);
+    };
+    const awaitClose = () => {
+      if (closed || closeTimer) return;
+      closeTimer = setTimeout(() => {
+        result.cleanupFailed = true; log('[ERROR] close not observed; process/descendant result unknown.');
+        if (child.stdout) child.stdout.destroy();
+        if (child.stderr) child.stderr.destroy();
+        finish();
+      }, 5000);
+    };
+    const stop = reason => {
+      if (stopping || finished) return;
+      stopping = true;
+      // Use the ChildProcess handle while its own exit is unobserved. Never
+      // taskkill a saved PID after the app exited (the PID may be reused).
+      if (!exited && child.exitCode == null && child.signalCode == null) {
+        result.stoppedByAgent = true;
+        try { if (!child.kill()) { result.cleanupFailed = true; log('[ERROR] direct-child stop was not confirmed.'); } }
+        catch (e) { result.cleanupFailed = true; log('[ERROR] stop failed: ' + e.message); }
       }
-    } catch (e) {}
-    log += '[OK] App closed after test\n';
-  }
-  return { log, stdout: stdoutData, stderr: stderrData, spawnFailed: spawnFailed };
+      log('[DEBUG] ' + reason + '; awaiting close.'); awaitClose();
+    };
+    try {
+      child = child_process.spawn(cmdToRun, cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: launchDir,
+        windowsHide: appType !== 'gui', windowsVerbatimArguments: /\.(?:bat|cmd)$/i.test(filePath) });
+    } catch (e) { result.spawnFailed = true; log('[ERROR] spawn failed: ' + e.message); finish(); return; }
+    // Node13 has no reliable 'spawn' event: bind error/exit/close immediately.
+    child.on('error', e => {
+      result.spawnFailed = true; log('[ERROR] spawn failed: ' + e.message);
+      if (!child.pid) finish(); else stop('process error');
+    });
+    child.on('exit', (code, signal) => { exited = true; result.exitCode = code; result.signal = signal; awaitClose(); });
+    child.on('close', (code, signal) => {
+      closed = true; result.exitCode = code; result.signal = signal;
+      log('[DEBUG] process closed: exit=' + code + ', signal=' + signal); finish();
+    });
+    for (const key of ['stdout', 'stderr']) if (child[key]) {
+      child[key].setEncoding('utf8');
+      child[key].on('data', data => {
+        if (finished || result.outputExceeded) return;
+        const text = String(data), size = Buffer.byteLength(text, 'utf8');
+        if (bytes + size > 8 * 1024 * 1024) {
+          result.outputExceeded = true; log('[ERROR] combined debug output exceeds 8 MB.'); stop('output limit'); return;
+        }
+        bytes += size; result[key] += text;
+      });
+      child[key].on('error', e => { result.ioError = true; log('[ERROR] ' + key + ': ' + e.message); stop('pipe error'); });
+    }
+    if (child.pid) log('[DEBUG] process started: PID ' + child.pid);
+    detach = watchExecution(cancelled, () => stop('execution cancelled'));
+    timer = setTimeout(() => stop('observation window ended'), Math.max(1, Math.min(300000, Number(durationMinutes) * 60000 || 60000)));
+    if (finished) { clearTimeout(timer); detach(); }
+  });
 }
 
 // AST-R2: reason of the most recent auto-approval decline, set inside
@@ -4431,7 +4448,7 @@ const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', '
   'run_command', 'bash_tool', 'powershell_tool',
   'write_file', 'append_file', 'edit_file', 'notebook_edit_tool', 'download_tool', 'brief_tool',
   'sleep_tool', 'snip_tool', 'tool_search_tool', 'cron_list_tool', 'git_commit_tool',
-  'auto_approval_return', 'ask_user_question_tool', 'web_search_tool']);
+  'auto_approval_return', 'ask_user_question_tool', 'web_search_tool', 'auto_debug_tool']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };

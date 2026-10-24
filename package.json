@@ -41,6 +41,7 @@
     "test:execution-cancel": "node test/execution-cancel.js",
     "test:tool-cancellation": "node test/tool-cancellation.js",
     "test:auxiliary-lifecycle": "node test/auxiliary-lifecycle.js",
+    "test:debug-lifecycle": "node test/debug-lifecycle.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",
