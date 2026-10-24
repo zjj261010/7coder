@@ -325,6 +325,33 @@ body.dark .primary-btn { color: #231b16; }
 <script>
 (function () {
   'use strict';
+  // Keep this gate ES5-parseable so the Win7 default browser can explain
+  // missing capabilities before initialization creates requests or timers.
+  var missing = [];
+  if (typeof Promise !== 'function') missing.push('Promise');
+  if (typeof fetch !== 'function') missing.push('fetch');
+  try {
+    if (typeof AbortController !== 'function') throw new Error();
+    var probeAbort = new AbortController(), probeAborted = false;
+    probeAbort.signal.addEventListener('abort', function () { probeAborted = true; }); probeAbort.abort();
+    if (!probeAborted || !probeAbort.signal.aborted) throw new Error();
+  } catch (e) { missing.push('AbortController / AbortSignal'); }
+  try {
+    if (typeof TextDecoder !== 'function' || new TextDecoder('utf-8').decode(new Uint8Array([228, 184, 173])) !== '中') throw new Error();
+  } catch (e) { missing.push('UTF-8 TextDecoder'); }
+  try {
+    if (typeof Response !== 'function' || typeof new Response('probe').body.getReader !== 'function') throw new Error();
+  } catch (e) { missing.push('流式响应读取（Response.body.getReader）'); }
+  if (typeof ''.startsWith !== 'function') missing.push('String.startsWith');
+  if (!window.matchMedia || typeof document.body.querySelectorAll('button').forEach !== 'function') missing.push('页面事件与列表 API');
+  if (missing.length) {
+    var unsupported = document.createElement('div'); unsupported.setAttribute('role', 'alert');
+    unsupported.style.cssText = 'margin:32px auto;padding:24px;max-width:760px;background:#fff;color:#222;border:2px solid #b53a2a;font:16px/1.7 sans-serif;white-space:pre-wrap;';
+    var reason = '当前浏览器不能运行 7coder 网页聊天。\n缺少：' + missing.join('、') + '。\n请使用离线交付前准备并验收的 Win7 浏览器（基线为 Chrome 109 x64），重新打开本机页面。Windows 自带 IE 不支持此页面。\n无需在目标机联网下载；请参照包内 INSTALL.md / OFFLINE-BASELINE.md。命令行入口仍可使用。';
+    if ('textContent' in unsupported) unsupported.textContent = reason; else unsupported.innerText = reason;
+    document.body.innerHTML = ''; document.body.appendChild(unsupported);
+    return;
+  }
   /* ===== Helpers ===== */
   var $ = function (id) { return document.getElementById(id); };
   function esc(s) { var d = document.createElement('div'); d.textContent = s; return d.innerHTML; }

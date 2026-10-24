@@ -1,0 +1,18 @@
+{
+  "target": "Windows 7 SP1 x64",
+  "node": {
+    "version": "13.14.0",
+    "arch": "x64",
+    "file": "runtime/node.exe",
+    "sha256": "8468f81ef779568e6c9f03f582ac90ce4d68364f8a01839457c0b05b8cdf1bef",
+    "source": "https://nodejs.org/download/release/v13.14.0/SHASUMS256.txt"
+  },
+  "browserCandidate": {
+    "product": "Google Chrome",
+    "version": "109.0.5414.120",
+    "arch": "x64",
+    "bundled": false,
+    "sha256": null,
+    "validatedOnWin7": false
+  }
+}

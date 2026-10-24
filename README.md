@@ -7,10 +7,11 @@
 ## System Requirements
 
 - **OS**: Windows 7 SP1 or later (also works on Windows 10/11, macOS, Linux)
-- **Node.js**: v13.14.0 or higher
+- **Node.js**: Win7 offline baseline pins official v13.14.0 x64; newer Node versions are not a Win7 compatibility promise
 - **RAM**: 2 GB minimum (4 GB+ recommended for heavy models)
 - **Disk Space**: 500 MB free
-- **Internet**: Required for online OpenAI compatible API endpoint (or LAN for one on the local network)
+- **Model endpoint**: provisioned local/LAN OpenAI-compatible service for offline use; internet only for optional online endpoints/tools
+- **Web UI**: separately prepared Win7 browser; fixed candidate Chrome 109.0.5414.120 x64 is not bundled or yet validated. See [OFFLINE-BASELINE.md](OFFLINE-BASELINE.md).
 
 ## Offline Package
 
@@ -18,7 +19,7 @@ A fully offline distribution (bundled Node.js 13.14.0 runtime + pre-installed
 dependencies + install/usage guide) can be built with
 `node scripts/pack-offline.js --with-node` - see **INSTALL.md** for the
 three-step install. No internet, no npm install, no system Node required
-on the target machine. Note: the packaging machine (the one executing
+on the target machine for the Agent runtime. A compatible browser and reachable local/LAN model must be prepared separately; neither is included. Note: the packaging machine (the one executing
 `scripts/pack-offline.js`) needs Node >= 14.14, because the packer uses
 `fs.rmSync`; the target machine itself still only needs the bundled
 Node 13.14.0.

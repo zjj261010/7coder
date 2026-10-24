@@ -586,7 +586,7 @@
 |---|---|---|---|---|
 | 🔶 | T22-01 | Medium／确认 | **先隔离测试工装**：所有子进程显式独立 cwd/配置和超时；真实桌面/真实模型单独 opt-in；不临时改安装根权限；清理只针对本次 PID/身份。验收时真实 `.env`、仓库元数据和正在运行的 Agent 不受影响。后续行为测试依赖此项。 | R1 M16；OP5-1 已做基线下沉，但没有覆盖这些例外路径 |
 | 🔶 | T22-02 | High／确认兼容错误路径 | **修 Win7 网页启动器**：替换 PS2/CLR2 不存在的 IsNullOrWhiteSpace；缺运行时/入口/工作区时明确报错并返回非零。默认 Win7 PS2 下通过双击和命令行、中文/空格工作区验收。 | R1 H01；C5 |
-| ⬜ | T22-03 | High／部署风险 | **固定离线浏览器与依赖基线**：明确 Win7 x64、固定 Node13、可写工作区、浏览器版本、本地/内网模型条件；离线准备浏览器，页面检测关键 API 并显示不支持原因。目标机无系统 Node/npm 也能完成基本聊天。 | R1 H02、Win7/离线章节；C5 |
+| 🔶 | T22-03 | High／部署风险 | **固定离线基线**：10-24增加OFFLINE-BASELINE和manifest：Win7 SP1 x64/官方Node13.14 x64 SHA256固定，packer在替换stage前校验；Chrome109.0.5414.120 x64仅候选，未提供浏览器物料/hash/实机验收。页面启动前探测Promise/fetch/AbortSignal/UTF8解码/流读取等，缺失显示原因且零请求/timer。新专项13/13＋DOM15项单次。基础离线模型需预置，非所有网络/npx工具均离线。浏览器实际交付及Win7/DLL/断外网验收仍阻止整项关闭。 | R1 H02/Win7/离线；C5；本日浏览器基线批 |
 | ✅ | T22-04 | High／确认 | **隔离 SSE 解析异常**：10-23完成结构校验、事件回调捕获、统一单次结算、提前close/aborted处理及失败销毁；原解析函数故障矩阵与实际HTTP null帧后下一请求恢复通过。 | R2 N02；index.js parseSSEStream；test/stream-context.js；本批31/31，详见10-23第二批记录；未宣称全部网络异常组合或Win7已验收 |
 | ✅ | T22-05 | High／确认 | **保护压缩前原始上下文**：10-23完成失败/空摘要明确报错且不改原数组；按20K分段全部输入成功后才提交；当前用户要求原文保留，工具参数/已完成副作用进入摘要输入；后续段失败零提交。 | R2 N03；index.js summarizeConversation/compressConversationIfNeeded；test/stream-context.js；31/31＋旧边界2/2；真实模型摘要质量仍有单独限制 |
 | 🔶 | T22-06 | High／确认 | **贯穿取消与截止时间**：68fa239、50e0d47、64daf8c已补模型/审批、网络/下载/MCP/shell、dream/BTW；第四批补debug观察、异步编译、fixer与重启前检查，取消后不再启动下一轮。debug21/21＋A定向20/20＋B sec2 9/9，均Node13单次。**未完成**：同步IO、全部副作用截止及进程树停止；远端/后代结果仍可能未知，继续与T22-07联动，不关闭整项。 | R1 H03；R2 C02；OPT-15、A5、A2-06；本日第四批记录 |
@@ -1309,3 +1309,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新approval-lifecycle首跑16项后发现DOM夹具没有模拟option.value对value属性的映射，取选项时报TypeError；修夹具属性反射后按现有授权仅复跑该专项：**21/21**。原函数mode/epoch变更、风险等待denial零新问题、旧model verdict拒绝、完整workflow和超限拒绝、danger/子代理deny优先；原页面401/400/未确认不批准/重复点击/Stop清timer/迟到新会话/权限变更；真实HTTP工作流写前预览、一次批准精确执行计划，真实denial撤销待审批、迟到批准400且目标从未创建。旧execution-cancel **20/20**、repl-approval **26/26**本批各单次，未重复通过项。
 - 静态跨阶段复核发现仅比较递增revision会在后端重启归零后让长驻页面永远保留旧模式。补随机进程permissionSession，API/SSE携带身份，页面新身份重置revision；同时按观察请求顺序阻止旧进程迟到响应倒灌，新SSE身份也阻断更早info响应。另新增独立permission-restart专项首次单次 **6/6**：真实--danger/denial/切回default回显、直属Agent同工作区同端口关闭重启的新身份/rev0、原页面解除旧danger选项、迟到旧响应不回滚。没有重跑审批21/取消20/REPL26；新增身份字段的原审批链走静态核对，重启专项实际检查API与原页面。
 - 两个专项登记npm/test-all；相关JS/页面内联脚本语法及diff检查通过。未跑完整A–J/UI/test-all、Win7/实际浏览器、真实桌面、24/72h或打包；400/401页面用受控fetch，真实后端只覆盖400撤销与正常200。浏览器对未完成approve网络请求的底层超时/全部网络组合未做实机验收；UI迟到响应会被dispose忽略，不能据此断言后端已执行操作被撤销。T22-21所列实现关闭，发布验证仍保留；按授权提交本批、未推送。
+
+### 2026-10-24 —— T22-03固定候选基线与缺能力提示
+
+- 权限批已提交`998e454`。新增OFFLINE-BASELINE.md及scripts/offline-baseline.json，固定Win7 SP1 x64、Node13.14.0官方x64二进制散列；已读当前runtime的version/arch，并把SHA256与Node官方发布清单win-x64/node.exe行核对一致。packer --with-node在替换stage前校验该hash，拒绝错版/架构或损坏，不在目标机下载运行时。文档/manifest加入离线包复制清单。
+- 依据Google官方支持时间表与2023-01-24发布记录，选Chrome109.0.5414.120 x64为可明确复现的候选，不宣称最新/最终补丁。当前仓库没有该浏览器安装包，manifest明确bundled=false/hash=null/validated=false；没有下载或改动用户浏览器。离线模型/权重也不随Agent提供，README/INSTALL去掉“只带Node就什么也不用准备”的误导，说明预置可达local/LAN端点和可写工作区；npx/在线工具等可选依赖边界明确。
+- 页面在任何应用初始化/请求/timer之前用ES5可解析的门检查Promise/fetch、AbortController实际abort事件/标志、UTF8 TextDecoder、Response.body.getReader以及基础DOM/字符串API；失败用不依赖CSS变量的独立文本面板显示具体缺项、离线说明/CLI替代。不是用UA字符串宣称浏览器兼容，也不提供联网CDN polyfill。原页面功能与已有localStorage/clipboard回退保留。
+- Node13新browser-baseline首次单次 **13/13**：有能力夹具正常初始化、8个缺失/错误API组合均显示原因且零请求/定时器，浏览器物料未验收标记不造假，源码原validator核对当前官方Node，实际私有packer脚本拒绝假node且旧stage sentinel完整、缺失运行时明确错误。Node13只走拒绝分支，在任何rmrf前退出；测试路径均检查在私有fixture内，没有删除真实dist。旧DOM专项 **15项**本批单次，补明确的Response/AbortSignal浏览器桩；未重跑UI43或其它已通过专项。
+- 相关JS/内联脚本语法、JSON读取和diff检查通过。未执行完整打包/解压验收、完整A–J/UI/test-all、真实浏览器/Win7 PS2/CLR/DLL补丁、物理断外网或24/72h。功能探针不证明CSS、真实fetch/取消/剪贴板或第三方浏览器长期行为；浏览器安装物料/来源/hash及实际模型服务尚未交付，故T22-03保持部分完成和发布门槛，不以文档替代实机。按授权提交本批、未推送。

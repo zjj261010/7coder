@@ -2,6 +2,7 @@
 
 > 适用于离线分发包 `7coder-v2.19.0-offline-win64.zip`（Windows x64，含内置 Node.js 13.14.0 运行时）。
 > 目标环境：Windows 7 SP1 及以上（也兼容 Win10/11、macOS、Linux）。全程无需联网、无需 npm install。
+> 该 win64 包的固定目标是 Win7 SP1 x64；其它系统需各自运行时和独立验收。网页另需提前准备浏览器及可达的本地/内网模型，二者不在当前包内。请先查看 **OFFLINE-BASELINE.md**；不能把“Agent运行时随包”理解为“默认IE可用、模型也已提供”。
 >
 > 注意：**打包机**（执行 `scripts/pack-offline.js` 的机器）需要 Node >= 14.14（打包脚本使用了 fs.rmSync）；
 > 目标机器（运行本包的机器）仍只需包内 Node 13.14.0。
@@ -17,6 +18,7 @@
 | `7coder.bat` | 便捷启动脚本（自动使用内置运行时） |
 | `7coder-web.bat` | 启动网页版聊天，自动使用内置 Node.js 13.14.0 |
 | `INSTALL.md` | 本说明 |
+| `OFFLINE-BASELINE.md` / `scripts\offline-baseline.json` | 固定运行时、浏览器候选和未完成交付项 |
 | `README.md` | 项目简介与功能总览 |
 | `LICENSE` | 许可证 |
 | `test\` | 自动化测试套件（十二个套件；当前断言总数运行 `node scripts/count-assertions.js` 查看，可选运行） |
@@ -32,6 +34,7 @@
    ```
    - 兼容任何 OpenAI 协议端点（Groq、本地 Ollama 等），改 `OPENAI_ENDPOINT` 即可。
    - `HEAVY_MODEL` / `LIGHT_MODEL` 按你的端点支持的模型名填写。
+   - 完全离线时改用现场实际本机/内网端点（例如 `http://127.0.0.1:1234/v1`），API_KEY可按该服务要求留空；云端示例在断网时不可用。模型程序/权重需提前准备，不在此包内。
 3. **运行**：
    ```bat
    :: 双击或命令行执行，启动网页版聊天（使用内置运行时）
@@ -40,7 +43,7 @@
    :: 可选：指定项目工作区（从该目录读取 .env）
    7coder-web.bat "D:\projects\my-app"
    ```
-   浏览器打开 `http://127.0.0.1:7103/`。按 Ctrl+C 停止服务。交互式命令行仍可用 `7coder.bat` 或 `runtime\node.exe index.js` 启动。
+   使用提前验收的浏览器打开 `http://127.0.0.1:7103/`（默认IE不支持；候选Chrome 109 x64尚未随包提供）。缺少必要API时页面会明确说明原因。按 Ctrl+C 停止服务。交互式命令行仍可用 `7coder.bat` 或 `runtime\node.exe index.js` 启动。
 
 > 无需安装 Node.js：`runtime\node.exe` 就是完整的运行时。
 > 从源码仓库启动时，`7coder-web.bat` 使用 `runtime\node.exe`；该文件缺失时才回退到 PATH 中的 Node.js，不会下载或提取压缩包。

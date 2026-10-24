@@ -5,7 +5,8 @@
 //
 // Includes: program + prod node_modules + docs + tests + (with --with-node)
 // a bundled Node 13.14.0 runtime (node.exe) so the target machine needs
-// NOTHING installed and NO internet access.
+// no system Node/npm install. Web UI still needs a separately prepared
+// compatible browser and an available local/LAN model service.
 //
 // Usage:
 //   node scripts/pack-offline.js [--with-node]
@@ -18,6 +19,8 @@
 const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const baseline = JSON.parse(fs.readFileSync(path.join(__dirname, 'offline-baseline.json'), 'utf8'));
 
 const REPO = path.join(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(REPO, 'package.json'), 'utf8'));
@@ -28,7 +31,8 @@ const stage = path.join(REPO, 'dist', `7coder-v${version}-offline`);
 
 const COPY_FILES = [
   'index.js', 'package.json', 'package-lock.json', 'README.md', 'INSTALL.md',
-  'LICENSE', '.env.example', '7coder.bat', '7coder-web.bat', 'webui.html',
+  'LICENSE', '.env.example', '7coder.bat', '7coder-web.bat', 'webui.html', 'OFFLINE-BASELINE.md',
+  'scripts/offline-baseline.json',
   'scripts/start-web.ps1',
   // A2-22: INSTALL.md tells offline users to run this (it is dependency-free
   // and reads the bundled test/), so ship it and keep the scripts/ layout.
@@ -61,8 +65,16 @@ function copyRec(src, dest) {
     fs.copyFileSync(src, dest);
   }
 }
+function validateBundledNode(file) {
+  if (!fs.existsSync(file)) throw new Error('No node.exe found. Place the pinned Node 13.14.0 x64 at runtime/node.exe before packing.');
+  const sha256 = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+  if (sha256 !== baseline.node.sha256) throw new Error('Bundled runtime SHA256 mismatch: expected official Node 13.14.0 x64; stage was not replaced.');
+  return sha256;
+}
 
 (async () => {
+  const runtimeSource = path.join(REPO, 'runtime', 'node.exe');
+  if (withNode) validateBundledNode(runtimeSource); // validate before deleting a prior stage
   console.log(`packing 7coder v${version} -> ${stage}`);
   rmrf(stage);
   fs.mkdirSync(stage, { recursive: true });
@@ -83,8 +95,6 @@ function copyRec(src, dest) {
 
   if (withNode) {
     fs.mkdirSync(path.join(stage, 'runtime'), { recursive: true });
-    const runtimeSource = path.join(REPO, 'runtime', 'node.exe');
-    if (!fs.existsSync(runtimeSource)) throw new Error('No node.exe found. Place Node 13.14.0 at runtime/node.exe before packing.');
     fs.copyFileSync(runtimeSource, path.join(stage, 'runtime', 'node.exe'));
     console.log('runtime bundled from: ' + runtimeSource);
   }

@@ -78,7 +78,9 @@ function harness(options) {
   }
   const sandbox = { document, window: { matchMedia: () => media, addEventListener(k, fn) { winHandlers[k] = fn; } }, fetch, navigator: { clipboard: { writeText: value => { clipboardText = String(value); return Promise.resolve(); } } },
     localStorage: { getItem: k => { if (options.blockStorage) throw Error('blocked'); return storage[k] || null; }, setItem: (k,v) => { if (options.blockStorage) throw Error('blocked'); storage[k] = String(v); }, removeItem: k => { delete storage[k]; } },
-    setTimeout(fn, ms) { const timer = { fn, ms }; timers.add(timer); return timer; }, clearTimeout(timer) { timers.delete(timer); }, setInterval(fn, ms) { const timer = { fn, ms }; intervals.add(timer); return timer; }, clearInterval(timer) { intervals.delete(timer); }, AbortController: UiAbortController, TextDecoder: util.TextDecoder, confirm: () => options.confirm !== false, console, __HOOK: h => { hook = h; } };
+    setTimeout(fn, ms) { const timer = { fn, ms }; timers.add(timer); return timer; }, clearTimeout(timer) { timers.delete(timer); }, setInterval(fn, ms) { const timer = { fn, ms }; intervals.add(timer); return timer; }, clearInterval(timer) { intervals.delete(timer); }, AbortController: UiAbortController, TextDecoder: util.TextDecoder,
+    Response: function () { this.body = { getReader() {} }; }, confirm: () => options.confirm !== false, console, __HOOK: h => { hook = h; } };
+  Object.assign(sandbox, options.globals || {});
   vm.runInNewContext(source, sandbox, { filename: 'webui.html' });
   return { ids, document, docHandlers, winHandlers, timers, intervals, media, calls, storage, hook, response, get clipboardText() { return clipboardText; }, route: (url, fn) => routes.unshift([url,fn]) };
 }
