@@ -34,6 +34,7 @@
     "test:repl-approval": "node test/repl-approval.js",
     "test:download-commit": "node test/download-commit.js",
     "test:text-encoding": "node test/text-encoding.js",
+    "test:text-budget": "node test/text-budget.js",
     "test:model-routing": "node test/model-routing.js",
     "test:pipe-lifecycle": "node test/pipe-lifecycle.js",
     "test:state-store": "node test/state-store.js",

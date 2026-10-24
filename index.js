@@ -3186,6 +3186,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       if (stateParser) readStateRecord(fullPath, stateParser);
       const original = readUtf8ForWrite(fullPath, true);
       const content = normalizeUtf8Input(args.content || '', original.newline);
+      if (Buffer.byteLength(original.text, 'utf8') + Buffer.byteLength(content, 'utf8') > textFileByteLimit()) throw fileByteLimitError('Appended text', textFileByteLimit());
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
       backupExistingFile(fullPath);
       if (stateParser) writeStateFile(fullPath, original.text + content, stateParser);
@@ -3204,14 +3205,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const oldStr = normalizeUtf8Input((args.old_string === undefined || args.old_string === null) ? '' : String(args.old_string), original.newline);
       if (oldStr === '') return makeToolResult('error', 'Edit error: old_string is required');
       const newStr = normalizeUtf8Input((args.new_string === undefined || args.new_string === null) ? '' : String(args.new_string), original.newline);
-      const count = content.split(oldStr).length - 1;
-      if (count === 0) return makeToolResult('error', 'Edit error: old_string not found in file');
-      if (count > 1 && !args.replace_all) {
-        return makeToolResult('error', `Edit error: old_string found ${count} times - add more surrounding context to make it unique, or set replace_all=true`);
-      }
-      // split/join (not String.replace) so $-patterns in new_string stay literal
+      const replacement = replaceTextBounded(content, oldStr, newStr, args.replace_all);
+      const count = replacement.count;
+      const next = preserveTextBom(original, replacement.text);
       backupExistingFile(fullPath);
-      const next = preserveTextBom(original, content.split(oldStr).join(newStr));
       if (stateParser) writeStateFile(fullPath, next, stateParser);
       else fs.writeFileSync(fullPath, next, 'utf8');
       return makeToolResult('ok', `[OK] Edited ${path.relative(launchDir, fullPath)} (${args.replace_all ? count : 1} replacement(s))`);
@@ -3500,7 +3497,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       let notebook = JSON.parse(original.text.replace(/^\uFEFF/, ''));
       if (args.edits.cells) notebook.cells = args.edits.cells;
       if (args.edits.metadata) notebook.metadata = { ...notebook.metadata, ...args.edits.metadata };
-      const content = preserveTextBom(original, normalizeUtf8Input(JSON.stringify(notebook, null, 2), original.newline));
+      const content = preserveTextBom(original, normalizeUtf8Input(stringifyNotebookBounded(notebook), original.newline));
       backupExistingFile(nbPath);
       fs.writeFileSync(nbPath, content, 'utf8');
       return makeToolResult('ok', 'Notebook edited successfully');
@@ -3883,7 +3880,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'prompt_from_file') {
-    try { return makeToolResult('ok', decodeUtf8Text(fs.readFileSync(path.join(launchDir, sanitizePath(args.file))))); }
+    try { return makeToolResult('ok', decodeUtf8Text(readFileBytesBounded(path.join(launchDir, sanitizePath(args.file)), 1024 * 1024, 'Prompt file'))); }
     catch (e) { return makeToolResult('error', e.code === 'ENOENT' ? 'File not found' : `Read error: ${e.message}`); }
   }
 
@@ -4792,7 +4789,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
           if (name === 'edit_file') {
             const oldStr = normalizeUtf8Input(String(args.old_string === undefined ? '' : args.old_string), original.newline);
             const newStr = normalizeUtf8Input(String(args.new_string === undefined ? '' : args.new_string), original.newline);
-            if (oldStr && oldText.split(oldStr).length > 1) newText = oldText.split(oldStr).join(newStr);
+            newText = replaceTextBounded(oldText, oldStr, newStr, args.replace_all).text;
             newText = preserveTextBom(original, newText);
           } else if (name === 'write_file') {
             newText = preserveTextBom(original, normalizeUtf8Input(String(args.content === undefined ? '' : args.content), original.newline));
@@ -4800,7 +4797,10 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
             newText = oldText + normalizeUtf8Input(String(args.content === undefined ? '' : args.content), original.newline);
           }
           preview = simpleLineDiff(oldText, newText);
-        } catch (e) { preview = null; }
+        } catch (e) {
+          if (e.code === 'EFILETOOLARGE') return makeToolResult('error', 'Approval preview error: ' + e.message);
+          preview = null;
+        }
       }
       if (preview) {
         console.log(`\n[PERM] Proposed change to ${args.path}:\n${preview}\n`);
@@ -5562,7 +5562,7 @@ async function readUtf8Window(fullPath, args, cancelled, maxResultChars) {
 
 function readUtf8ForWrite(fullPath, allowMissing) {
   let text;
-  try { text = decodeUtf8Text(fs.readFileSync(fullPath)); }
+  try { text = decodeUtf8Text(readFileBytesBounded(fullPath, textFileByteLimit(), 'Editable file')); }
   catch (e) {
     if (allowMissing && e.code === 'ENOENT') return { text: '', bom: false, newline: null };
     throw e;
@@ -5575,15 +5575,65 @@ function readUtf8ForWrite(fullPath, allowMissing) {
   return { text, bom: text.charCodeAt(0) === 0xFEFF, newline };
 }
 
+function textFileByteLimit() { return 8 * 1024 * 1024; }
+function assertTextByteLimit(text) {
+  if (Buffer.byteLength(text, 'utf8') > textFileByteLimit()) throw fileByteLimitError('Text content', textFileByteLimit());
+  return text;
+}
 function normalizeUtf8Input(text, newline) {
-  if (typeof text !== 'string' || text.includes('\0') || Buffer.from(text, 'utf8').toString('utf8') !== text) {
+  if (typeof text !== 'string' || text.includes('\0')) {
     throw new Error('Text content must be a UTF-8 encodable string without NUL or unpaired surrogates.');
   }
-  return newline ? text.replace(/\r\n|\r|\n/g, newline) : text;
+  assertTextByteLimit(text);
+  if (Buffer.from(text, 'utf8').toString('utf8') !== text) throw new Error('Text content must be a UTF-8 encodable string without NUL or unpaired surrogates.');
+  return assertTextByteLimit(newline ? text.replace(/\r\n|\r|\n/g, newline) : text);
 }
 
 function preserveTextBom(original, text) {
-  return original.bom && text.charCodeAt(0) !== 0xFEFF ? '\uFEFF' + text : text;
+  return assertTextByteLimit(original.bom && text.charCodeAt(0) !== 0xFEFF ? '\uFEFF' + text : text);
+}
+
+function replaceTextBounded(content, oldStr, newStr, replaceAll) {
+  if (!oldStr) throw new Error('old_string is required');
+  let count = 0, from = 0, at;
+  while ((at = content.indexOf(oldStr, from)) !== -1) { count++; from = at + oldStr.length; }
+  if (!count) throw new Error('old_string not found in file');
+  if (count > 1 && !replaceAll) throw new Error('old_string found ' + count + ' times - add more surrounding context to make it unique, or set replace_all=true');
+  const size = Buffer.byteLength(content, 'utf8') + count * (Buffer.byteLength(newStr, 'utf8') - Buffer.byteLength(oldStr, 'utf8'));
+  if (!Number.isSafeInteger(size) || size < 0 || size > textFileByteLimit()) throw fileByteLimitError('Edited text', textFileByteLimit());
+  // Avoid one array entry/rope per match: even a bounded result may have millions
+  // of matches. Copy UTF-8 into one bounded buffer; $ sequences stay literal.
+  const output = Buffer.alloc(size);
+  let written = 0; from = 0;
+  while ((at = content.indexOf(oldStr, from)) !== -1) {
+    if (at > from) written += output.write(content.slice(from, at), written, 'utf8');
+    if (newStr) written += output.write(newStr, written, 'utf8');
+    from = at + oldStr.length;
+  }
+  if (from < content.length) written += output.write(content.slice(from), written, 'utf8');
+  return { count, text: output.toString('utf8') };
+}
+
+function stringifyNotebookBounded(notebook) {
+  // Parsed JSON and model JSON args have no getters/toJSON side effects. Check
+  // compact bytes and indentation growth before materializing pretty output.
+  const compact = JSON.stringify(notebook);
+  assertTextByteLimit(compact);
+  const base = Buffer.byteLength(compact, 'utf8');
+  let depth = 0, extra = 0, quoted = false;
+  for (let i = 0; i < compact.length; i++) {
+    const ch = compact[i];
+    if (quoted) { if (ch === '\\') i++; else if (ch === '"') quoted = false; continue; }
+    if (ch === '"') { quoted = true; continue; }
+    if (ch === '{' || ch === '[') {
+      if (compact[i + 1] !== (ch === '{' ? '}' : ']')) { depth++; extra += 1 + depth * 2; }
+    } else if (ch === '}' || ch === ']') {
+      if (compact[i - 1] !== (ch === '}' ? '{' : '[')) { depth--; extra += 1 + depth * 2; }
+    } else if (ch === ',') extra += 1 + depth * 2;
+    else if (ch === ':') extra++;
+    if (base + extra > textFileByteLimit()) throw fileByteLimitError('Formatted notebook', textFileByteLimit());
+  }
+  return JSON.stringify(notebook, null, 2);
 }
 
 // Shared strict snapshot: an unflushed or partial backup must never authorize
@@ -5717,6 +5767,9 @@ function restoreLatestBackup(rel) {
 // then shows a bit of context plus - / + lines. Not a full LCS diff, but enough
 // for a human to judge an edit.
 function simpleLineDiff(oldText, newText, contextLines = 2, maxLines = 40) {
+  // Large sources use the caller's exact-arguments approval fallback. Bound
+  // before splitting: maxLines only limits the final display, not allocations.
+  if (Buffer.byteLength(String(oldText), 'utf8') > 65536 || Buffer.byteLength(String(newText), 'utf8') > 65536) return null;
   const a = String(oldText).split('\n');
   const b = String(newText).split('\n');
   let start = 0;
