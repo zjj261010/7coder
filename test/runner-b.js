@@ -922,7 +922,7 @@ scenarios.push({
     const gs1 = tr(log, 'gs1');
     // The first upstream call now creates .7coder/audit.jsonl (usage event),
     // alongside new.txt: count both, while still checking staged/modified XY.
-    record('git: status shows branch + exact dirty counts including usage audit', gs1 && gs1.c.includes('[GIT] branch') && gs1.c.includes('staged:1 modified:0 untracked:2'), gs1 ? gs1.c.substring(0, 120) : 'no result');
+    record('git: status shows branch + exact dirty counts including usage audit', gs1 && gs1.c.includes('[GIT] branch') && gs1.c.includes('staged:0 modified:1 untracked:2') && gs1.c.includes('\n M app.txt'), gs1 ? gs1.c.substring(0, 120) : 'no result');
     const gs2 = tr(log, 'gs2');
     record('git: diff shows the v1->v2 change', gs2 && gs2.c.includes('-v1') && gs2.c.includes('+v2'), gs2 ? gs2.c.substring(0, 120) : 'no result');
     const gs3 = tr(log, 'gs3');

@@ -623,7 +623,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：正确处理根目录尾分隔符、大小写与不同卷；保留 real-path/junction fail-closed。根目录与普通工作区的状态/文件工具均正确，外指仍被拒。 | R1 M11；OPT-14 已完成访问门，不等于所有路径边界正确 |
 | ⬜ | T22-26 | Medium／确认＋风险 | **磁盘保留与会话历史策略**：为 snapshot refs、Web会话、截图、background/BTW/TODO日志设时间/总字节策略；T22-13新增的不同损坏证据/骤停临时文件亦需保留策略，不能删活动实例文件；CLI/Web 不按文件名前缀误删对方历史；会话列表可分页/索引。保留现有审计轮转、每源5/全局200备份，不重复实现。 | R1 M14；GAP-12、OP5-5、C8；10-23第八批补充保留范围 |
 | ⬜ | T22-27 | Medium／确认 | **修 Markdown 语言属性转义**：使用 DOM 属性赋值或有限字符规则，含引号的 fenced language 不能改变 HTML 属性；普通 c++/c#、未闭合围栏仍正确。 | R1 M15；A2-04 只修错误气泡，不应反向宣布其修复无效 |
-| ⬜ | T22-28 | Low／确认 | **修 git status 首行 trim**：保留 XY 前导空格；同时修正锁定错误 staged/modified 结果的测试；覆盖首项仅未暂存、已暂存与 MM。 | R1 L01；DS-4/P2-11 的分列修复保留，补首行边界 |
+| ✅ | T22-28 | Low／确认 | **修 git status 首行 trim**：10-24只去末尾CR/LF，保留首项XY的index空格；CRLF按行计数。旧Git集成断言由错误staged:1/modified:0改为staged:0/modified:1并检查实际前导空格。新真实隔离Git专项9/9（未暂存/已暂存/MM/未跟踪/clean/CRLF/故障）、旧Git集成4/4，Node13均单次。 | R1 L01；DS-4/P2-11原分列保留；本日Git首列记录 |
 | ⬜ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：Win7 下 `.7coder/memory/*.md` 正确匹配声明的例外；protected/deny 仍有效。 | R1 L02；GAP-9 |
 | ⬜ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：grep 支持文件路径或明确拒绝，不能伪装无匹配；glob 按实际访问条目计预算，区分预算耗尽/无匹配。 | R1 L03；P2-3、A2-20 的已有保护保留 |
 | ⬜ | T22-31 | Low／潜在风险 | **cron ID 唯一**：固定时钟下同毫秒创建两个 job 不覆盖 Map，不丢 timer，二者可独立删除/回收。 | R1 L04；NEW-2 不因新增ID问题重开 |
@@ -1241,3 +1241,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - Node13单次：新test-runtime **11/11**，包括版本边界选择/不可用零进程、带空格/中文/%/!虚拟可执行路径仍走argv、BOM/脚本优先/无效类型/损坏配置/目录、真实Node13在PATH完全清空时执行中文空格路径脚本并解析1 passing、取消前零新增子进程；B tests-runner **6/6**，原npm脚本及四类输出契约保留。三份相关JS语法与diff检查通过。现代Node分支只验证原函数选项与argv，没有谎称实际运行Node18/16；没有重复以前的debug及B/其它专项。
 - T22-23继续部分完成：可选npm（含自身Node版本需求）/Git/Python/csc及项目tsc/eslint仍需功能预检；随包Node13不包含这些开发工具。未跑全套A–J/UI/test-all、Win7、24/72h或打包，未推送。
 - 同步T22-07/T22-17实时行，纳入c033208解释器/真实close和超时oracle修正，历史原记录保持。本批按授权提交`fix(T22-23): detect tests against the bundled Node runtime`，继续T22-28 Git状态首列边界。
+
+### 2026-10-24 —— T22-28 Git状态首列
+
+- T22-23测试运行时批已提交`703ece7`。git_status_tool不再trim整段--short输出，只去掉尾随CR/LF，保留第一条记录的index列空格；按CRLF/LF分行。修正旧Git集成中锁死错误计数的断言，显式检查首条` M app.txt`。
+- 新git-status-columns专项Node13 **9/9**，单次真实私有Git仓库：clean→首项未暂存→仅暂存→MM→混合未跟踪→只剩未跟踪→clean；另用原分支校验CRLF及已确认仓库中status失败。夹具清空继承GIT_*覆盖并用独立空global配置，所有commit仅作用于临时仓库。旧B git-integration **4/4**，单次真实REPL审批/工具链，包含diff、提交/快照及非仓库结果。四份相关JS Node13语法与diff检查通过。
+- 未跑完整A–J/UI/test-all、Win7或打包。该修复不处理其它Git配置/可执行文件预检、空仓库HEAD等未列场景；不改stage/commit/snapshot语义，不推送。
+- 新npm/test-all入口登记。本批按授权提交`fix(T22-28): preserve Git status index column`，继续T22-25/29路径边界与memory分隔符。

@@ -4043,8 +4043,9 @@ function inGitRepo() {
     try {
       const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
       const last = git(["log", "-1", "--oneline"]).trim();
-      const status = git(["status", "--short"]).trim();
-      const linesN = status ? status.split("\n") : [];
+      // The leading space is the index column of XY, not presentation padding.
+      const status = git(["status", "--short"]).replace(/(?:\r?\n)+$/, '');
+      const linesN = status ? status.split(/\r?\n/) : [];
       const counts = { staged: 0, modified: 0, untracked: 0 };
       for (const l of linesN) {
         const x = l.charAt(0), y = l.charAt(1);
