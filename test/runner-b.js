@@ -3164,6 +3164,7 @@ scenarios.push({
       ENABLE_HTTP_SERVER: false,
       effectivePermissionMode: () => 'default', withUtf8Codepage: c => c, powerShellSpec: () => ({ file: 'fixture-powershell', args: [] }),
       findBash: () => 'fixture-bash', getPersistentShell: () => commands.shell,
+      persistentBashExecutable: value => value, persistentBashEnvironment: () => ({}),
       shellSessionKey: () => 'fixture', runCommandAsync: spec => spec,
       awaitCommandCancellable: async () => commands.outcome
     });
@@ -3348,6 +3349,7 @@ scenarios.push({
       DANGER_MODE: false, effectivePermissionMode: () => 'default', withUtf8Codepage: (c) => c, powerShellSpec: () => ({ file: 'fixture-powershell', args: [] }),
       runCommandAsync: (spec) => spec, awaitCommandCancellable: async () => outcomes.shift(),
       findBash: () => 'C:\\fake-bash.exe', getPersistentShell: () => persistentShell, shellSessionKey: () => 'k',
+      persistentBashExecutable: value => value, persistentBashEnvironment: () => ({}),
       process: { platform: 'win32' }, Buffer: Buffer, makeToolResult: api.makeToolResult, outcomes: [], persistentShell: null
     }, over);
     const runBranch = async (ctx, name, args, cancelled) => {

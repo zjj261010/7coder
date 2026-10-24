@@ -590,7 +590,7 @@
 | ✅ | T22-04 | High／确认 | **隔离 SSE 解析异常**：10-23完成结构校验、事件回调捕获、统一单次结算、提前close/aborted处理及失败销毁；原解析函数故障矩阵与实际HTTP null帧后下一请求恢复通过。 | R2 N02；index.js parseSSEStream；test/stream-context.js；本批31/31，详见10-23第二批记录；未宣称全部网络异常组合或Win7已验收 |
 | ✅ | T22-05 | High／确认 | **保护压缩前原始上下文**：10-23完成失败/空摘要明确报错且不改原数组；按20K分段全部输入成功后才提交；当前用户要求原文保留，工具参数/已完成副作用进入摘要输入；后续段失败零提交。 | R2 N03；index.js summarizeConversation/compressConversationIfNeeded；test/stream-context.js；31/31＋旧边界2/2；真实模型摘要质量仍有单独限制 |
 | 🔶 | T22-06 | High／确认 | **贯穿取消与截止时间**：68fa239、50e0d47、64daf8c已补模型/审批、网络/下载/MCP/shell、dream/BTW；第四批补debug观察、异步编译、fixer与重启前检查，取消后不再启动下一轮。debug21/21＋A定向20/20＋B sec2 9/9，均Node13单次。**未完成**：同步IO、全部副作用截止及进程树停止；远端/后代结果仍可能未知，继续与T22-07联动，不关闭整项。 | R1 H03；R2 C02；OPT-15、A5、A2-06；本日第四批记录 |
-| 🔶 | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：10-24首批补task/cron直属close观察与5秒停止期限；cron删除失败禁用但保留句柄，task超时为stop-unknown、迟到close纠正，/bye并行等待并诊断；保留异步有界taskkill树停尝试和cron防重叠；c033208再修Git持久Bash启动器残留，直接持有实际解释器并验证close。专项19/19＋Windows树夹具6/6＋B定向13/13。**未完成**：原生进程树所有权、taskkill PID复用竞态、所有命令/MCP/shell/debug统一回收、强杀/注销及one-shot语义；直属close不证明任意后代已停。 | R1 H04、M08；A10、NEW-2；与 T22-06 联动；本日进程生命周期首批记录 |
+| 🔶 | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：task/cron close/停止期限与未知结果、/bye并行诊断见10-24首批。INC-24-03持久Bash已直接持有解释器；10-25拓展至普通bash_tool与.sh debug，同一Git布局/环境helper，真实取消见close。新依赖/所有权专项10/10（0skip）＋旧debug21＋B命令7。**未完成**：原生任意树所有权、taskkill PID复用、所有命令/MCP/debug统一回收、强杀/注销等；直属close不证明任意后代已停。 | R1 H04、M08；A10、NEW-2；T22-06、INC-24-03扩展 |
 | ✅ | T22-08 | High／确认＋风险 | **串行化交互审批并修 REPL 等待**：2026-10-23 第三批落地单一 CLI 问题队列，EOF/close 结算全部问题、取消结算对应问题；审批和询问用户共用输入分派。任务在首个 await 前占位并取走草稿，BTW 按草稿排队，后续输入进入下一草稿，clear 后旧回调不污染新草稿。Node13 新回归20/20＋既有btw-eof 1/1，均单次；真实Win7终端待验收，HTTP活动取消仍属T22-06。 | R2 N01；R1 M10；D6；提交5149903 |
 | ✅ | T22-09 | High／确认 | **下载替换不先删原文件**：2026-10-23 第四批移除目标 unlink；独占打开唯一临时文件，等 close＋fsync，严格完整旧版备份发布后单次 rename 覆盖，失败不删目标；复用有保留上限的 /undo 恢复。Node13故障专项获准复跑41/41，既有下载6/6；提交边界骤停及新进程恢复通过，实Win7/占用/断电仍待验收。 | R1 H07；AST-05；提交7ce82f9 |
 | ✅ | T22-10 | High／确认错误路径 | **文件编辑编码止损**：2026-10-23 第五批对读/提示词文件/写/追加/编辑/notebook实施UTF-8可逆检查，拒绝不支持的字节与NUL，不猜测GBK；保留BOM及单一换行风格。现存文件写入统一完整严格备份，失败阻断；恢复时间戳顺序保护。Node13专项46/46、既有读取/保留6/6，均单次。普通文本写入仍可能部分失败，需undo恢复；实Win7/字节编码歧义见第五批边界。 | R1 H08；A2 的 chcp 修复不覆盖文件编码；提交f2e9409 |
@@ -618,7 +618,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
-| 🔶 | T22-23 | Medium／确认 | **内部运行时与依赖诊断**：JS调试/自动--test已用当前Node，Node13拒绝不支持的--test；本日再补auto scripts.test先查npm，缺失零启动，找到后调用核对过的绝对路径；Git只把实际not-repository当正常空结果，缺Git/配置/权限/所有权错误显式error。新依赖12/12（原生无PATH＋私有Unicode npm夹具）、Git列9/9；此前test-runtime11/11保留为历史证据未重复。仍待真实npm Node版本匹配、Bash/Python/csc/tsc/eslint功能预检及Win7。chcp不是任意原生输出转码。 | R1 M02；本日测试运行时/可选依赖批局部证据 |
+| 🔶 | T22-23 | Medium／确认 | **内部运行时与依赖诊断**：JS/--test、npm缺失零启动/绝对路径、Git错误不伪装空仓库见10-24。10-25再补Python/Bash/C#缺失零目标进程、Python绝对PATH绑定、csc PATH/标准.NET目录发现及execFile argv；新10/10（0skip）＋旧debug21＋B命令7。仍待真实npm/Node、Python/.NET、Git Bash和本地tsc/eslint版本/功能矩阵及Win7；发现路径不等于版本支持，chcp不是任意原生输出转码。 | R1 M02；各依赖/运行时批局部证据 |
 | 🔶 | T22-24 | Medium／确认编码路径 | **PowerShell编码闭环**：10-24统一UTF16LE Base64/固定ASCII入口，解析用户脚本前设置UTF8 output；避开实测EncodedCommand的ANSI CLIXML stderr，保留最终Write-Error/throw/显式exit；input.ps1补UTF8 BOM，桌面/截图改execFile argv。新专项根因修复后14/14、旧命令契约21/21；现代宿主实测非真实Win7/PS2/CP936，目标机和自定义编码native工具仍待验收，保持部分完成。 | R1 M06；A2/chcp保护保留；本日PowerShell批 |
 | ✅ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：10-24用relative边界判断，排除父级/绝对结果，消除drive/UNC根末尾双分隔符误拒；保留Win大小写、不同卷/共享及realpath/junction门。新专项修夹具后25/25：纯路径边界＋映射到私有目录的drive/UNC根真实state/文件/备份IO及实际外指junction拒绝；无真实根/网络共享写入。Win7真实根/远程文件系统语义仍由V22-01/05实机验收。 | R1 M11；OPT-14原安全门保留；本日路径批记录 |
 | 🔶 | T22-26 | Medium／确认＋风险 | **磁盘保留与历史归属**：10-24先修CLI误删Web：显式kind＋私有CLI名字双校验，只留20个新CLI档案，保留当前/legacy/Web/损坏/证据/temp；变更或删失败停止。Web继续CLI/legacy另建Web副本，Web自有原地更新；按savedAt列表排序，nonce避同毫秒覆盖。新专项11/11单次。**仍待** snapshot refs/Web/截图/background/BTW/TODO/损坏证据/temp的时间/总字节策略及分页索引，不能删活动文件；原审计/备份预算保留，不据CLI20条宣称全盘有界。 | R1 M14；GAP-12/OP5-5/C8；本日历史归属批；T22-13新增保留范围仍待 |
@@ -1426,3 +1426,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新model-response-budget Node13首次单次 **11/11**：共享常量、原解析器ASCII无换行/中文按bytes/累计reasoning超额即销毁并清监听、精确8MiB合法响应仍接受；实际私有Agent的大JSON/gzip解压超限/未换行SSE/累计工具参数都只调用模型一次、上游socket真实close、零工具副作用/工具审计且活动归零；原vision helper同样限制，原Agent下一小请求正常完成。root fixture自己构造的有界大响应不是Agent RSS压力实测，不外推长期峰值。
 - 旧stream-context本批首次单次 **31/31**：结构/UTF8/fragments/usage/异常流/consumer回调和上下文压缩原始输入保全、真实后端失败后下一请求恢复均保持。提取解析器的两处旧夹具从源码读取统一常量并提供Buffer；B sec3仅语法核对，未重跑。共享loadContext显式载入原常量，避免给vision测试写死另一政策。
 - npm/test-all登记、Node13语法及diff检查通过。未重跑已通过的MCP/read/工具批次、完整A–J/UI/test-all或真实外部模型；未跑Win7/真实浏览器/24/72h或打包。8MiB仅每个上游响应，多个模型上下文/大输入请求、全文件编辑/备份、缓存/DOM/磁盘日志等仍可能累计，T22-15不整体关闭。按授权提交本批、未推送，继续T22-23可选依赖预检。
+
+### 2026-10-25 —— T22-23调试依赖与INC-24-03 Bash所有权拓展
+
+- 模型响应预算批已提交`c3708cc`。Python按实际PATH查已存在解释器并使用绝对路径；缺Python/Bash或C# compiler明确错误、零目标进程且恢复autoDebugActive。csc优先PATH，再查系统安装的.NET Framework目录（含v2/v3.5/v4候选），不假定目标机装了完整开发环境、不安装下载组件。编译每轮仍重新执行，改用file/argv，中文/空格/&路径不再拼进shell；不存在版本兼容保证。
+- 检查预检时确认同INC-24-03的启动器路径仍在普通bash_tool与.sh debug：都可能持有Git bin/bash包装器。现复用原persistentBashExecutable/Environment，已识别Git布局选择真正usr/bin/bash并准备环境；未知其它布局保留原路径。此为已知启动器问题的范围拓展，不另重复计一条新Bug，也不把任意Bash脚本产生的后代树宣称全回收。
+- 新debug-prerequisites首跑5项后因提取夹具漏载awaitCommandCancellable而失败；补原命令等待helper后按现有授权仅复跑失败专项，最终 **10/10，0 SKIP**。三类缺失零进程/零编译/guard恢复，模拟.NET安装目录与真实PATH文件查找优先级，真实编译spec的绝对csc/完整argv；私有Node二进制作为明确的解释器shim验证Unicode/空格/&脚本路径与退出7，不声称实际Python语义。真实Git Bash .sh debug与stateless命令均使用选定解释器、取消后观察直属close，不靠打印取消文本。
+- 旧debug-lifecycle本批首次单次 **21/21**、B tool-results-b6 **7/7**（缺依赖/取消/双流/实际命令状态）通过；新专项失败后未重跑已通过debug21。旧两个命令提取夹具补显式Bash路径/环境identity stub，B5仅语法核对未重跑，真实路径选择由新专项覆盖。npm/test-all登记，相关Node13语法及diff检查通过。
+- 未执行真实C#编译/.NET GUI、实际Python、Win7目标版本矩阵、所有其它Bash布局/任意后代树、完整A–J/UI/test-all、24/72h或打包。T22-07/18/23仍部分完成；不据现代宿主上的Node/Git/fixture验收解除Win7门槛。按授权提交本批、未推送，继续T22-33旧工具结果断言的逐调用迁移。

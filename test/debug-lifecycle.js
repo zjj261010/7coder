@@ -32,6 +32,8 @@ function context(spawn, extra) {
     console: { log() {}, warn() {}, error() {} }, launchDir: S.freshCwd('debug 中文 空格'),
     child_process: { spawn, execSync() { throw Error('numeric-PID cleanup or sync compilation is forbidden'); } },
     findBash: () => null, ENABLE_COMPUTER_USE: true, ENABLE_AUTO_DEBUG: true,
+    findOptionalExecutable: () => null, findCSharpCompiler: () => 'fixture-csc.exe',
+    persistentBashExecutable: value => value, persistentBashEnvironment: () => process.env,
     DEBUG_TEST_MINUTES: 3, autoDebugActive: false, systemPrompt: 'fixture', sanitizePath: String,
     quoteForShell: value => '"' + value + '"', executeToolRaw() { throw Error('desktop injection is forbidden'); }
   }, extra || {}));

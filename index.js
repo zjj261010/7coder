@@ -1758,7 +1758,8 @@ function findBash() {
 }
 
 // Git's bin/bash.exe may be a compat launcher which owns a second
-// usr/bin/bash.exe. Persistent sessions must hold the actual interpreter.
+// usr/bin/bash.exe. Managed persistent/stateless/debug launches must hold
+// the actual interpreter. Unknown non-Git layouts retain their original path.
 function persistentBashExecutable(bash) {
   if (process.platform !== 'win32' || !/[\\/]bin[\\/]bash\.exe$/i.test(bash) || /[\\/]usr[\\/]bin[\\/]bash\.exe$/i.test(bash)) return bash;
   const direct = path.resolve(path.dirname(bash), '..', 'usr', 'bin', 'bash.exe');
@@ -1815,6 +1816,19 @@ function findOptionalExecutable(command) {
         return file;
       } catch (e) {}
     }
+  }
+  return null;
+}
+
+function findCSharpCompiler() {
+  const onPath = findOptionalExecutable('csc');
+  if (onPath) return onPath;
+  if (process.platform !== 'win32') return null;
+  const env = process.env || {}, root = env.SystemRoot || env.SYSTEMROOT || env.windir;
+  if (!root) return null;
+  for (const folder of ['Framework64/v4.0.30319', 'Framework/v4.0.30319', 'Framework/v3.5', 'Framework/v2.0.50727']) {
+    const file = path.join(root, 'Microsoft.NET', folder, 'csc.exe');
+    try { if (fs.statSync(file).isFile()) return file; } catch (e) {}
   }
   return null;
 }
@@ -3222,12 +3236,12 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       return makeToolResult('ok', `Command OK (persistent shell, exit 0):\n${r.out}`, data);
     }
 
-    const bash = findBash();
+    const bash = persistentBashExecutable(findBash());
     checkExecution(cancelled);
     if (!bash) {
       return makeToolResult('error', 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.', { exitCode: null });
     }
-    const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: bash, args: ['-c', String(cmd)] }), cancelled);
+    const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: bash, args: ['-c', String(cmd)] }, { env: persistentBashEnvironment(bash) }), cancelled);
     if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]', { exitCode: null });
     if (r.error) return makeToolResult('error', `[ERROR] Command failed:\n${r.error.message}\n${r.stderr || ''}`, { exitCode: r.exitCode });
     const okText = r.stderr.trim() ? `Command OK:\n${r.stdout}\n[STDERR]\n${r.stderr}` : `Command OK:\n${r.stdout}`;
@@ -4445,8 +4459,10 @@ Reply with ONLY valid JSON:
         if (filePath.endsWith('.cs')) {
           // Recompile after every repair; retesting an old .exe cannot prove
           // that a change to its .cs source fixed the failure.
-          const compiled = await awaitCommandCancellable(runCommandAsync({
-            cmd: `csc /target:winexe ${quoteForShell(filePath)} /out:${quoteForShell(filePath.slice(0, -3) + '.exe')}`
+          const compiler = findCSharpCompiler();
+          if (!compiler) return makeToolResult('error', 'Auto-debug prerequisite error: C# compiler csc was not found on PATH or in the installed Windows .NET Framework directories. Prepare a compatible compiler/runtime offline; no compilation or target process was started.');
+          const compiled = await awaitCommandCancellable(runCommandAsync({ file: compiler,
+            args: ['/target:winexe', filePath, '/out:' + filePath.slice(0, -3) + '.exe']
           }, { timeout: 120000 }), cancelled);
           checkExecution(cancelled);
           if (compiled.r.error) return makeToolResult('error', `[ERROR] Compile failed: ${compiled.r.error.message}\n${compiled.r.stderr || ''}`);
@@ -4486,14 +4502,20 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes, cancel
   checkExecution(cancelled);
   let cmdToRun = exePath;
   let cmdArgs = [];
+  let childEnv;
   if (filePath.endsWith('.js')) {
     cmdToRun = process.execPath;
     cmdArgs = [filePath];
   } else if (filePath.endsWith('.py')) {
-    cmdToRun = process.platform === 'win32' ? 'python' : 'python3';
+    cmdToRun = findOptionalExecutable(process.platform === 'win32' ? 'python' : 'python3') ||
+      (process.platform === 'win32' ? findOptionalExecutable('python3') : null);
+    if (!cmdToRun) throw new Error('Python prerequisite missing on PATH; prepare a compatible interpreter offline. No target process was started.');
     cmdArgs = [filePath];
   } else if (filePath.endsWith('.sh')) {
-    cmdToRun = findBash() || 'bash';
+    const discovered = process.platform === 'win32' ? findBash() : findOptionalExecutable('bash');
+    if (!discovered) throw new Error('Bash prerequisite missing; prepare a compatible Git Bash/bash offline. No target process was started.');
+    cmdToRun = persistentBashExecutable(discovered);
+    childEnv = persistentBashEnvironment(cmdToRun);
     cmdArgs = [filePath];
   } else if (filePath.endsWith('.bat') || filePath.endsWith('.cmd')) {
     cmdToRun = process.env.ComSpec || 'cmd.exe';
@@ -4537,6 +4559,7 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes, cancel
     };
     try {
       child = child_process.spawn(cmdToRun, cmdArgs, { stdio: ['ignore', 'pipe', 'pipe'], cwd: launchDir,
+        env: childEnv,
         windowsHide: appType !== 'gui', windowsVerbatimArguments: /\.(?:bat|cmd)$/i.test(filePath) });
     } catch (e) { result.spawnFailed = true; log('[ERROR] spawn failed: ' + e.message); finish(); return; }
     // Node13 has no reliable 'spawn' event: bind error/exit/close immediately.
