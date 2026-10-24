@@ -1855,17 +1855,20 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('b-pshell');
     fs.mkdirSync(path.join(cwd, 'sub'), { recursive: true });
-    const bashArgs = (c, persistent) => JSON.stringify(persistent
-      ? { command: c, persistent: true, timeout_ms: 15000 }
+    const bashArgs = (c, persistent, timeoutMs) => JSON.stringify(persistent
+      ? { command: c, persistent: true, timeout_ms: timeoutMs || 15000 }
       : { command: c });
-    const tc = (id, c, persistent) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: 'bash_tool', arguments: bashArgs(c, persistent) } }] });
+    const tc = (id, c, persistent, timeoutMs) => ({ role: 'assistant', content: null, tool_calls: [{ id: id, type: 'function', function: { name: 'bash_tool', arguments: bashArgs(c, persistent, timeoutMs) } }] });
     const m = startMock([
       tc('ps1', 'export PSH_MARK=GAP2-ALIVE', true),
       tc('ps2', 'cd sub', true),
       tc('ps3', 'pwd && echo "$PSH_MARK"', true),
       tc('ps4', 'pwd', false), // one-shot mode: fresh shell, back at workspace root
       tc('ps5', 'cd nowhere-xyz 2>/dev/null || false', true), // nonzero exit WITHOUT killing the session (bare 'exit N' ends the shell itself)
-      tc('ps6', 'read -t 10 never', true), // hangs 10s > timeout_ms -> shell restart message
+      // Builtins only: a 6s watchdog cannot finish before the 1s tool limit.
+      // No external sleep child; watchdog bounds damage if cleanup regresses.
+      // A 10s read under a 15s limit did not establish this precondition.
+      tc('ps6', 'limit=$((SECONDS+6)); while ((SECONDS<limit)); do read -t 1 ignored || :; done', true, 1000),
       tc('ps7', 'echo back-to-life', true), // after restart the session respawns fresh
       { role: 'assistant', content: 'PSHELL-DONE ' + 'pshell scenario final reply padded past the summary floor for the budget skip rule. '.repeat(5) }
     ]);

@@ -1659,6 +1659,28 @@ function findBash() {
   return null;
 }
 
+// Git's bin/bash.exe may be a compat launcher which owns a second
+// usr/bin/bash.exe. Persistent sessions must hold the actual interpreter.
+function persistentBashExecutable(bash) {
+  if (process.platform !== 'win32' || !/[\\/]bin[\\/]bash\.exe$/i.test(bash) || /[\\/]usr[\\/]bin[\\/]bash\.exe$/i.test(bash)) return bash;
+  const direct = path.resolve(path.dirname(bash), '..', 'usr', 'bin', 'bash.exe');
+  return fs.existsSync(direct) ? direct : bash;
+}
+function persistentBashEnvironment(bash) {
+  const env = Object.assign({}, process.env, { TERM: 'dumb', PS1: '' });
+  if (process.platform !== 'win32' || !/[\\/]usr[\\/]bin[\\/]bash\.exe$/i.test(bash)) return env;
+  const root = path.resolve(path.dirname(bash), '..', '..');
+  const prefix = [path.dirname(bash), path.join(root, 'cmd')];
+  for (const system of ['MINGW64', 'MINGW32', 'UCRT64']) {
+    const bin = path.join(root, system.toLowerCase(), 'bin');
+    if (fs.existsSync(bin)) { prefix.push(bin); if (!env.MSYSTEM) env.MSYSTEM = system; break; }
+  }
+  let inherited = '';
+  for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') { inherited = env[key]; delete env[key]; }
+  env.PATH = prefix.filter(p => fs.existsSync(p)).concat(inherited ? [inherited] : []).join(path.delimiter);
+  return env;
+}
+
 function isSuperDangerous(cmd) {
   if (!cmd) return false;
   const lower = cmd.toLowerCase();
@@ -1738,15 +1760,16 @@ function shellSessionKey() {
   return 'main';
 }
 function createPersistentShell(key, cancelled) {
-  const bash = findBash();
+  const discovered = findBash();
   checkExecution(cancelled);
-  if (!bash) return null;
+  if (!discovered) return null;
+  const bash = persistentBashExecutable(discovered);
   // NOTE: NOT '-i' - an interactive bash on a pipe (non-TTY) stdin hangs on
   // this platform. A plain non-interactive bash reading commands from the
   // pipe keeps its session state (cwd/env) across writes just the same.
   const child = child_process.spawn(bash, ['--norc', '--noprofile'], {
     cwd: launchDir,
-    env: Object.assign({}, process.env, { TERM: 'dumb', PS1: '' }),
+    env: persistentBashEnvironment(bash),
     stdio: ['pipe', 'pipe', 'pipe']
   });
   const shell = { key: key, child: child, dead: false, seq: 0, active: null, deadErr: '' };

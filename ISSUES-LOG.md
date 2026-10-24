@@ -628,7 +628,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：grep 支持文件路径或明确拒绝，不能伪装无匹配；glob 按实际访问条目计预算，区分预算耗尽/无匹配。 | R1 L03；P2-3、A2-20 的已有保护保留 |
 | ⬜ | T22-31 | Low／潜在风险 | **cron ID 唯一**：固定时钟下同毫秒创建两个 job 不覆盖 Map，不丢 timer，二者可独立删除/回收。 | R1 L04；NEW-2 不因新增ID问题重开 |
 | ⬜ | T22-32 | Improvement | **补最低运行诊断**：记录当前运行/排队、最后成功/错误、关键 errno/路径/child exit；故障日志有限额。完整 runId 架构与跨会话提交统计仍留 OPT-3/DS-13 暂缓，不借此启动大拆分。 | R1 日志/长期运行章节；R2 N04；DS-13/OPT-3 |
-| ⬜ | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：信息项/skip 不记行为 PASS；D 路径表按调用ID核验；修 pshell 的10s/15s错误超时条件、stderr标记预览假命中、MAX_TOOL_STEPS=0弱断言、K/R未验证真实workflow/第二模型、配对只看role、mock错序填充。每个断言证明其声明的行为；避免仅增加数量。 | R1 §10.3；R2 N01/N02/N03测试缺口；OPT-8/OPT-17既有覆盖不全部撤销 |
+| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：10-24修pshell先决条件为6秒内建watchdog/1秒工具期限；新独立真实Bash专项首跑暴露bin/bash启动器残留，修产品后获现有自动复测授权复跑8/8，必须观察close、下一环境与命令可用性，SKIP单列。旧pshell修后未重复跑。其余仍待：信息/skip不记PASS、D按调用ID、stderr预览假命中、MAX_TOOL_STEPS=0、K/R真实workflow/第二模型、严格tool配对、mock错序。 | R1 §10.3；R2 N01/N02/N03；本日INC-24-03及超时oracle记录 |
 
 ### V22：验证与发布门槛（均未执行）
 
@@ -1220,3 +1220,16 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 同步修测试提取漂移：B followup原函数尾标记仍指已移除的注释，改按awaitCommandCancellable函数边界；命令分支夹具加载源码原checkExecution、明确HTTP=false；subagent/workflow夹具明确清理依赖。没有让断言跳过新分支。pshell的旧read10s/timeout15s不满足注释宣称的超时先决条件，27/27不能据此关闭该oracle缺口，紧接着单独修T22-33。
 - T22-17保持部分完成：当前只允许以HTTP persistent禁用的能力范围发布；完整后端会话协议/恢复/关闭未实现。未跑全套A–J/UI/test-all、Win7、真实多agent Bash长时间/树回收、24/72h或打包；未推送。
 - 本批按授权提交`fix(T22-17): restrict HTTP shells and retire scoped sessions`，继续T22-33超时测试oracle。
+
+### 2026-10-24 —— T22-33超时oracle与INC-24-03持久Bash启动器残留
+
+| 编号 | 严重程度／依据 | 状态 |
+|---|---|---|
+| INC-24-03 | **High／已确认**：Windows Git布局的bin/bash.exe是兼容启动器；createPersistentShell原先直接持有它，die只kill启动器，实际usr/bin/bash.exe仍执行并占用管道。下一会话可新建而旧shell仍活，超时/取消重复发生时累积残留。独立专项首跑在“已timeout/退役”后未见真实close，WMI核对同一专属owner标记发现实际子Bash（原wrapper PID28584，内部PID3272）；不是凭超时文本推测。 | ✅ 当前Git布局的持久shell路径已修：解析相邻usr/bin/bash.exe并直接spawn，补子进程PATH/MSYSTEM；新专项修后8/8（0skip）。只关闭这个可重现启动器路径，不关闭T22-07任意树回收。 |
+
+- T22-17受限发布批已提交`4f11a06`。旧pshell的read10s/timeout15s先决条件不支持原注释：read还可能消费后附marker，超时文本不能说明真实命令/进程已经停止。旧fixture改为6秒Bash内建watchdog循环、1秒工具期限；不创建外部sleep后代，并在清理回归时有限自行结束。原27/27属于修正前fixture，未重跑，不将其倒填为新oracle验收。
+- 新独立test/shell-deadline使用源码原findBash/采集/取消函数和真实Git Bash，首跑在2项通过后失败：真实close超时，测试进程因被内部Bash持有管道不能退出。已核对该次专属临时目录/owner标记、进程创建时间及命令行，仅清理匹配的内部测试Bash，首跑最终exit1。没有停止普通Agent或其它工作进程。后将测试循环加6秒内建watchdog，使同类回归不会无限残留。
+- 根因修复只涉及持久shell创建：若发现bin/bash.exe旁存在usr/bin/bash.exe则直接启动后者；已是usr路径或其它布局保持原路径。直接解释器不会自动继承launcher提供的Unix工具路径，原生小探针确认直接调用时git可见而ls不可见，因此只在该child env补usr/bin、Git cmd和存在的mingw/ucrt工具目录，保留继承PATH并消除Windows Path/PATH重复键，存在安装前缀时设置未显式指定的MSYSTEM。不改全局环境、不新增目标机开发依赖。分发结构另参README链接的Git官方portable/post-install脚本；该结论主要依据本机真实进程证据。
+- 按用户当前“失败自动再测”授权，根因集中修复后**仅复跑新shell-deadline一次：8/8，exit0，0SKIP**。验证1秒工具期限早于6秒命令结束、未知结果/缓存退役、实际直属解释器close且仅kill一次、新环境无旧变量且ls/git可用、并发run零额外stdin、原命令输出独立、活动取消后close及控制清理。若找不到Bash，专项明确单列SKIP而不记通过。Node13相关四份JS语法检查通过。
+- 新npm/test-all登记；旧pipe-lifecycle夹具加载新增原路径/env函数，仅静态检查，未重复37项专项或完整A–J/UI。非持久bash/debug .sh、MCP包装器、任意命令后代、Win7 Git版本/布局、注销强杀与24/72小时仍待T22-07/03/验证门槛；本次真实close只针对未产生外部子进程的Bash内建循环。T22-33其余oracle问题保持开放。
+- 本批按授权提交`fix(T22-07,T22-33): own the persistent Bash interpreter`，未推送/打包。

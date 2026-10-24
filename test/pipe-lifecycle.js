@@ -41,6 +41,7 @@ function environment(spawn, cwd) {
     findBash: () => 'fixture-bash', child_process: { spawn, execSync: cp.execSync } };
   vm.createContext(ctx);
   vm.runInContext(cut('function executionCancelledError(', 'function parseSSEStream(') +
+    cut('function persistentBashExecutable(', 'function isSuperDangerous(') +
     cut('const MCP_CALL_TIMEOUT =', '// One lazily-created client') +
     cut('function mcpContentToText(', '// A2-19:') + cut('function createMcpStdioClient(', '// Redact secrets') +
     cut('const persistentShells =', '// Converts a glob pattern') +
