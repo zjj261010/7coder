@@ -129,7 +129,11 @@ function check(name, ok, detail) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + n
   // --- AST-06: reentry guard - a second call while a save is in flight is dropped ---
   saveBody = null; fetchCalls = [];
   let releaseSave;
-  route('/api/sessions/save', () => new Promise(r => { releaseSave = r; }));
+  let heldOnce = false;
+  route('/api/sessions/save', () => {
+    if (heldOnce) return jsonResponse({ ok: true, file: 'web-minted-1.json' });
+    heldOnce = true; return new Promise(r => { releaseSave = r; });
+  });
   hook.autoSaveSession();
   hook.autoSaveSession();
   await sleep(30);
@@ -142,7 +146,7 @@ function check(name, ok, detail) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + n
   route('/api/sessions/save', (url, opts) => { saveBody = JSON.parse(opts.body); return jsonResponse({ ok: true, file: 'web-minted-2.json' }); });
   route('/v1/chat/completions', () => sseResponse([
     'data: not-json-at-all {{{',
-    'data: {"choices":[{"delta":{"content":"PART-OK"}}]}'
+    'data: {"choices":[{"delta":{"content":"PART-OK"}}]}', 'data: [DONE]'
   ]));
   documentStub.getElementById('ta').value = 'hello';
   hook.send();
@@ -152,7 +156,7 @@ function check(name, ok, detail) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + n
   check('ast07: junk SSE line skipped, valid delta rendered', !!contentEl, 'log html=' + logHtml());
   const last = hist[hist.length - 1];
   check('ast07: assistant turn still pushed to history', last && last.role === 'assistant' && last.content === 'PART-OK', JSON.stringify(hist));
-  check('ast07: follow-up autosave after reply works (first-save body again has no file)', saveBody && !('file' in saveBody), JSON.stringify(saveBody));
+  check('ast07: latest autosave reuses the first acknowledged session file', saveBody && saveBody.file === 'web-minted-2.json' && saveBody.messages[3].status === 'ok', JSON.stringify(saveBody));
 
   // --- AST-07: business error WITHOUT 'upstream' substring reaches the user ---
   fetchCalls = [];
@@ -166,8 +170,7 @@ function check(name, ok, detail) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + n
   const errRow = findDeep(byId['log'], e => String(e._html).indexOf('Max retries reached') >= 0 && String(e.className).indexOf('err-msg') >= 0);
   const hist2 = hook.getHistory();
   check('ast07: non-upstream business error displayed to user (err bubble)', !!errRow, 'log html=' + logHtml());
-  // rollback pops only the failed user turn ('again'); earlier turns survive
-  check('ast07: failed user turn rolled back, earlier turns intact', hist2.length === 4 && !hist2.some(x => x.content === 'again') && hist2[3].content === 'PART-OK', JSON.stringify(hist2));
+  check('ast07: failed user turn and partial assistant remain with terminal status', hist2.length === 6 && hist2[4].content === 'again' && hist2[5].content === 'partial' && hist2[5].status === 'failed' && hist2[3].content === 'PART-OK', JSON.stringify(hist2));
 
   // --- A2-04: an error message carrying HTML must render as TEXT (no XSS) ---
   // The err bubble used to go through innerHTML verbatim; a hostile upstream

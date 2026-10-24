@@ -188,6 +188,7 @@ function create(opts) {
       const req = http.request({ host: '127.0.0.1', port: portNo, method: method, path: urlPath, agent: agent || undefined,
         headers: Object.assign({}, data !== null ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {}, headers || {}) },
         res => {
+          res.setEncoding('utf8'); // preserve multibyte characters across response chunks
           let out = '';
           res.on('data', d => out += d.toString());
           res.on('end', () => resolve({ status: res.statusCode, body: out }));

@@ -4,17 +4,28 @@ const assert = require('assert');
 const fs = require('fs');
 const vm = require('vm');
 const util = require('util');
+// Node13 has no browser AbortController; emulate only the event contract
+// consumed by this DOM harness, without pretending to test browser fetch.
+const UiAbortController = global.AbortController || class {
+  constructor() {
+    const listeners = [];
+    this.signal = { aborted: false, addEventListener(type, fn) { if (type === 'abort') listeners.push(fn); } };
+    this.abort = () => { if (this.signal.aborted) return; this.signal.aborted = true; listeners.splice(0).forEach(fn => fn()); };
+  }
+};
 const html = fs.readFileSync(require('path').join(__dirname, '..', 'webui.html'), 'utf8');
 const source = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1].replace(/\}\)\(\);\s*$/, `
   __HOOK({ send: send, setBusy: setBusy, load: loadSessionFile, refreshInfo: refreshInfo,
     refreshSessions: refreshSessions, autoSave: autoSaveSession, renderSessions: renderSessions,
     setHistory: function (h) { history = h; }, history: function () { return history; },
     setSessions: function (s) { sessions = s; }, session: function () { return sessFile; },
-    readJSON: readJSON, restore: restoreSession });
+    readJSON: readJSON, restore: restoreSession,
+    saveState: function () { return { busy: autoSaving, dirty: saveDirty, pending: !!pendingSave }; },
+    activities: function () { return sessionActivities; } });
 })();`);
 function harness(options) {
   options = options || {};
-  const ids = {}, docHandlers = {}, calls = [], routes = [], storage = Object.assign({}, options.storage);
+  const ids = {}, docHandlers = {}, winHandlers = {}, calls = [], routes = [], timers = new Set(), storage = Object.assign({}, options.storage);
   let clipboardText = '';
   let hook;
   const document = { activeElement: null, getElementById: id => ids[id] || null, addEventListener: (k, f) => { docHandlers[k] = f; } };
@@ -58,23 +69,24 @@ function harness(options) {
   parse(html.split('<body>')[1].split('<script>')[0], document.body);
   const media = { matches: !!options.mobile, addEventListener(k,f) { this.change = f; }, addListener(f) { this.change = f; } };
   const response = (body, status) => ({ ok: !status || status < 400, status: status || 200, json: () => Promise.resolve(body) });
-  const defaults = { '/api/info': { workspace: 'D:\\workspace\\7coder', models: ['test-model'], model: 'test-model', mode: 'default', version: 'test', usage: { prompt: 12, completion: 8, total: 20 } }, '/api/sessions': { sessions: [] }, '/api/todos': { todos: [] }, '/api/settings': { model: 'test-model', profiles: {} } };
+  const defaults = { '/api/info': { workspace: 'D:\\workspace\\7coder', models: ['test-model'], model: 'test-model', mode: 'default', version: 'test', usage: { prompt: 12, completion: 8, total: 20 } }, '/api/sessions': { sessions: [] }, '/api/todos': { todos: [] }, '/api/settings': { model: 'test-model', profiles: {} }, '/api/sessions/save': { ok: true, file: 'web-fixture.json' } };
   function fetch(url, opts) {
     calls.push({ url, opts: opts || {} });
     const route = routes.find(r => r[0] === url); if (route) return Promise.resolve(route[1](opts || {}));
-    if (url === '/v1/chat/completions') return Promise.resolve({ ok: true, body: { getReader: () => ({ read: () => Promise.resolve({ done: true }) }) } });
+    if (url === '/v1/chat/completions') return Promise.resolve({ ok: true, body: { getReader() { let sent = false; return { read() { if (sent) return Promise.resolve({ done: true }); sent = true; return Promise.resolve({ done: false, value: Buffer.from('data: [DONE]\n\n') }); } }; } } });
     return Promise.resolve(response(defaults[url] || {}));
   }
-  const sandbox = { document, window: { matchMedia: () => media }, fetch, navigator: { clipboard: { writeText: value => { clipboardText = String(value); return Promise.resolve(); } } },
+  const sandbox = { document, window: { matchMedia: () => media, addEventListener(k, fn) { winHandlers[k] = fn; } }, fetch, navigator: { clipboard: { writeText: value => { clipboardText = String(value); return Promise.resolve(); } } },
     localStorage: { getItem: k => { if (options.blockStorage) throw Error('blocked'); return storage[k] || null; }, setItem: (k,v) => { if (options.blockStorage) throw Error('blocked'); storage[k] = String(v); }, removeItem: k => { delete storage[k]; } },
-    setTimeout() {}, clearTimeout() {}, setInterval() {}, clearInterval() {}, AbortController, TextDecoder: util.TextDecoder, confirm: () => options.confirm !== false, console, __HOOK: h => { hook = h; } };
+    setTimeout(fn, ms) { const timer = { fn, ms }; timers.add(timer); return timer; }, clearTimeout(timer) { timers.delete(timer); }, setInterval() {}, clearInterval() {}, AbortController: UiAbortController, TextDecoder: util.TextDecoder, confirm: () => options.confirm !== false, console, __HOOK: h => { hook = h; } };
   vm.runInNewContext(source, sandbox, { filename: 'webui.html' });
-  return { ids, document, docHandlers, media, calls, storage, hook, response, get clipboardText() { return clipboardText; }, route: (url, fn) => routes.unshift([url,fn]) };
+  return { ids, document, docHandlers, winHandlers, timers, media, calls, storage, hook, response, get clipboardText() { return clipboardText; }, route: (url, fn) => routes.unshift([url,fn]) };
 }
 const settle = () => new Promise(resolve => setImmediate(resolve));
 let count = 0;
 function check(name, condition) { assert.ok(condition, name); console.log('PASS ' + name); count++; }
-(async () => {
+module.exports = { harness, settle };
+if (require.main === module) (async () => {
   const h = harness(); await settle();
   check('connected state comes from successful info response', h.ids.statusChip.textContent === '服务已连接');
   check('workspace label shows the concrete path and preserves it in title', h.ids.wsChip.textContent === 'D:\\workspace\\7coder' && h.ids.wsChip.title === 'D:\\workspace\\7coder');

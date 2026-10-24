@@ -1447,6 +1447,20 @@ function parseTodoState(text) {
   }
   return j;
 }
+const SESSION_MAX_BYTES = 2 * 1024 * 1024;
+function sessionMessageRecord(message) {
+  const out = { role: message.role, content: message.content };
+  if (message.turnId !== undefined) {
+    if (typeof message.turnId !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/.test(message.turnId)) throw new Error('invalid session turnId');
+    out.turnId = message.turnId;
+  }
+  if (message.status !== undefined) {
+    if (!['running', 'ok', 'failed', 'cancelled'].includes(message.status)) throw new Error('invalid session turn status');
+    out.status = message.status;
+  }
+  if (message.error !== undefined) out.error = String(message.error).slice(0, 1000);
+  return out;
+}
 function parseSessionState(text) {
   const j = parseStateJson(text);
   if (!j || !Array.isArray(j.messages) || j.messages.some(m => !m ||
@@ -5410,7 +5424,7 @@ function saveSession() {
       .filter(m => m.role === 'system' || m.role === 'user' || m.role === 'assistant')
       .map(m => (m.role === 'assistant' && m.tool_calls) ? { role: 'assistant', content: m.content || '' } : m);
     const body = JSON.stringify({ savedAt: new Date().toISOString(), messages: keep });
-    if (body.length > 2 * 1024 * 1024) { console.warn('[WARN] session too large to save (>2MB)'); return; }
+    if (Buffer.byteLength(body, 'utf8') > SESSION_MAX_BYTES) { console.warn('[WARN] session too large to save (>2 MiB UTF-8)'); return; }
     fs.mkdirSync(internalStatePath('.7coder'), { recursive: true });
     writeStateFile(sessionFilePath(), body, parseSessionState);
     // timestamped history copy for the web session browser (newest 20 kept)
@@ -5678,6 +5692,9 @@ function conversationFromClient(clientMessages) {
       continue;
     }
     let content = typeof m.content === 'string' ? m.content : (m.content === undefined || m.content === null ? '' : JSON.stringify(m.content));
+    if (m.role === 'assistant' && ['running', 'failed', 'cancelled'].includes(m.status)) {
+      content += '\n[Previous response ' + m.status + ': text may be partial; tool side effects may already exist. Check state before retrying.]';
+    }
     if (!content) continue;
     if (m.role === 'user' && firstUser) {
       content = buildTaskUserContent(content);
@@ -5724,7 +5741,7 @@ async function runServerDream(modelContext) {
 // accumulating, and a safety timer closes the socket if the client never
 // finishes. Before this, the chat route only set a flag and kept growing the
 // string until 'end', and the other POST routes had no cap at all.
-const BODY_LIMIT_DEFAULT = 1024 * 1024; // 1MB is plenty for every non-chat route
+const BODY_LIMIT_DEFAULT = 1024 * 1024; // ordinary routes; session saves use SESSION_MAX_BYTES
 function readJsonBody(req, res, limitBytes, then, options = {}) {
   let body = '';
   let over = false, ended = false, bytes = 0;
@@ -5891,7 +5908,7 @@ function startHttpServer() {
         const j = record.value;
         const msgs = (j.messages || [])
           .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-          .map(m => ({ role: m.role, content: m.content }));
+          .map(sessionMessageRecord);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ messages: msgs, activities: Array.isArray(j.activities) ? j.activities : [], savedAt: j.savedAt || "?" }));
       } catch (e) {
@@ -5935,18 +5952,19 @@ function startHttpServer() {
     });
   }
   function hSessionSave(req, res) {
-    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+    readJsonBody(req, res, SESSION_MAX_BYTES, body => {
       try {
         const parsed = JSON.parse(body);
         const msgs = parsed.messages;
         if (!Array.isArray(msgs)) throw new Error("messages must be an array");
         const clean = msgs
           .filter(m => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-          .map(m => ({ role: m.role, content: m.content }));
+          .map(sessionMessageRecord);
         const sdir = internalStatePath('.7coder/sessions');
         fs.mkdirSync(sdir, { recursive: true });
+        if (Array.isArray(parsed.activities) && parsed.activities.length > 2000) throw new Error('session activity limit exceeded (2000); nothing was overwritten');
         const activities = Array.isArray(parsed.activities) ? parsed.activities.filter(a => a && typeof a.type === 'string')
-          .slice(0, 200).map(a => ({ type: a.type, name: a.name ? String(a.name).substring(0, 80) : undefined,
+          .map(a => ({ type: a.type, turnId: a.turnId === undefined ? undefined : sessionMessageRecord({ turnId: a.turnId }).turnId, name: a.name ? String(a.name).substring(0, 80) : undefined,
             status: a.status ? String(a.status).substring(0, 24) : undefined,
             text: a.text ? String(a.text).substring(0, 12000) : undefined,
             args: a.args && typeof a.args === 'object' ? sanitizeAuditArgs(a.args) : undefined,
@@ -5955,7 +5973,11 @@ function startHttpServer() {
         const wanted = String(JSON.parse(body).file || "");
         let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
         if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && readStateRecord(internalStatePath('.7coder/sessions', wanted), parseSessionState)) name = wanted;
-        writeStateFile(internalStatePath('.7coder/sessions', name), JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities }), parseSessionState);
+        const stored = JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities });
+        if (Buffer.byteLength(stored, 'utf8') > SESSION_MAX_BYTES) {
+          res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'Session exceeds 2 MiB UTF-8; previous saved state was not overwritten.' } })); return;
+        }
+        writeStateFile(internalStatePath('.7coder/sessions', name), stored, parseSessionState);
         audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
