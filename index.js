@@ -3346,10 +3346,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
   if (name === 'web_fetch_tool') {
     try {
-      const res = await executionHttp({ method: 'get', url: args.url, timeout: 10000 }, cancelled);
+      const res = await executionHttp({ method: 'get', url: args.url, timeout: 10000, maxContentLength: 2 * 1024 * 1024 }, cancelled);
       // Fetched page content passes through verbatim - its leading text must
       // never decide the status, so success is marked explicitly.
-      return makeToolResult('ok', typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2));
+      return makeToolResult('ok', typeof res.data === 'string' ? res.data : stringifyJsonBounded(res.data, 'Fetched JSON'));
     } catch (e) {
       if (cancelled && cancelled()) throw e;
       return makeToolResult('error', `Fetch error: ${e.message}`);
@@ -3433,22 +3433,25 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       if (SEARCH_PROVIDER === 'searxng') {
         const base = SEARCH_ENDPOINT.replace(/\/+$/, '');
         if (!base) return makeToolResult('error', 'Search error (provider): SEARCH_ENDPOINT is required when SEARCH_PROVIDER=searxng (check SEARCH_* configuration)');
-        const res = await executionHttp({ method: 'get', url: `${base}/search?q=${q}&format=json`, timeout: 10000 }, cancelled);
+        const res = await executionHttp({ method: 'get', url: `${base}/search?q=${q}&format=json`, timeout: 10000, maxContentLength: 2 * 1024 * 1024 }, cancelled);
         const rows = (((res.data || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
         return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       if (SEARCH_PROVIDER === 'brave') {
-        const res = await executionHttp({ method: 'get', url: `https://api.search.brave.com/res/v1/web/search?q=${q}`, timeout: 10000, headers: SEARCH_API_KEY ? { 'X-Subscription-Token': SEARCH_API_KEY } : {} }, cancelled);
+        const res = await executionHttp({ method: 'get', url: `https://api.search.brave.com/res/v1/web/search?q=${q}`, timeout: 10000, maxContentLength: 2 * 1024 * 1024, headers: SEARCH_API_KEY ? { 'X-Subscription-Token': SEARCH_API_KEY } : {} }, cancelled);
         const rows = ((((res.data || {}).web || {}).results) || []).slice(0, 10).map(r => `${r.title} -> ${r.url}`);
         return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
       if (SEARCH_PROVIDER === 'bing') {
-        const res = await executionHttp({ method: 'get', url: `https://api.bing.microsoft.com/v7.0/search?q=${q}`, timeout: 10000, headers: SEARCH_API_KEY ? { 'Ocp-Apim-Subscription-Key': SEARCH_API_KEY } : {} }, cancelled);
+        const res = await executionHttp({ method: 'get', url: `https://api.bing.microsoft.com/v7.0/search?q=${q}`, timeout: 10000, maxContentLength: 2 * 1024 * 1024, headers: SEARCH_API_KEY ? { 'Ocp-Apim-Subscription-Key': SEARCH_API_KEY } : {} }, cancelled);
         const rows = ((((res.data || {}).webPages || {}).value) || []).slice(0, 10).map(r => `${r.name} -> ${r.url}`);
         return makeToolResult('ok', `Search results:\n${rows.join('\n')}`);
       }
-      const res = await executionHttp({ method: 'get', url: `https://lite.duckduckgo.com/lite?q=${q}`, timeout: 10000 }, cancelled);
-      const links = [...res.data.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g)].slice(0, 10).map(m => `${m[2]} -> ${m[1]}`);
+      const res = await executionHttp({ method: 'get', url: `https://lite.duckduckgo.com/lite?q=${q}`, timeout: 10000, maxContentLength: 2 * 1024 * 1024 }, cancelled);
+      const links = [];
+      for (const m of res.data.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/g)) {
+        links.push(`${m[2]} -> ${m[1]}`); if (links.length >= 10) break;
+      }
       return makeToolResult('ok', `Search results:\n${links.join('\n')}`);
     } catch (e) {
       if (cancelled && cancelled()) throw e;
@@ -3469,11 +3472,14 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         return makeToolResult('ok', `[IMAGE] Image viewed at ${url}\nVision description:\n${toolResultText(desc)}`);
       }
 
-      const res = await executionHttp({ method: 'get', url, timeout: 15000, responseType: 'text' }, cancelled);
-      let pageContent = typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+      const res = await executionHttp({ method: 'get', url, timeout: 15000, responseType: 'text', maxContentLength: 2 * 1024 * 1024 }, cancelled);
+      let pageContent = typeof res.data === 'string' ? res.data : stringifyJsonBounded(res.data, 'Page JSON');
 
-      const linkMatches = [...pageContent.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)];
-      const linksSummary = linkMatches.slice(0, 20).map(m => `${m[2].trim()} -> ${m[1]}`).join('\n');
+      const links = [];
+      for (const m of pageContent.matchAll(/<a[^>]+href="([^"]+)"[^>]*>([^<]+)<\/a>/gi)) {
+        links.push(`${m[2].trim()} -> ${m[1]}`); if (links.length >= 20) break;
+      }
+      const linksSummary = links.join('\n');
 
       let result = `[PAGE] Page fetched successfully (${action})\nURL: ${url}\n\n[LINKS] Links found (infer from names):\n${linksSummary || 'No clickable links found'}\n\n`;
 
@@ -3724,8 +3730,11 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const resReal = realPathSafe(resPath);
       // internalStatePath already verifies the .mcp root and every existing
       // prefix before this final real-path read.
-      return makeToolResult('ok', fs.readFileSync(resReal, 'utf8'));
-    } catch (e) { return makeToolResult('error', 'Resource not found (paths outside the .mcp directory are blocked)'); }
+      return makeToolResult('ok', decodeUtf8Text(readFileBytesBounded(resReal, 4 * 1024 * 1024, 'MCP resource')));
+    } catch (e) {
+      return makeToolResult('error', e.code === 'ENOENT' || /^Security:/.test(e.message)
+        ? 'Resource not found (paths outside the .mcp directory are blocked)' : 'Resource read error: ' + e.message);
+    }
   }
 
   if (name === 'mcp_tool') {
@@ -3756,14 +3765,15 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         const payload = { tool: toolName, arguments: toolArgs };
         const res = await executionHttp({ method: 'post', url: `${effectiveUrl.replace(/\/$/, '')}/invoke`, data: payload,
           headers: { 'Content-Type': 'application/json' },
-          timeout: 30000
+          timeout: 30000, maxContentLength: 4 * 1024 * 1024, maxBodyLength: 4 * 1024 * 1024
         }, cancelled);
         const responsePayload = res.data;
         const failed = responsePayload && typeof responsePayload === 'object' && (responsePayload.isError === true || (responsePayload.jsonrpc === '2.0' && responsePayload.error != null));
-        return makeToolResult(failed ? 'error' : 'ok', typeof responsePayload === 'string' ? responsePayload : (JSON.stringify(responsePayload, null, 2) || ''));
+        return makeToolResult(failed ? 'error' : 'ok', typeof responsePayload === 'string' ? responsePayload : stringifyJsonBounded(responsePayload, 'MCP JSON result'));
       } catch (e) {
         if (cancelled && cancelled()) return makeToolResult('cancelled', `[aborted: MCP cancelled; remote result unknown] ${e.message}`);
-        return makeToolResult('error', `MCP external error (${effectiveUrl}): ${e.message}`);
+        const note = /Request body larger than maxBodyLength limit/.test(e.message) ? 'request body refused before sending' : 'remote result unknown; check side effects before retrying';
+        return makeToolResult('error', `MCP external error (${effectiveUrl}): ${e.message}; ${note}`);
       }
     } else if (effectiveNpx) {
       console.log(`[MCP] Running MCP via npx: ${effectiveNpx} ${toolName}`);
@@ -3870,12 +3880,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
     const skillPath = internalStatePath('.7coder/skills', skillName + '.md');
     try {
-      const content = fs.readFileSync(skillPath, 'utf8');
+      const content = decodeUtf8Text(readFileBytesBounded(skillPath, 1024 * 1024, 'Skill file'));
       const paramsJson = (args.params && Object.keys(args.params).length)
-        ? `\n\nCaller-provided params:\n${JSON.stringify(args.params, null, 2)}`
+        ? `\n\nCaller-provided params:\n${stringifyJsonBounded(args.params, 'Skill params')}`
         : '';
       return makeToolResult('ok', `Executing skill "${skillName}". Follow these instructions:\n\n${content}${paramsJson}`);
     } catch (e) {
+      if (e.code !== 'ENOENT') return makeToolResult('error', 'Skill read error: ' + e.message);
       let available = 'none';
       try {
         available = fs.readdirSync(internalStatePath('.7coder/skills')).filter(f => f.endsWith('.md')).join(', ') || 'none';
@@ -5623,6 +5634,9 @@ function replaceTextBounded(content, oldStr, newStr, replaceAll) {
 }
 
 function stringifyNotebookBounded(notebook) {
+  return stringifyJsonBounded(notebook, 'Formatted notebook');
+}
+function stringifyJsonBounded(notebook, label = 'Formatted JSON') {
   // Parsed JSON and model JSON args have no getters/toJSON side effects. Check
   // compact bytes and indentation growth before materializing pretty output.
   const compact = JSON.stringify(notebook);
@@ -5639,7 +5653,7 @@ function stringifyNotebookBounded(notebook) {
       if (compact[i - 1] !== (ch === '}' ? '{' : '[')) { depth--; extra += 1 + depth * 2; }
     } else if (ch === ',') extra += 1 + depth * 2;
     else if (ch === ':') extra++;
-    if (base + extra > textFileByteLimit()) throw fileByteLimitError('Formatted notebook', textFileByteLimit());
+    if (base + extra > textFileByteLimit()) throw fileByteLimitError(label, textFileByteLimit());
   }
   return JSON.stringify(notebook, null, 2);
 }
