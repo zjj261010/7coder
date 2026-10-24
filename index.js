@@ -1396,6 +1396,36 @@ function managedWorkspacePath(relativePath) {
 // T22-13: product-owned state. Sibling files stay on the same volume; never
 // unlink the destination to emulate replace on Windows. No claim of directory
 // durability on power loss, and no cross-process read/modify/write lock (T22-14).
+function fileByteLimitError(label, maxBytes) {
+  return Object.assign(new Error(label + ' exceeds ' + maxBytes + '-byte limit; reduce the file before retrying (existing data retained).'), { code: 'EFILETOOLARGE' });
+}
+// Keep this helper hoisted: startup config is read before the state section runs.
+// Both the opened descriptor and the actual bytes are bounded, including growth
+// after fstat. Never use readFileSync here, even after a successful size check.
+function readFileBytesBounded(file, maxBytes, label = 'File') {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const before = fs.fstatSync(fd);
+    if (!before.isFile()) throw new Error(label + ' must be a regular file');
+    if (before.size > maxBytes) throw fileByteLimitError(label, maxBytes);
+    const chunks = [];
+    let total = 0;
+    while (true) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
+      const count = fs.readSync(fd, chunk, 0, chunk.length, total);
+      if (!count) break;
+      total += count;
+      if (total > maxBytes) throw fileByteLimitError(label, maxBytes);
+      chunks.push(chunk.slice(0, count));
+    }
+    const after = fs.fstatSync(fd), named = fs.statSync(file);
+    const same = stat => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => stat[k] === before[k]);
+    if (!same(after) || !same(named) || total !== before.size) throw new Error(label + ' changed during read; retry before using it');
+    return Buffer.concat(chunks, total);
+  } finally { fs.closeSync(fd); }
+}
+function stateFileByteLimit() { return 8 * 1024 * 1024; }
+function readStateBytes(file) { return readFileBytesBounded(file, stateFileByteLimit(), 'State file ' + file); }
 function guardStateFile(file, owner = file) {
   file = path.resolve(file); owner = path.resolve(owner);
   if (path.dirname(file) !== path.dirname(owner)) throw new Error('Security: state companion escaped its parent');
@@ -1496,7 +1526,7 @@ function parseSessionState(text) {
 function quarantineState(file, bytes, owner = file) {
   const evidence = guardStateFile(file + '.7coder-corrupt-' + crypto.createHash('sha256').update(bytes).digest('hex'), owner);
   let existing;
-  try { existing = fs.readFileSync(evidence); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { existing = readStateBytes(evidence); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (existing) {
     if (!existing.equals(bytes)) throw new Error('state corruption evidence collision: ' + evidence);
   } else replaceStateBytes(evidence, bytes, owner);
@@ -1510,7 +1540,7 @@ function sharedInstallState(file) {
 function readStateRecord(file, parse = parseStateText, readOnly = false) {
   file = guardStateFile(file);
   let bytes, invalid = false;
-  try { bytes = fs.readFileSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { bytes = readStateBytes(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (bytes !== undefined) {
     try { return { bytes, value: parse(decodeUtf8Text(bytes)) }; }
     catch (e) {
@@ -1521,7 +1551,7 @@ function readStateRecord(file, parse = parseStateText, readOnly = false) {
   }
   const previous = guardStateFile(file + '.7coder-prev', file);
   let saved;
-  try { saved = fs.readFileSync(previous); }
+  try { saved = readStateBytes(previous); }
   catch (e) {
     if (e.code !== 'ENOENT') throw e;
     if (!invalid) return null;
@@ -1540,6 +1570,7 @@ function readStateRecord(file, parse = parseStateText, readOnly = false) {
   return { bytes: saved, value };
 }
 function writeStateFile(file, text, parse = parseStateText) {
+  if (typeof text === 'string' && Buffer.byteLength(text, 'utf8') > stateFileByteLimit()) throw fileByteLimitError('Proposed state', stateFileByteLimit());
   const bytes = Buffer.from(normalizeUtf8Input(text), 'utf8');
   parse(decodeUtf8Text(bytes)); // validate proposed data before changing anything
   const current = readStateRecord(file, parse);

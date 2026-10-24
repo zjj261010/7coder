@@ -605,7 +605,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
 | ✅ | T22-14 | High／数据风险 | **建立工作区多实例协调**：2026-10-23 第九批采用同机真实工作区单Agent，Windows命名管道独占在配置读取/恢复前获取，大小写/junction同身份；OS随进程释放，无持久锁/PID删除。冲突/冻结/未知身份拒绝启动，不误杀；后台父子显式交接并确认子进程持锁。共享安装配置只读回退。专项首跑19项后夹具关闭超时，修夹具后获准仅复跑一次25/25，无跳过。实Win7/跨账户及会话/复杂进程树待验收。 | R1 H10多实例部分；T22-13；不含旧版Agent/外部写入、跨主机共享或重叠工作区；详见第九批；提交5fb6d38 |
-| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell/MCP帧/debug/task/cron见10-24；10-25工具批次64/14项、分块read20＋编码46＋格式4、MCP32pending/4MiB待写11＋旧8；再补流/非流/vision模型响应8MiB、超限不重试，新11/11＋流/上下文31/31单次。仍待全Agent总字节预算、全部MCP/cache/stderr、摘要输入准入、编辑/备份/prompt等完整物化；局部限制不等于全进程有界。 | R1 H06；C8；T22-12及各局部预算记录 |
+| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell/MCP帧/debug/task/cron见10-24；10-25工具批次64/14项、分块read20＋编码46＋格式4、MCP32pending/4MiB待写11＋旧8；流/非流/vision模型响应8MiB，新11＋流31；受管状态/previous/evidence读取与拟写入8MiB，新12＋状态59首次单次。仍待全Agent总字节预算、全部MCP/cache/stderr、摘要输入准入、编辑/prompt等完整物化；备份已有native copy，磁盘预算仍开放。局部限制不等于全进程有界。 | R1 H06；C8；T22-12及各局部预算记录 |
 | ✅ | T22-16 | High风险＋Medium确认 | **有界摘要队列与聊天准入**：10-24流/非流共用独立串行摘要队列，8项/2MiB（含活动与路由）、60秒排队/120秒或原截止时间，超载/排队过期写有界简短记录、原请求过期及shutdown不fallback；<200字符继续跳过。聊天读正文前最多8项、正文共享16MiB/每项10MiB/读取30秒，核心排队60秒，取消立即移除，仍串行权限状态。/api/info提供负载。新专项25/25、B正文/摘要15/15、C混合6并发1/1、E日志竞争1/1均Node13单次；24/72h/Win7仍由V22-08/01验收，不等于全Agent内存有界。 | R1 M01；R2 N04；AST-R1/AST-15；本日队列批记录 |
 | 🔶 | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：10-24落实受限方案，HTTP模式（含danger、子代理、workflow及启动维护）拒绝persistent=true，单次命令保留，schema/诊断明确提示；CLI主会话保留，子代理/根workflow结束finally退役自身shell、agent内workflow留到agent结束，不再让后续同深度scope继承cwd/env。新shell-scope17/17、B定向27/27、I定向24/24单次；超时oracle另经c033208修正、新真实Bash专项8/8；不等于树回收完成。**未完成**：HTTP跨请求持久会话身份/恢复/关闭协议，完整后代回收仍属T22-07；只能按persistent禁用的受限版本部署。 | R1 H05；OPT-16、GAP-2、A2-14；本日shell作用域记录 |
 | 🔶 | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：10-24已补pid/error/exit/close及退出码、仅操作未退出直属ChildProcess句柄、5秒close确认/未知结果、取消贯穿编译/观察/fixer/重启边界、3轮修复上限与递归拒绝、stdout+stderr合计8MB；失败明确error。JS用随包Node；C#每轮重编译（INC-24-02）。模板默认禁用，GUI仅被动观察，停用无目标确认的随机输入且不宣称验证UI。专项21/21、A定向20/20、B sec2 9/9。仍待进程树确认和真实Win7/GUI/C#环境验收，保持部分完成。 | R1 H11；R2疑点4；A2-09、C1/C3；本日第四批记录 |
@@ -1449,3 +1449,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新git-snapshot-retention Node13首次单次 **11/11**：真实私有Git索引/工作树两版本及untracked排除、冻结时钟唯一与顺序、批量seed的53个同归属真实refs触发最新50保留、legacy/错kind/未知/symref保全、时钟回拨、两kind独立预算、HEAD/index/原文件未变、真实第二worktree快照保全、同OID symref竞态不删分支、删除EACCES一次停止且新ref仍在、clean树不制造快照。测试Git全局/系统配置隔离；只对所属临时仓库删refs，没有在当前真实项目运行pruner。
 - 旧B git-integration＋task-checkpoint本批首次单次 **16/16**：真实提交前快照、Git状态/diff、非仓库，以及CLI/HTTP/stream三个入口的修改前tracked/staged快照和untracked保全。新npm/test-all登记；Node13语法与diff检查通过，无失败复跑。
 - 该预算只限制新格式每工作区的引用数；遗留refs与不同工作区可继续存在，Git对象库不会立即释放，更没有总字节/所有历史保留时间保证。Git/文件系统故障时quota可暂时超额并报警；同步Git进程仍有原30秒超时，不由此关闭T22-06。未跑完整A–J/UI/test-all、Win7/目标Git版本/ACL/断电、24/72h或打包。按授权提交本批、未推送；T22-26剩余存储范围保持开放。
+
+### 2026-10-25 —— T22-15受管状态采集上限与超大文件止损
+
+- Git快照保留批已提交`c55da49`。readStateRecord原先在解析/恢复前readFileSync整个主文件和previous；已有证据文件也整读，外部放入超大文件会先物化完整Buffer。现使用hoisted同步分块reader（启动.env/models在状态区初始化前已调用），打开后fstat与实际采集均限8MiB、每块最多64KiB，增长最多收max+1即拒绝，finally关闭；读取前后句柄/命名文件identity、size、mtime/ctime与实际长度不符时明确失败，不进入损坏恢复。
+- 主文件、previous或已有evidence超限均原地拒绝，保留现有字节，不把巨文件再复制为证据，也不自动用旧版覆盖超大主文件；即使有有效previous也需显式人工缩减/移走原件后重试。拟写入状态先按UTF8字节检查再编码/校验JSON；正常有界坏JSON/编码仍沿用原证据＋有效previous恢复。会话原2MiB保存预算不放宽。限制按文件而非RSS；同步内核IO/解析节点膨胀/外部同尺寸低精度改写仍不是硬期限或快照保证。
+- 新state-budget Node13首次单次 **12/12**：真实8MiB含BOM/中文/emoji边界、100MiB私有稀疏主文件/readOnly/save零data-read无新增证据且previous不动、超大previous/evidence拒绝、UTF8拟写入超限零parse/零改动、fstat后增长在max+1止步、变化检测/read EIO关闭且不误恢复、正常坏状态仍恢复；实际Agent因超大models启动exit1且不ready/原件不动，显式修复后再次启动拿锁并响应health。未触碰真实.env/models。
+- 本批首次运行旧state-store **59/59**，涵盖原IO故障/损坏恢复/3个骤停边界/HTTP设置及Web保存/下次启动；两处EACCES注入迁移到实际openSync路径，未删除原断言。两个专项均无失败复跑；npm/test-all登记、Node13语法和diff检查通过。
+- 未重跑已通过的其它专项或完整A–J/UI/test-all；未跑Win7、网络盘/ACL/真实硬盘写满、强杀注销断电、24/72h或打包。T22-13已实现的数据保全协议仍有效，不因此宣称所有状态语义损坏可检测；T22-15保持部分完成。普通编辑/prompt/截图、其它配置/caches及全局预算继续开放。按授权提交本批、未推送，随后继续完整文本编辑/提示词采集边界。

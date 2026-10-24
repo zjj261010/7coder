@@ -121,7 +121,7 @@ async function unit() {
   fs.writeFileSync(archive.file + '.7coder-prev', old);
   assert.throws(() => archiveCtx.loadTodos(), /ENOSPC/);
   check('failed evidence preservation blocks recovery rather than erasing corrupt primary', same(archive.file, '{invalid') && same(archive.file + '.7coder-prev', old));
-  const denied = fixture('unreadable'), deniedCtx = context(denied.cwd, { readFileSync(p, enc) { if (p === denied.file) throw error('EACCES'); return fs.readFileSync(p, enc); } });
+  const denied = fixture('unreadable'), deniedCtx = context(denied.cwd, { openSync(p, flags, mode) { if (p === denied.file && flags === 'r') throw error('EACCES'); return fs.openSync(p, flags, mode); } });
   fs.writeFileSync(denied.file + '.7coder-prev', older);
   assert.throws(() => deniedCtx.loadTodos(), /EACCES/);
   check('permission error is not misclassified as corruption or replaced by older data', same(denied.file, old) && evidence(denied.file).length === 0);
@@ -147,7 +147,7 @@ async function unit() {
   notesCtx.updateCompleteSummary('first'); notesCtx.updateCompleteSummary('second');
   check('worklog preserves preceding complete version and newest summary', fs.readFileSync(path.join(notes, '7CODER.md'), 'utf8').includes('second') && fs.readFileSync(path.join(notes, '7CODER.md.7coder-prev'), 'utf8').includes('first'));
   const logFile = path.join(notes, '7CODER.md'), logBefore = fs.readFileSync(logFile);
-  context(notes, { readFileSync(p, enc) { if (p === logFile) throw error('EACCES'); return fs.readFileSync(p, enc); } }).updateCompleteSummary('must-not-replace');
+  context(notes, { openSync(p, flags, mode) { if (p === logFile && flags === 'r') throw error('EACCES'); return fs.openSync(p, flags, mode); } }).updateCompleteSummary('must-not-replace');
   check('unreadable existing worklog is not replaced with an empty-based new log', same(logFile, logBefore));
   const saved = [{ role: 'system', content: 'sys' }, { role: 'user', content: 'remember 中文' }, { role: 'assistant', content: 'done', tool_calls: [{ id: 'stripped' }] }];
   notesCtx.messages = saved; notesCtx.saveSession();
