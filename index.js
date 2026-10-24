@@ -1240,7 +1240,8 @@ function isInsideDir(baseDir, targetPath) {
   const target = path.resolve(targetPath);
   const normBase = process.platform === 'win32' ? base.toLowerCase() : base;
   const normTarget = process.platform === 'win32' ? target.toLowerCase() : target;
-  return normTarget === normBase || normTarget.startsWith(normBase + path.sep);
+  const relative = path.relative(normBase, normTarget);
+  return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
 }
 
 // Resolves symlinks/junctions on the longest existing prefix of a path, so the
@@ -4433,7 +4434,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       // auto-log exemption - dream sessions and the model itself rewrite
       // these freely; they are notes, never user source code.
       try {
-        const rel = path.relative(launchDir, path.join(launchDir, sanitizePath(args.path))).toLowerCase();
+        const rel = path.relative(launchDir, path.join(launchDir, sanitizePath(args.path))).split(path.sep).join('/').toLowerCase();
         isAutoLogWrite = rel === '7coder.md' || (rel.indexOf('.7coder/memory/') === 0 && rel.endsWith('.md'));
       } catch (e) {}
     }

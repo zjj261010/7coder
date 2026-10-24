@@ -620,11 +620,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 |---|---|---|---|---|
 | 🔶 | T22-23 | Medium／确认 | **内部工具复用随包运行时**：JS调试已用process.execPath；10-24测试自动识别补Node13明确错误零启动，支持--test的16.17/18.1+分支用execFile(process.execPath,argv)不依赖PATH；保留npm脚本优先及显式命令，损坏package配置不再吞错。新test-runtime11/11（含PATH为空中文/空格脚本）、旧测试解析6/6。现代版本分支为原函数选择/argv测试，非实际Node18运行。仍待npm/Git/Bash/Python/csc/tsc/eslint按功能预检与Win7依赖验收。 | R1 M02；本日debug/测试运行时批局部证据 |
 | ⬜ | T22-24 | Medium／确认编码路径 | **PowerShell 输入输出编码闭环**：脚本用 BOM 或 EncodedCommand；输出明确编码后解码；CP936 下中文内容、路径、错误输出不乱码。保持 PS2 兼容。 | R1 M06；A2/chcp 只解决部分命令 |
-| ⬜ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：正确处理根目录尾分隔符、大小写与不同卷；保留 real-path/junction fail-closed。根目录与普通工作区的状态/文件工具均正确，外指仍被拒。 | R1 M11；OPT-14 已完成访问门，不等于所有路径边界正确 |
+| ✅ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：10-24用relative边界判断，排除父级/绝对结果，消除drive/UNC根末尾双分隔符误拒；保留Win大小写、不同卷/共享及realpath/junction门。新专项修夹具后25/25：纯路径边界＋映射到私有目录的drive/UNC根真实state/文件/备份IO及实际外指junction拒绝；无真实根/网络共享写入。Win7真实根/远程文件系统语义仍由V22-01/05实机验收。 | R1 M11；OPT-14原安全门保留；本日路径批记录 |
 | ⬜ | T22-26 | Medium／确认＋风险 | **磁盘保留与会话历史策略**：为 snapshot refs、Web会话、截图、background/BTW/TODO日志设时间/总字节策略；T22-13新增的不同损坏证据/骤停临时文件亦需保留策略，不能删活动实例文件；CLI/Web 不按文件名前缀误删对方历史；会话列表可分页/索引。保留现有审计轮转、每源5/全局200备份，不重复实现。 | R1 M14；GAP-12、OP5-5、C8；10-23第八批补充保留范围 |
 | ⬜ | T22-27 | Medium／确认 | **修 Markdown 语言属性转义**：使用 DOM 属性赋值或有限字符规则，含引号的 fenced language 不能改变 HTML 属性；普通 c++/c#、未闭合围栏仍正确。 | R1 M15；A2-04 只修错误气泡，不应反向宣布其修复无效 |
 | ✅ | T22-28 | Low／确认 | **修 git status 首行 trim**：10-24只去末尾CR/LF，保留首项XY的index空格；CRLF按行计数。旧Git集成断言由错误staged:1/modified:0改为staged:0/modified:1并检查实际前导空格。新真实隔离Git专项9/9（未暂存/已暂存/MM/未跟踪/clean/CRLF/故障）、旧Git集成4/4，Node13均单次。 | R1 L01；DS-4/P2-11原分列保留；本日Git首列记录 |
-| ⬜ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：Win7 下 `.7coder/memory/*.md` 正确匹配声明的例外；protected/deny 仍有效。 | R1 L02；GAP-9 |
+| ✅ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：10-24先将relative路径分隔符归一为/再匹配例外；原函数＋实际私有磁盘写入证实反斜杠memory在default模式可自动写，普通source仍需审批，deny/denial/protected-extra不被绕过，外指junction仍拒绝；新路径25/25、旧权限8/8。 | R1 L02；GAP-9；本日路径批记录 |
 | ⬜ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：grep 支持文件路径或明确拒绝，不能伪装无匹配；glob 按实际访问条目计预算，区分预算耗尽/无匹配。 | R1 L03；P2-3、A2-20 的已有保护保留 |
 | ⬜ | T22-31 | Low／潜在风险 | **cron ID 唯一**：固定时钟下同毫秒创建两个 job 不覆盖 Map，不丢 timer，二者可独立删除/回收。 | R1 L04；NEW-2 不因新增ID问题重开 |
 | ⬜ | T22-32 | Improvement | **补最低运行诊断**：记录当前运行/排队、最后成功/错误、关键 errno/路径/child exit；故障日志有限额。完整 runId 架构与跨会话提交统计仍留 OPT-3/DS-13 暂缓，不借此启动大拆分。 | R1 日志/长期运行章节；R2 N04；DS-13/OPT-3 |
@@ -1248,3 +1248,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新git-status-columns专项Node13 **9/9**，单次真实私有Git仓库：clean→首项未暂存→仅暂存→MM→混合未跟踪→只剩未跟踪→clean；另用原分支校验CRLF及已确认仓库中status失败。夹具清空继承GIT_*覆盖并用独立空global配置，所有commit仅作用于临时仓库。旧B git-integration **4/4**，单次真实REPL审批/工具链，包含diff、提交/快照及非仓库结果。四份相关JS Node13语法与diff检查通过。
 - 未跑完整A–J/UI/test-all、Win7或打包。该修复不处理其它Git配置/可执行文件预检、空仓库HEAD等未列场景；不改stage/commit/snapshot语义，不推送。
 - 新npm/test-all入口登记。本批按授权提交`fix(T22-28): preserve Git status index column`，继续T22-25/29路径边界与memory分隔符。
+
+### 2026-10-24 —— T22-25/29根路径包含与memory分隔符
+
+- Git首列批已提交`659fc75`。isInsideDir由手工拼接base+sep改为相对路径边界：等根或非父级/非绝对相对结果才在范围内，避免盘符/UNC共享根自带尾分隔符时重复分隔符误拒。保留Windows大小写折叠、不同卷/共享拒绝以及realPathSafe的junction/最长前缀/深度fail-closed，未扩大跨卷权限。
+- memory自动写例外先将path.relative的本机分隔符归一为/再做原匹配。deny/protected/denial仍在例外之前，普通source不自动批准，不修改权限模式或用户规则。
+- 新path-boundaries首跑11项路径判断通过，进入虚拟根状态写入时因测试沙箱漏传Buffer而ReferenceError、exit1；对照既有state-store夹具补Buffer/require后，按现有失败自动复测授权仅复跑该专项一次：**25/25，exit0**。包括drive根/相等/大小写/不同卷/前缀/父级、UNC共享根/大小写/不同共享/不同server、POSIX根及大小写；映射drive/UNC根的源码原state读写/previous、反斜杠memory自动写、普通source需审批、deny/protected-extra/denial、真实外指junction拒绝。所有IO由有边界断言的虚拟FS映射到本次私有临时目录，既未写真实盘符根也未访问真实网络共享。
+- 旧B perm-rules **8/8**，仅首跑，修夹具后没有重复；三份相关JS Node13语法与diff静态检查通过。未运行全套A–J/UI/test-all、真实驱动器根/UNC共享故障、Win7、24/72h或打包。代码修复及所列验证关闭T22-25/29，目标机/网络文件系统实机门槛继续保留。
+- 新npm/test-all入口登记。本批按授权提交`fix(T22-25,T22-29): normalize root containment and memory paths`，未推送。
