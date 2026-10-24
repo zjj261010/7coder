@@ -3118,6 +3118,7 @@ scenarios.push({
     const route = Object.freeze({ main: 'fixture' });
     const agent = vm.createContext({
       ...api.api, console: { log() {} }, agentDepth: 0, subAgentModeOverride: '', PERMISSION_MODE: 'default',
+      disposePersistentShell() {},
       systemPrompt: 'fixture', HEAVY_MODEL: 'fixture', MAX_TOOL_STEPS: 2,
       compressConversationIfNeeded: async () => {}, createModelContext: () => route,
       READ_ONLY_TOOLS: new Set(), safeExecuteTool: () => { throw Error('unexpected tool call'); }
@@ -3154,15 +3155,16 @@ scenarios.push({
     record('ToolResult-followup: ordinary model failure remains error and restores state',
       failure.status === 'error' && failure.text.includes('model failed') && reset(), '');
 
-    const runnerSource = cut('function runCommandAsync(', '// Race a running command');
+    const runnerSource = cut('function runCommandAsync(', 'async function awaitCommandCancellable(');
     const commands = vm.createContext({
       ...api.api, Buffer, process: { platform: 'win32' }, DANGER_MODE: false,
+      ENABLE_HTTP_SERVER: false,
       effectivePermissionMode: () => 'default', withUtf8Codepage: c => c,
       findBash: () => 'fixture-bash', getPersistentShell: () => commands.shell,
       shellSessionKey: () => 'fixture', runCommandAsync: spec => spec,
       awaitCommandCancellable: async () => commands.outcome
     });
-    vm.runInContext('async function run(name,args,cancelled){\n' +
+    vm.runInContext(cut('function executionCancelledError(', 'function watchExecution(') + 'async function run(name,args,cancelled){\n' +
       cut("  if (name === 'run_command') {", "  if (name === 'glob_tool') {") + '\n}', commands);
     const decoded = async error => {
       const ctx = { launchDir: 'fixture', child_process: { execFile(file, args, opts, cb) { cb(error, 'OUT', 'ERR'); return {}; } } };
@@ -3263,6 +3265,7 @@ scenarios.push({
     const rsEnd = src.indexOf('function pruneTasks()', rsStart);
     const runSub = async (depth, behavior) => {
       const ctx = { agentDepth: depth, subAgentModeOverride: '', PERMISSION_MODE: 'bypass', systemPrompt: 'SYS',
+        disposePersistentShell() {},
         makeToolResult: api.makeToolResult, console: { log() {} }, processWithTools: behavior, modelContext: undefined };
       require('vm').runInNewContext(src.slice(rsStart, rsEnd) + '\nthis.run=runSubAgent;', ctx);
       return ctx.run('b5agent', 'task', null, undefined);
@@ -3338,13 +3341,15 @@ scenarios.push({
     const bStart = src.indexOf("  if (name === 'run_command') {");
     const bEnd = src.indexOf("  if (name === 'glob_tool') {", bStart);
     const mkCtx = (over) => Object.assign({
+      ENABLE_HTTP_SERVER: false,
       DANGER_MODE: false, effectivePermissionMode: () => 'default', withUtf8Codepage: (c) => c,
       runCommandAsync: (spec) => spec, awaitCommandCancellable: async () => outcomes.shift(),
       findBash: () => 'C:\\fake-bash.exe', getPersistentShell: () => persistentShell, shellSessionKey: () => 'k',
       process: { platform: 'win32' }, Buffer: Buffer, makeToolResult: api.makeToolResult, outcomes: [], persistentShell: null
     }, over);
     const runBranch = async (ctx, name, args, cancelled) => {
-      require('vm').runInNewContext('async function run(name,args,cancelled){\n' + src.slice(bStart, bEnd) + '\n}\nthis.run=run;', ctx);
+      const checks = src.slice(src.indexOf('function executionCancelledError('), src.indexOf('function watchExecution('));
+      require('vm').runInNewContext(checks + 'async function run(name,args,cancelled){\n' + src.slice(bStart, bEnd) + '\n}\nthis.run=run;', ctx);
       return ctx.run(name, args, cancelled);
     };
     let outcomes, persistentShell, ctx;

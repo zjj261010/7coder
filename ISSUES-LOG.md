@@ -607,7 +607,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-14 | High／数据风险 | **建立工作区多实例协调**：2026-10-23 第九批采用同机真实工作区单Agent，Windows命名管道独占在配置读取/恢复前获取，大小写/junction同身份；OS随进程释放，无持久锁/PID删除。冲突/冻结/未知身份拒绝启动，不误杀；后台父子显式交接并确认子进程持锁。共享安装配置只读回退。专项首跑19项后夹具关闭超时，修夹具后获准仅复跑一次25/25，无跳过。实Win7/跨账户及会话/复杂进程树待验收。 | R1 H10多实例部分；T22-13；不含旧版Agent/外部写入、跨主机共享或重叠工作区；详见第九批；提交5fb6d38 |
 | 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell每次8MB/单活动、MCP每帧4MB、debug每周期合计8MB已做；10-24再补后台task合计8MiB触发停止、128KiB UTF8尾部、4活动/50历史，未知停止继续占名额；exec兜底8MiB/stream、错误文本限长；cron32项且ID不覆盖。task-budget18/18、B内容透传6/6、C带后台任务/bye1/1通过。仍待全Agent总字节预算、MCP待发积压/并发、摘要/HTTP准入、大文件窗口；局部限制不等于全进程有界。 | R1 H06；C8；T22-12及本日debug/后台预算批局部证据 |
 | ✅ | T22-16 | High风险＋Medium确认 | **有界摘要队列与聊天准入**：10-24流/非流共用独立串行摘要队列，8项/2MiB（含活动与路由）、60秒排队/120秒或原截止时间，超载/排队过期写有界简短记录、原请求过期及shutdown不fallback；<200字符继续跳过。聊天读正文前最多8项、正文共享16MiB/每项10MiB/读取30秒，核心排队60秒，取消立即移除，仍串行权限状态。/api/info提供负载。新专项25/25、B正文/摘要15/15、C混合6并发1/1、E日志竞争1/1均Node13单次；24/72h/Win7仍由V22-08/01验收，不等于全Agent内存有界。 | R1 M01；R2 N04；AST-R1/AST-15；本日队列批记录 |
-| ⬜ | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：shell 归属真实后端会话；新建/恢复/结束时正确释放，cwd/env 不跨对话或不同子代理串扰。身份协议未定义前可先禁用 HTTP persistent。 | R1 H05；OPT-16、GAP-2、A2-14；不要求取消请求门串行 |
+| 🔶 | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：10-24落实受限方案，HTTP模式（含danger、子代理、workflow及启动维护）拒绝persistent=true，单次命令保留，schema/诊断明确提示；CLI主会话保留，子代理/根workflow结束finally退役自身shell、agent内workflow留到agent结束，不再让后续同深度scope继承cwd/env。新shell-scope17/17、B定向27/27、I定向24/24单次；旧pshell超时oracle仍待T22-33修正。**未完成**：HTTP跨请求持久会话身份/恢复/关闭协议，完整后代回收仍属T22-07；只能按persistent禁用的受限版本部署。 | R1 H05；OPT-16、GAP-2、A2-14；本日shell作用域记录 |
 | 🔶 | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：10-24已补pid/error/exit/close及退出码、仅操作未退出直属ChildProcess句柄、5秒close确认/未知结果、取消贯穿编译/观察/fixer/重启边界、3轮修复上限与递归拒绝、stdout+stderr合计8MB；失败明确error。JS用随包Node；C#每轮重编译（INC-24-02）。模板默认禁用，GUI仅被动观察，停用无目标确认的随机输入且不宣称验证UI。专项21/21、A定向20/20、B sec2 9/9。仍待进程树确认和真实Win7/GUI/C#环境验收，保持部分完成。 | R1 H11；R2疑点4；A2-09、C1/C3；本日第四批记录 |
 | ⬜ | T22-19 | Medium／确认 | **会话保存与失败历史完整性**：保存有 dirty/最新快照补存、失败可见、容量一致；保存 failed/cancelled 回合、部分正文及已完成副作用；活动按回合保留，手动/自动恢复一致。慢保存、413/500、停止后刷新不能静默丢最新状态。 | R1 M03/M04；OPT-16、A2-12；不自动重开 OPT-6 多客户端保存设计 |
 | 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：当前 **48/53工具名**，包含本日auto_debug全部终态显式迁移。子代理取消/异常、命令stderr/exitCode收尾保留。余下mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/bickering_tool，以及computer_use输入分支显式状态、MCP external完整结果核对仍待实施；不以注册数代替分支正确性。 | R1 M05；A2-07；INC-24-01；本日第四批记录 |
@@ -665,7 +665,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | A5/A2-06/OPT-15 | 既有接线与T22-06首批模型/重试/审批修复保留；第二批已补下载/网络/视觉、MCP和持久shell活动等待及下载提交边界。dream/BTW/调试内部、同步IO、全部副作用/进程树截止仍开放；不能把A5旧✅或专项通过数理解为完整取消已验收。 |
 | OPT-13／10-20第四批 | 24/53与第七批47/53均为历史进度；截至本日debug批当前48/53，仍部分完成。子代理/命令/debug终态收尾保留；剩余5工具与computer_use遗留分支归T22-20，注册计数不代表所有返回分支均已显式结构化。 |
 | OP5-4／多模型路由 | 启动回落保留；2026-10-23 T22-11已补热切换继承、执行路由快照与子代理模型传递，原缺口由第六批证据关闭；并非重新宣称旧启动测试覆盖全部路由。 |
-| GAP-2/A2-14、A2-12/OPT-16 | /clear清shell与页面sessGen已做；HTTP身份隔离与保存最新快照未做，分别归T22-17/19。 |
+| GAP-2/A2-14、A2-12/OPT-16 | /clear清shell与页面sessGen已做；10-24 HTTP persistent先禁用，CLI子代理/workflow补scope退出清理；跨请求持久shell身份协议与保存最新快照仍归T22-17/19。 |
 | AST-R1/AST-15/NEW-2 | 非流式摘要后台化、主任务串行、cron防重叠均保留；补队列边界及进程归属，不能因此重开全并行架构。 |
 | C5/C8及历史全绿 | C5不接受“现代宿主Node13等价Win7实机”的关闭口径；C8短会话验证仍只算部分覆盖。历史通过记录保留，不作为新增问题已修证据。 |
 | P2-11/DS-4、A2-04、OP5-1 | 原分列、错误气泡转义、基线下沉修复保留；各自新增边界归T22-28/27/01，不把历史有效修复抹掉。 |
@@ -1211,3 +1211,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新startup-readiness专项Node13 **13/13**、单次首跑：原调度/门/控制函数的EROFS故障注入释放与抢占；真实隔离Agent在dream上游挂起时UI/info可读、前台抢占关闭上游并删锁；1秒截止无成功标记且下次聊天恢复；端口占用时零模型调用；显式任务优先且诊断可读、完成/失败后下一聊天；真实直属Agent强终止留下owner锁、同工作区/端口立即重启恢复并再次让出前台。Node13相关三份JS语法与diff静态检查通过。
 - 未重复已通过的辅助/REPL/dream、queue-admission或旧eaddr测试，未跑完整A–J/UI/test-all。EROFS为原调度函数注入，不等于Windows ACL实测；强终止对象只有Agent直属进程，不证明任意工具后代清理。Win7、注销关机/硬件断电、目录真实权限、24/72h及打包仍未验收，T22-22保持部分完成。未推送。
 - 本批按授权提交`fix(T22-22): expose HTTP readiness before optional dream`，继续T22-17 HTTP持久shell状态隔离。
+
+### 2026-10-24 —— T22-17受限发布与CLI shell作用域
+
+- T22-22启动批已提交`1fa868e`。没有把请求门串行误当会话隔离：HTTP缺少后端会话身份，按原清单允许的过渡方案在raw工具处明确blocked persistent=true，danger/bypass和嵌套agent/workflow也无法绕过；不静默改成单次shell。schema给出限制，/api/info能力false。HTTP单次命令、CLI/REPL持久模式保留。
+- 确认并修正CLI跨scope组合缺口：原agent-1/wf-1仅按深度复用，多个独立子代理或workflow可继承前者cwd/env。现在子代理finally退役agent-depth，根workflow finally退役wf-depth；agent内workflow不提前退役仍在使用的agent shell，最终由agent清理。main CLI shell只随clear/退出等原生命周期清理。dispose采用身份校验，失败诊断后不再复用缓存；未证明后代/句柄已全部退出。
+- 新shell-scope专项Node13 **17/17**，单次：HTTP guard先于bash发现/创建、CLI原成功契约；两个agent无前scope、失败/取消回滚、workflow成功/异常与agent内workflow归属；真实danger HTTP两次独立对话、子代理/workflow均返回blocked且未创建文件，能力可读。B pshell/tool-results-followup/tool-results-b6 **27/27**，I table-consistency/tool-result-contract **24/24**，均单次无失败复跑；真实Git Bash主会话cwd/env/单次模式路径通过。五份JS Node13语法及diff检查通过。
+- 同步修测试提取漂移：B followup原函数尾标记仍指已移除的注释，改按awaitCommandCancellable函数边界；命令分支夹具加载源码原checkExecution、明确HTTP=false；subagent/workflow夹具明确清理依赖。没有让断言跳过新分支。pshell的旧read10s/timeout15s不满足注释宣称的超时先决条件，27/27不能据此关闭该oracle缺口，紧接着单独修T22-33。
+- T22-17保持部分完成：当前只允许以HTTP persistent禁用的能力范围发布；完整后端会话协议/恢复/关闭未实现。未跑全套A–J/UI/test-all、Win7、真实多agent Bash长时间/树回收、24/72h或打包；未推送。
+- 本批按授权提交`fix(T22-17): restrict HTTP shells and retire scoped sessions`，继续T22-33超时测试oracle。

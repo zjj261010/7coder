@@ -47,6 +47,7 @@
     "test:task-budget": "node test/task-budget.js",
     "test:queue-admission": "node test/queue-admission.js",
     "test:startup-readiness": "node test/startup-readiness.js",
+    "test:shell-scope": "node test/shell-scope.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",

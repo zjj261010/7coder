@@ -764,8 +764,8 @@ You are currently running as a SUB-AGENT named "${agentName}".
     if (cancelled && cancelled()) return makeToolResult('cancelled', `Sub-agent "${agentName}" cancelled.`);
     return makeToolResult('error', `Sub-agent "${agentName}" failed: ${e.message}`);
   } finally {
-    agentDepth--;
-    subAgentModeOverride = prevOverride;
+    try { disposePersistentShell('agent-' + agentDepth); }
+    finally { agentDepth--; subAgentModeOverride = prevOverride; }
   }
 }
 
@@ -799,7 +799,7 @@ const tools = [
   { type: "function", function: { name: "edit_file", description: "Replace an exact unique substring in a file (surgical edit, much safer than rewriting whole files). old_string must occur exactly once, or set replace_all=true.", parameters: { type: "object", properties: { path: { type: "string" }, old_string: { type: "string" }, new_string: { type: "string" }, replace_all: { type: "boolean" } }, required: ["path", "old_string", "new_string"] } } },
   { type: "function", function: { name: "agent_tool", description: "Run a sub-agent: a fresh AI conversation with full tool access that works through the task and returns its final answer. Use for self-contained research or multi-step work.", parameters: { type: "object", properties: { name: { type: "string" }, task: { type: "string" } }, required: ["name", "task"] } } },
   { type: "function", function: { name: "run_command", description: "Run a shell command via the system default shell (cmd.exe on Windows, /bin/sh elsewhere).", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
-  { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell. persistent=true keeps ONE long-lived bash for the whole conversation so cwd/env survive across calls (cd, export, aliases); default is a fresh stateless shell per call.", parameters: { type: "object", properties: { command: { type: "string" }, persistent: { type: "boolean" }, timeout_ms: { type: "number", description: "persistent mode only: 1000-300000, default 120000" } }, required: ["command"] } } },
+  { type: "function", function: { name: "bash_tool", description: "Run a command in a REAL bash shell; default is a fresh stateless shell per call. persistent=true is disabled in HTTP server mode. CLI/REPL persistent shells retain cwd/env within the current conversation, sub-agent or workflow; sub-agent/workflow shells close when that scope ends.", parameters: { type: "object", properties: { command: { type: "string" }, persistent: { type: "boolean" }, timeout_ms: { type: "number", description: "persistent mode only: 1000-300000, default 120000" } }, required: ["command"] } } },
   { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (works on Win7 PowerShell 2.0+ via -EncodedCommand). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js). Budget: node_modules/.git/dist/.cache are skipped and depth/entry caps apply (a [truncated at N entries] marker ends the list when hit).", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "grep_tool", description: "Search file contents. Budget: node_modules/.git/dist/.cache, files over 2MB and binary files are skipped; caps apply (a truncation marker ends the results when hit).", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
@@ -1848,10 +1848,15 @@ function getPersistentShell(key, cancelled) {
   }
   return sh;
 }
+function disposePersistentShell(key) {
+  const shell = persistentShells.get(key);
+  if (!shell) return;
+  try { shell.dispose(); }
+  catch (error) { console.warn('[SHELL] Dispose failed for ' + key + ': ' + error.message); }
+  finally { if (persistentShells.get(key) === shell) persistentShells.delete(key); }
+}
 function disposePersistentShells() {
-  for (const k of Array.from(persistentShells.keys())) {
-    persistentShells.get(k).dispose();
-  }
+  for (const key of Array.from(persistentShells.keys())) disposePersistentShell(key);
 }
 
 // Converts a glob pattern to an anchored case-insensitive regex with standard
@@ -2994,6 +2999,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'bash_tool') {
+    if (args.persistent === true && ENABLE_HTTP_SERVER) {
+      return makeToolResult('blocked', 'BLOCKED: Persistent bash is disabled in HTTP server mode until backend conversation ownership is defined. Use persistent=false with explicit cwd/env, or use CLI/REPL.', { exitCode: null });
+    }
     let cmd = args.command || '';
     if (DANGER_MODE || effectivePermissionMode() === 'bypass') console.log(`[WARN] Running (bash): ${cmd.substring(0, 200)}`);
 
@@ -3818,7 +3826,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       }
     }
     return finishWf(null);
-    } finally { workflowStepDepth--; }
+    } finally {
+      try { if (agentDepth === 0) disposePersistentShell('wf-' + workflowStepDepth); }
+      finally { workflowStepDepth--; }
+    }
   }
 
 // ====================== TEST RUNNER PARSING (D2) ======================
@@ -5679,6 +5690,7 @@ function startHttpServer() {
     res.end(JSON.stringify({ version: APP_VERSION, model: HEAVY_MODEL, light: LIGHT_MODEL || HEAVY_MODEL, summary: SUMMARY_MODEL || LIGHT_MODEL || HEAVY_MODEL, workspace: launchDir, mode: PERMISSION_MODE, keyRequired: !!HTTP_API_KEY, models: modelList(),
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
       startup: { phase: serverStartupState.phase, error: serverStartupState.error },
+      capabilities: { persistentShell: !ENABLE_HTTP_SERVER },
       usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
   }
   function hTodos(req, res) {

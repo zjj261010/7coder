@@ -302,7 +302,7 @@ scenarios.push({
     // tool callbacks; no wall-clock race or process kill needed.
     const wfStart=src.indexOf("  if (name === 'workflow_tool') {");
     const wfEnd=src.indexOf('// ====================== TEST RUNNER PARSING',wfStart);
-    const wfCtx={tools:[{function:{name:'read_file'}}],workflowStepDepth:0,...api};
+    const wfCtx={tools:[{function:{name:'read_file'}}],workflowStepDepth:0,agentDepth:0,disposePersistentShell(){},...api};
     require('vm').runInNewContext('async function run(name,args,conversation,approvalBridge,cancelled,modelContext) {\n'+src.slice(wfStart,wfEnd)+'\n}\nthis.run=run;',wfCtx);
     let calls=0;
     wfCtx.safeExecuteTool=async()=>{calls++;return api.makeToolResult('cancelled','Interrupted');};
