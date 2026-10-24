@@ -1,176 +1,56 @@
-// Suite R: real-endpoint comprehensive tests using qwen3.7-plus.
-// Tests the full pipeline with real AI reasoning, not mocks.
-// Usage: node test/runner-r.js
-const { spawn, spawnSync, execSync } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const http = require('http');
-
-if (!process.env.REAL_TEST) { console.log('SUITE R SKIPPED: set REAL_TEST=1 plus OPENAI_API_KEY / OPENAI_ENDPOINT / REAL_MODEL to run real-endpoint tests.'); process.exit(0); }
-
-const ROOT = __dirname;
-const IDX = path.join(ROOT, '..', 'index.js');
-const EP = process.env.OPENAI_ENDPOINT || 'https://maas.qianwenaiapi.com/compatible-mode/v1';
-const KEY = process.env.OPENAI_API_KEY || '';
-const MODEL = process.env.REAL_MODEL || 'qwen3.7-plus';
-const PORT = 19500;
-const results = [];
-
-function record(name, pass, detail) {
-  results.push({ name, pass, detail: detail || '' });
-  console.log((pass ? 'PASS' : 'FAIL') + '  ' + name + (pass ? '' : '  :: ' + String(detail).substring(0, 200)));
-}
-
-function freshCwd(name) {
-  const dir = path.join(require('os').tmpdir(), '7coder-real-' + name);
-  fs.rmSync(dir, { recursive: true, force: true });
-  fs.mkdirSync(dir, { recursive: true });
-  return dir;
-}
-
-function chat(messages, timeoutMs) {
-  return new Promise(function (resolve, reject) {
-    var body = JSON.stringify({ stream: true, messages: messages });
-    var req = http.request({
-      host: '127.0.0.1', port: PORT, method: 'POST', path: '/v1/chat/completions',
-      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
-      timeout: timeoutMs || 300000
-    }, function (res) {
-      var out = ''; res.setEncoding('utf8');
-      res.on('data', function (d) { out += d; });
-      res.on('end', function () {
-        var content = '', reasoning = '', toolCalls = [];
-        for (var line of out.split('\n')) {
-          if (!line.startsWith('data:')) continue;
-          var pl = line.substring(5).trim();
-          if (!pl || pl === '[DONE]') continue;
-          try {
-            var j = JSON.parse(pl);
-            if (j.error) throw new Error(j.error.message || 'upstream');
-            var d = j.choices[0].delta;
-            if (d.reasoning) reasoning += d.reasoning;
-            if (d.content) content += d.content;
-            if (d.tool_calls) toolCalls.push(d.tool_calls);
-          } catch (e) { if (/upstream/.test(e.message)) throw e; }
-        }
-        resolve({ content: content, reasoning: reasoning, toolCalls: toolCalls, raw: out });
-      });
-    });
-    req.on('error', reject);
-    req.on('timeout', function () { req.destroy(new Error('timeout')); });
-    req.end(body);
-  });
-}
-
-var srv = null;
-var workspace = null;
-
-function startServer(cwd) {
-  workspace = cwd;
-  srv = spawn(process.execPath, [IDX, '--server'], {
-    env: Object.assign({}, process.env, {
-      OPENAI_API_KEY: KEY, OPENAI_ENDPOINT: EP, HEAVY_MODEL: MODEL, LIGHT_MODEL: MODEL,
-      MAX_RETRIES: '2', MAX_TOKENS: '4000', PERMISSION_MODE: process.env.REAL_PERM || 'auto', HTTP_PORT: String(PORT)
-    }),
-    cwd: cwd, stdio: 'ignore'
-  });
-  return new Promise(function (resolve, reject) {
-    var tries = setInterval(function () {
-      http.get({ host: '127.0.0.1', port: PORT, path: '/api/info' }, function (res) {
-        clearInterval(tries); res.resume(); resolve();
-      }).on('error', function () {});
-    }, 700);
-    setTimeout(function () { clearInterval(tries); reject(new Error('server timeout')); }, 15000);
-  });
-}
-
-(async function () {
-  var t0 = Date.now();
-
-  // ===== R1: Single-turn coding task (create + verify) =====
-  console.log('\n=== R1: Single-turn coding task ===');
-  var ws1 = freshCwd('r1');
-  await startServer(ws1);
-  var r1 = await chat([
-    { role: 'user', content: 'Create a file called fib.js that exports a function fib(n) computing the nth Fibonacci number (fib(0)=0, fib(1)=1). Use iterative approach. Then create test-fib.js that requires it and prints the results of fib(0) through fib(10), one per line, in format "fib(N) = result". Run it with node and show me the output.' }
-  ], 300000);
-  var files = fs.readdirSync(ws1).filter(function (f) { return !f.startsWith('.'); });
-  record('R1: files created', files.indexOf('fib.js') >= 0, 'files=' + JSON.stringify(files));
-  var fibContent = fs.existsSync(path.join(ws1, 'fib.js')) ? fs.readFileSync(path.join(ws1, 'fib.js'), 'utf8') : '';
-  record('R1: fib.js has iterative implementation', /for|while/.test(fibContent), '');
-  // Independent verification: run it ourselves
-  if (fs.existsSync(path.join(ws1, 'test-fib.js'))) {
-    var run = spawnSync('node', [path.join(ws1, 'test-fib.js')], { encoding: 'utf8', timeout: 15000 });
-    record('R1: generated test passes independently', run.stdout.includes('fib(10) = 55'), 'out=' + run.stdout.substring(0, 100));
-  } else {
-    record('R1: generated test passes independently', false, 'test-fib.js missing');
-  }
-  srv.kill(); await new Promise(function (r) { setTimeout(r, 500); });
-
-  // ===== R2: Multi-turn memory (3 turns) =====
-  console.log('\n=== R2: Multi-turn memory (3 turns) ===');
-  var ws2 = freshCwd('r2');
-  await startServer(ws2);
-  var hist = [];
-  hist.push({ role: 'user', content: 'My favorite color is crimson, my lucky number is 42, and my cat is named Pixel. Just acknowledge briefly.' });
-  var a1 = await chat(hist, 180000);
-  hist.push({ role: 'assistant', content: a1.content });
-  hist.push({ role: 'user', content: 'What are all three things I told you? Answer in one line.' });
-  var a2 = await chat(hist, 180000);
-  hist.push({ role: 'assistant', content: a2.content });
-  hist.push({ role: 'user', content: 'Now write a haiku that mentions all three things.' });
-  var a3 = await chat(hist, 180000);
-  var all3 = a3.content;
-  record('R2: turn 2 recalls all 3 facts', /crimson/i.test(a2.content) && /42/.test(a2.content) && /pixel/i.test(a2.content), 'a2=' + a2.content.substring(0, 100));
-  record('R2: haiku references the session context', a3.content.length > 20, 'a3=' + a3.content.substring(0, 80));
-  record('R2: reasoning chain captured', a1.reasoning.length > 0 || a2.reasoning.length > 0 || a3.reasoning.length > 0, 'reasoning lens=' + [a1.reasoning.length, a2.reasoning.length, a3.reasoning.length].join(','));
-  srv.kill(); await new Promise(function (r) { setTimeout(r, 500); });
-
-  // ===== R3: Tool chain (create file → read → edit → verify) =====
-  console.log('\n=== R3: Tool chain ===');
-  var ws3 = freshCwd('r3');
-  await startServer(ws3);
-  var r3 = await chat([
-    { role: 'user', content: 'Create a file called counter.txt with the single line "count: 0". Then read it back and tell me what it says.' }
-  ], 300000);
-  var counterContent = fs.existsSync(path.join(ws3, 'counter.txt')) ? fs.readFileSync(path.join(ws3, 'counter.txt'), 'utf8') : '';
-  record('R3: counter.txt created with correct content', counterContent.includes('count: 0'), 'content=' + JSON.stringify(counterContent));
-  srv.kill(); await new Promise(function (r) { setTimeout(r, 500); });
-
-  // ===== R4: Streaming with CJK ====
-  console.log('\n=== R4: CJK streaming ===');
-  var ws4 = freshCwd('r4');
-  await startServer(ws4);
-  var r4 = await chat([
-    { role: 'user', content: '请用中文写一个关于编程的短句，不超过20个字。' }
-  ], 180000);
-  record('R4: CJK streaming - no replacement chars', r4.content.length > 0 && !r4.content.includes('\uFFFD'), 'content=' + JSON.stringify(r4.content.substring(0, 60)));
-  record('R4: reasoning also CJK-clean', !r4.reasoning.includes('\uFFFD'), 'reasoning len=' + r4.reasoning.length);
-  srv.kill(); await new Promise(function (r) { setTimeout(r, 500); });
-
-  // ===== R5: Multi-model routing (real, different model on same gateway) =====
-  console.log('\n=== R5: Multi-model routing ===');
-  var ws5 = freshCwd('r5');
-  await startServer(ws5);
-  // Write workspace models.json to route a second model
-  fs.mkdirSync(path.join(ws5, '.7coder'), { recursive: true });
-  fs.writeFileSync(path.join(ws5, '.7coder', 'models.json'), JSON.stringify({
-    'qwen3.8-max': { endpoint: EP, apiKey: KEY }
-  }));
-  srv.kill(); await new Promise(function (r) { setTimeout(r, 300); });
-  // Restart to pick up models.json
-  await startServer(ws5);
-  var r5 = await chat([
-    { role: 'user', content: 'What is 2+3? Answer with just the number.' }
-  ], 180000);
-  record('R5: default model responds after models.json loaded', r5.content.length > 0, 'content=' + r5.content.substring(0, 60));
-  srv.kill(); await new Promise(function (r) { setTimeout(r, 500); });
-
-  // ===== Summary =====
-  var pass = results.filter(function (r) { return r.pass; }).length;
-  console.log('\n===== SUITE R SUMMARY: ' + pass + '/' + results.length + ' passed in ' + Math.round((Date.now() - t0) / 1000) + 's =====');
-  for (var f of results.filter(function (r) { return !r.pass; })) {
-    console.log('FAILED: ' + f.name + (f.detail ? ' :: ' + f.detail.substring(0, 200) : ''));
-  }
-  process.exit(pass === results.length ? 0 : 1);
-})();
+// Opt-in endpoint evaluation. RUN_ONLY selects r1..r5; absent REAL_TEST=1
+// performs no setup or network IO. Offline fixture checks are not model evals.
+const fs=require('fs'),path=require('path');
+if(process.env.REAL_TEST!=='1'){console.log('SUITE R SKIPPED: set REAL_TEST=1 to opt in to real endpoints.');process.exit(0);}
+const {create}=require('./_endpoint');
+const EP=process.env.OPENAI_ENDPOINT||'https://maas.qianwenaiapi.com/compatible-mode/v1',KEY=process.env.OPENAI_API_KEY||'',MODEL=process.env.REAL_MODEL||'qwen3.7-plus';
+const H=create({suite:'R (REAL)',endpoint:EP,key:KEY,model:MODEL}),{S}=H;
+const {record,freshCwd,spawnSync,NODE_BIN}=S;
+const scenarios=[];
+function scenario(name,fn){scenarios.push({name,fn:async()=>{try{await fn();}finally{await H.stop();}}});}
+scenario('r1',async()=>{
+  const cwd=freshCwd('r1');await H.start(cwd);
+  await H.chat([{role:'user',content:'Create fib.js exporting fib(n) computing Fibonacci (fib(0)=0, fib(1)=1) iteratively. Create test-fib.js that prints fib(0) through fib(10) as "fib(N) = result". Run the test and report the output.'}],300000);
+  const impl=path.join(cwd,'fib.js'),test=path.join(cwd,'test-fib.js');
+  record('R1: both files created',fs.existsSync(impl)&&fs.existsSync(test));
+  record('R1: iterative implementation present',fs.existsSync(impl)&&/for|while/.test(fs.readFileSync(impl,'utf8')));
+  if(fs.existsSync(test)){
+    const run=spawnSync(NODE_BIN,[test],{cwd,encoding:'utf8',timeout:15000});
+    record('R1: generated test exits zero with expected example',run.status===0&&run.stdout.includes('fib(10) = 55'),String(run.stdout).slice(0,100));
+    const independent=spawnSync(NODE_BIN,['-e','const assert=require("assert"),m=require("./fib.js");const f=m.fib||m;[0,1,1,2,3,5,8,13,21,34,55].forEach((n,i)=>assert.strictEqual(f(i),n));'],{cwd,encoding:'utf8',timeout:15000});
+    record('R1: independent fixed assertions verify every value',independent.status===0,independent.stderr);
+  }else record('R1: generated test passes independently',false,'test-fib.js missing');
+});
+scenario('r2',async()=>{
+  await H.start(freshCwd('r2'));
+  const hist=[{role:'user',content:'My favorite color is crimson, my lucky number is 42, and my cat is named Pixel. Just acknowledge briefly.'}];
+  const a1=await H.chat(hist,180000);hist.push({role:'assistant',content:a1.content},{role:'user',content:'What are all three things I told you? Answer in one line.'});
+  const a2=await H.chat(hist,180000);hist.push({role:'assistant',content:a2.content},{role:'user',content:'Now write a haiku that mentions all three things.'});
+  const a3=await H.chat(hist,180000);
+  const recalls=text=>/crimson/i.test(text)&&/42/.test(text)&&/pixel/i.test(text);
+  record('R2: turn 2 recalls all three facts',recalls(a2.content),a2.content);
+  record('R2: requested poem mentions all three facts',recalls(a3.content),a3.content);
+  S.info('R2: reasoning lengths (not a model-quality pass)',[a1.reasoning.length,a2.reasoning.length,a3.reasoning.length].join(','));
+});
+scenario('r3',async()=>{
+  const cwd=freshCwd('r3');await H.start(cwd);
+  const reply=await H.chat([{role:'user',content:'Create counter.txt with the single line "count: 0". Read it back and tell me what it says.'}],300000);
+  const file=path.join(cwd,'counter.txt');
+  record('R3: counter content correct',fs.existsSync(file)&&fs.readFileSync(file,'utf8').trim()==='count: 0');
+  record('R3: read tool actually completes with expected data',reply.tools.some(t=>t.type==='result'&&t.name==='read_file'&&t.status==='completed'&&String(t.result).includes('count: 0')));
+});
+scenario('r4',async()=>{
+  await H.start(freshCwd('r4'));const r=await H.chat([{role:'user',content:'请用中文写一个关于编程的短句，不超过20个字。'}],180000);
+  record('R4: nonempty Chinese answer without replacement chars',/[\u3400-\u9fff]/.test(r.content)&&!r.content.includes('\uFFFD'),r.content);
+  record('R4: reasoning contains no replacement chars',!r.reasoning.includes('\uFFFD'));
+});
+scenario('r5',async()=>{
+  const second=(process.env.REAL_SECOND_MODEL||'').trim();
+  if(!second||second.toLowerCase()===MODEL.toLowerCase()){S.skip('R5: second model evaluation','set REAL_SECOND_MODEL to a distinct available model');return;}
+  const cwd=freshCwd('r5');fs.mkdirSync(path.join(cwd,'.7coder'));
+  const profiles=Object.create(null);profiles[second]={endpoint:process.env.REAL_SECOND_ENDPOINT||EP,apiKey:process.env.REAL_SECOND_API_KEY===undefined?KEY:process.env.REAL_SECOND_API_KEY};
+  fs.writeFileSync(path.join(cwd,'.7coder','models.json'),JSON.stringify(profiles));await H.start(cwd);
+  const r=await H.chat([{role:'user',content:'What is 2+3? Answer with just the number.'}],180000,second);
+  record('R5: explicitly selected second model responds',r.models.length>0&&r.models.every(model=>model===second)&&r.content.trim()==='5','models='+r.models.join(',')+' reply='+r.content);
+});
+S.runAll(scenarios);
