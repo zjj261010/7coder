@@ -836,7 +836,7 @@ const tools = [
   { type: "function", function: { name: "skill_tool", description: "Invoke a user-defined skill: reads .7coder/skills/<skill_name>.md and returns its instructions to follow. Pass params for the skill to use.", parameters: { type: "object", properties: { skill_name: { type: "string" }, params: { type: "object" } }, required: ["skill_name"] } } },
   { type: "function", function: { name: "synthetic_output_tool", description: "Generate validated structured output: provide a JSON schema (object with properties/required) and a prompt; returns JSON that is parsed and type-checked (one retry on invalid).", parameters: { type: "object", properties: { schema: { type: "object" }, prompt: { type: "string" } }, required: ["schema", "prompt"] } } },
   { type: "function", function: { name: "workflow_tool", description: "Run a sequence of tool calls from a JSON plan: steps=[{tool, args, optional}]. Steps execute in order through the normal permission system; a failing step stops the workflow unless optional=true. Max 50 steps; nested workflows are rejected.", parameters: { type: "object", properties: { steps: { type: "array", items: { type: "object", properties: { tool: { type: "string" }, args: { type: "object" }, optional: { type: "boolean" } }, required: ["tool"] } }, description: { type: "string" } }, required: ["steps"] } } },
-  { type: "function", function: { name: "run_tests_tool", description: "Run a test suite and parse the output into structured pass/fail counts. Supported: jest/mocha/karma (N passing, M failing), node:test (# pass N), generic. Auto-detects (npm test / node --test) when command omitted.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_seconds: { type: "number" } } } } },
+  { type: "function", function: { name: "run_tests_tool", description: "Run tests and parse pass/fail counts (jest/mocha/karma, node:test, generic). When command is omitted, detects npm scripts.test or uses the Agent runtime's built-in test runner if supported. Node 13 requires an explicit command for loose *.test.js files; it has no --test flag.", parameters: { type: "object", properties: { command: { type: "string" }, timeout_seconds: { type: "number" } } } } },
   { type: "function", function: { name: "diagnostics_tool", description: "Run project-local static diagnostics and list problems. Uses typescript (tsc --noEmit, whole project) if installed in node_modules, else eslint (--format json). Runs project-local toolchain binaries (tsc/eslint) - these execute project-defined JavaScript, so approval is required.", parameters: { type: "object", properties: { path: { type: "string", description: "Optional target for eslint (file/folder); ignored by tsc which always checks the whole project" } } } } },
   { type: "function", function: { name: "git_status_tool", description: "Show the working tree status (branch, staged/untracked/modified files) and last commit. Safe/read-only.", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "git_diff_tool", description: "Show unstaged (or staged with staged=true) diff for a file or the whole tree. Safe/read-only.", parameters: { type: "object", properties: { path: { type: "string" }, staged: { type: "boolean" } } } } },
@@ -3880,22 +3880,36 @@ function parseTestOutput(text) {
   return { parsed, passed, failed, skipped, total, failures };
 }
 
+function supportsBuiltinTestRunner(version) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(String(version || ''));
+  if (!match) return false;
+  const major = Number(match[1]), minor = Number(match[2]);
+  return major >= 19 || (major === 18 && minor >= 1) || (major === 16 && minor >= 17);
+}
+
   if (name === 'run_tests_tool') {
     let command = String(args.command || "").trim();
+    let spec = null;
     if (!command) {
       try {
         const pkgPath = path.join(launchDir, 'package.json');
         if (fs.existsSync(pkgPath)) {
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
-          if (pkg.scripts && pkg.scripts.test) command = "npm test --silent";
+          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8").replace(/^\uFEFF/, ''));
+          const script = pkg && pkg.scripts && pkg.scripts.test;
+          if (script !== undefined && typeof script !== 'string') return makeToolResult('error', 'Tests error: package.json scripts.test must be a string.');
+          if (script && script.trim()) command = "npm test --silent";
         }
-      } catch (e) {}
+      } catch (e) { return makeToolResult('error', 'Tests error: cannot read/parse package.json: ' + e.message); }
     }
     if (!command) {
       try {
-        const hasTests = fs.readdirSync(launchDir).some(f => /\.test\.js$/i.test(f));
-        if (hasTests) command = "node --test";
-      } catch (e) {}
+        const hasTests = fs.readdirSync(launchDir).some(f => /\.test\.js$/i.test(f) && fs.statSync(path.join(launchDir, f)).isFile());
+        if (hasTests) {
+          if (!supportsBuiltinTestRunner(process.versions.node)) return makeToolResult('error', 'Tests error: Agent Node ' + process.versions.node + ' does not support --test. Supply an explicit command for this project\'s test framework; no tests were started.', { exitCode: null });
+          spec = { file: process.execPath, args: ['--test'] };
+          command = '"' + process.execPath + '" --test'; // display only; execFile receives argv
+        }
+      } catch (e) { return makeToolResult('error', 'Tests error: cannot inspect test files: ' + e.message); }
     }
     if (!command) return makeToolResult('error', "Tests error: no command given and nothing to auto-detect (no scripts.test, no *.test.js).");
     const timeoutMs = Math.max(10, Math.min(600, parseInt(args.timeout_seconds, 10) || 120)) * 1000;
@@ -3904,7 +3918,8 @@ function parseTestOutput(text) {
     let exitStatus = 0;
     // AST-09: async - a test run can hold the old sync call for up to 600s,
     // freezing the whole HTTP server for its entire duration.
-    const { r: cmdR, aborted } = await awaitCommandCancellable(runCommandAsync({ cmd: command }, { timeout: timeoutMs }), cancelled);
+    checkExecution(cancelled);
+    const { r: cmdR, aborted } = await awaitCommandCancellable(runCommandAsync(spec || { cmd: command }, { timeout: timeoutMs }), cancelled);
     if (aborted) return makeToolResult('cancelled', '[aborted: client disconnected]');
     // callback-args stdout/stderr are authoritative on failure (the error
     // object's copies are not populated consistently across exec backends)

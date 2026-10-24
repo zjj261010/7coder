@@ -49,6 +49,7 @@
     "test:startup-readiness": "node test/startup-readiness.js",
     "test:shell-scope": "node test/shell-scope.js",
     "test:shell-deadline": "node test/shell-deadline.js",
+    "test:test-runtime": "node test/test-runtime.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",

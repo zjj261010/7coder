@@ -33,6 +33,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'startup-readiness.js', args: [path.join(ROOT, 'test', 'startup-readiness.js')] },
     { name: 'shell-scope.js', args: [path.join(ROOT, 'test', 'shell-scope.js')] },
     { name: 'shell-deadline.js', args: [path.join(ROOT, 'test', 'shell-deadline.js')] },
+    { name: 'test-runtime.js', args: [path.join(ROOT, 'test', 'test-runtime.js')] },
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);

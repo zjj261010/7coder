@@ -590,7 +590,7 @@
 | ✅ | T22-04 | High／确认 | **隔离 SSE 解析异常**：10-23完成结构校验、事件回调捕获、统一单次结算、提前close/aborted处理及失败销毁；原解析函数故障矩阵与实际HTTP null帧后下一请求恢复通过。 | R2 N02；index.js parseSSEStream；test/stream-context.js；本批31/31，详见10-23第二批记录；未宣称全部网络异常组合或Win7已验收 |
 | ✅ | T22-05 | High／确认 | **保护压缩前原始上下文**：10-23完成失败/空摘要明确报错且不改原数组；按20K分段全部输入成功后才提交；当前用户要求原文保留，工具参数/已完成副作用进入摘要输入；后续段失败零提交。 | R2 N03；index.js summarizeConversation/compressConversationIfNeeded；test/stream-context.js；31/31＋旧边界2/2；真实模型摘要质量仍有单独限制 |
 | 🔶 | T22-06 | High／确认 | **贯穿取消与截止时间**：68fa239、50e0d47、64daf8c已补模型/审批、网络/下载/MCP/shell、dream/BTW；第四批补debug观察、异步编译、fixer与重启前检查，取消后不再启动下一轮。debug21/21＋A定向20/20＋B sec2 9/9，均Node13单次。**未完成**：同步IO、全部副作用截止及进程树停止；远端/后代结果仍可能未知，继续与T22-07联动，不关闭整项。 | R1 H03；R2 C02；OPT-15、A5、A2-06；本日第四批记录 |
-| 🔶 | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：10-24首批补task/cron直属close观察与5秒停止期限；cron删除失败禁用但保留句柄，task超时为stop-unknown、迟到close纠正，/bye并行等待并诊断；保留异步有界taskkill树停尝试和cron防重叠。专项19/19＋Windows树夹具6/6＋B定向13/13。**未完成**：原生进程树所有权、taskkill PID复用竞态、所有命令/MCP/shell/debug统一回收、强杀/注销及one-shot语义；直属close不证明任意后代已停。 | R1 H04、M08；A10、NEW-2；与 T22-06 联动；本日进程生命周期首批记录 |
+| 🔶 | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：10-24首批补task/cron直属close观察与5秒停止期限；cron删除失败禁用但保留句柄，task超时为stop-unknown、迟到close纠正，/bye并行等待并诊断；保留异步有界taskkill树停尝试和cron防重叠；c033208再修Git持久Bash启动器残留，直接持有实际解释器并验证close。专项19/19＋Windows树夹具6/6＋B定向13/13。**未完成**：原生进程树所有权、taskkill PID复用竞态、所有命令/MCP/shell/debug统一回收、强杀/注销及one-shot语义；直属close不证明任意后代已停。 | R1 H04、M08；A10、NEW-2；与 T22-06 联动；本日进程生命周期首批记录 |
 | ✅ | T22-08 | High／确认＋风险 | **串行化交互审批并修 REPL 等待**：2026-10-23 第三批落地单一 CLI 问题队列，EOF/close 结算全部问题、取消结算对应问题；审批和询问用户共用输入分派。任务在首个 await 前占位并取走草稿，BTW 按草稿排队，后续输入进入下一草稿，clear 后旧回调不污染新草稿。Node13 新回归20/20＋既有btw-eof 1/1，均单次；真实Win7终端待验收，HTTP活动取消仍属T22-06。 | R2 N01；R1 M10；D6；提交5149903 |
 | ✅ | T22-09 | High／确认 | **下载替换不先删原文件**：2026-10-23 第四批移除目标 unlink；独占打开唯一临时文件，等 close＋fsync，严格完整旧版备份发布后单次 rename 覆盖，失败不删目标；复用有保留上限的 /undo 恢复。Node13故障专项获准复跑41/41，既有下载6/6；提交边界骤停及新进程恢复通过，实Win7/占用/断电仍待验收。 | R1 H07；AST-05；提交7ce82f9 |
 | ✅ | T22-10 | High／确认错误路径 | **文件编辑编码止损**：2026-10-23 第五批对读/提示词文件/写/追加/编辑/notebook实施UTF-8可逆检查，拒绝不支持的字节与NUL，不猜测GBK；保留BOM及单一换行风格。现存文件写入统一完整严格备份，失败阻断；恢复时间戳顺序保护。Node13专项46/46、既有读取/保留6/6，均单次。普通文本写入仍可能部分失败，需undo恢复；实Win7/字节编码歧义见第五批边界。 | R1 H08；A2 的 chcp 修复不覆盖文件编码；提交f2e9409 |
@@ -607,7 +607,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-14 | High／数据风险 | **建立工作区多实例协调**：2026-10-23 第九批采用同机真实工作区单Agent，Windows命名管道独占在配置读取/恢复前获取，大小写/junction同身份；OS随进程释放，无持久锁/PID删除。冲突/冻结/未知身份拒绝启动，不误杀；后台父子显式交接并确认子进程持锁。共享安装配置只读回退。专项首跑19项后夹具关闭超时，修夹具后获准仅复跑一次25/25，无跳过。实Win7/跨账户及会话/复杂进程树待验收。 | R1 H10多实例部分；T22-13；不含旧版Agent/外部写入、跨主机共享或重叠工作区；详见第九批；提交5fb6d38 |
 | 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell每次8MB/单活动、MCP每帧4MB、debug每周期合计8MB已做；10-24再补后台task合计8MiB触发停止、128KiB UTF8尾部、4活动/50历史，未知停止继续占名额；exec兜底8MiB/stream、错误文本限长；cron32项且ID不覆盖。task-budget18/18、B内容透传6/6、C带后台任务/bye1/1通过。仍待全Agent总字节预算、MCP待发积压/并发、摘要/HTTP准入、大文件窗口；局部限制不等于全进程有界。 | R1 H06；C8；T22-12及本日debug/后台预算批局部证据 |
 | ✅ | T22-16 | High风险＋Medium确认 | **有界摘要队列与聊天准入**：10-24流/非流共用独立串行摘要队列，8项/2MiB（含活动与路由）、60秒排队/120秒或原截止时间，超载/排队过期写有界简短记录、原请求过期及shutdown不fallback；<200字符继续跳过。聊天读正文前最多8项、正文共享16MiB/每项10MiB/读取30秒，核心排队60秒，取消立即移除，仍串行权限状态。/api/info提供负载。新专项25/25、B正文/摘要15/15、C混合6并发1/1、E日志竞争1/1均Node13单次；24/72h/Win7仍由V22-08/01验收，不等于全Agent内存有界。 | R1 M01；R2 N04；AST-R1/AST-15；本日队列批记录 |
-| 🔶 | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：10-24落实受限方案，HTTP模式（含danger、子代理、workflow及启动维护）拒绝persistent=true，单次命令保留，schema/诊断明确提示；CLI主会话保留，子代理/根workflow结束finally退役自身shell、agent内workflow留到agent结束，不再让后续同深度scope继承cwd/env。新shell-scope17/17、B定向27/27、I定向24/24单次；旧pshell超时oracle仍待T22-33修正。**未完成**：HTTP跨请求持久会话身份/恢复/关闭协议，完整后代回收仍属T22-07；只能按persistent禁用的受限版本部署。 | R1 H05；OPT-16、GAP-2、A2-14；本日shell作用域记录 |
+| 🔶 | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：10-24落实受限方案，HTTP模式（含danger、子代理、workflow及启动维护）拒绝persistent=true，单次命令保留，schema/诊断明确提示；CLI主会话保留，子代理/根workflow结束finally退役自身shell、agent内workflow留到agent结束，不再让后续同深度scope继承cwd/env。新shell-scope17/17、B定向27/27、I定向24/24单次；超时oracle另经c033208修正、新真实Bash专项8/8；不等于树回收完成。**未完成**：HTTP跨请求持久会话身份/恢复/关闭协议，完整后代回收仍属T22-07；只能按persistent禁用的受限版本部署。 | R1 H05；OPT-16、GAP-2、A2-14；本日shell作用域记录 |
 | 🔶 | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：10-24已补pid/error/exit/close及退出码、仅操作未退出直属ChildProcess句柄、5秒close确认/未知结果、取消贯穿编译/观察/fixer/重启边界、3轮修复上限与递归拒绝、stdout+stderr合计8MB；失败明确error。JS用随包Node；C#每轮重编译（INC-24-02）。模板默认禁用，GUI仅被动观察，停用无目标确认的随机输入且不宣称验证UI。专项21/21、A定向20/20、B sec2 9/9。仍待进程树确认和真实Win7/GUI/C#环境验收，保持部分完成。 | R1 H11；R2疑点4；A2-09、C1/C3；本日第四批记录 |
 | ⬜ | T22-19 | Medium／确认 | **会话保存与失败历史完整性**：保存有 dirty/最新快照补存、失败可见、容量一致；保存 failed/cancelled 回合、部分正文及已完成副作用；活动按回合保留，手动/自动恢复一致。慢保存、413/500、停止后刷新不能静默丢最新状态。 | R1 M03/M04；OPT-16、A2-12；不自动重开 OPT-6 多客户端保存设计 |
 | 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：当前 **48/53工具名**，包含本日auto_debug全部终态显式迁移。子代理取消/异常、命令stderr/exitCode收尾保留。余下mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/bickering_tool，以及computer_use输入分支显式状态、MCP external完整结果核对仍待实施；不以注册数代替分支正确性。 | R1 M05；A2-07；INC-24-01；本日第四批记录 |
@@ -618,7 +618,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
-| 🔶 | T22-23 | Medium／确认 | **内部工具复用随包运行时**：10-24已修JS调试为process.execPath，PATH清空的真实中文/空格路径专项通过。仍待自动测试识别Node13而不默认node --test，以及npm/Git/Bash/Python/csc/tsc/eslint按功能预检；C#编译器/真实目标机依赖未验收。 | R1 M02；本日debug批仅完成JS调试子范围 |
+| 🔶 | T22-23 | Medium／确认 | **内部工具复用随包运行时**：JS调试已用process.execPath；10-24测试自动识别补Node13明确错误零启动，支持--test的16.17/18.1+分支用execFile(process.execPath,argv)不依赖PATH；保留npm脚本优先及显式命令，损坏package配置不再吞错。新test-runtime11/11（含PATH为空中文/空格脚本）、旧测试解析6/6。现代版本分支为原函数选择/argv测试，非实际Node18运行。仍待npm/Git/Bash/Python/csc/tsc/eslint按功能预检与Win7依赖验收。 | R1 M02；本日debug/测试运行时批局部证据 |
 | ⬜ | T22-24 | Medium／确认编码路径 | **PowerShell 输入输出编码闭环**：脚本用 BOM 或 EncodedCommand；输出明确编码后解码；CP936 下中文内容、路径、错误输出不乱码。保持 PS2 兼容。 | R1 M06；A2/chcp 只解决部分命令 |
 | ⬜ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：正确处理根目录尾分隔符、大小写与不同卷；保留 real-path/junction fail-closed。根目录与普通工作区的状态/文件工具均正确，外指仍被拒。 | R1 M11；OPT-14 已完成访问门，不等于所有路径边界正确 |
 | ⬜ | T22-26 | Medium／确认＋风险 | **磁盘保留与会话历史策略**：为 snapshot refs、Web会话、截图、background/BTW/TODO日志设时间/总字节策略；T22-13新增的不同损坏证据/骤停临时文件亦需保留策略，不能删活动实例文件；CLI/Web 不按文件名前缀误删对方历史；会话列表可分页/索引。保留现有审计轮转、每源5/全局200备份，不重复实现。 | R1 M14；GAP-12、OP5-5、C8；10-23第八批补充保留范围 |
@@ -1233,3 +1233,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 按用户当前“失败自动再测”授权，根因集中修复后**仅复跑新shell-deadline一次：8/8，exit0，0SKIP**。验证1秒工具期限早于6秒命令结束、未知结果/缓存退役、实际直属解释器close且仅kill一次、新环境无旧变量且ls/git可用、并发run零额外stdin、原命令输出独立、活动取消后close及控制清理。若找不到Bash，专项明确单列SKIP而不记通过。Node13相关四份JS语法检查通过。
 - 新npm/test-all登记；旧pipe-lifecycle夹具加载新增原路径/env函数，仅静态检查，未重复37项专项或完整A–J/UI。非持久bash/debug .sh、MCP包装器、任意命令后代、Win7 Git版本/布局、注销强杀与24/72小时仍待T22-07/03/验证门槛；本次真实close只针对未产生外部子进程的Bash内建循环。T22-33其余oracle问题保持开放。
 - 本批按授权提交`fix(T22-07,T22-33): own the persistent Bash interpreter`，未推送/打包。
+
+### 2026-10-24 —— T22-23测试自动识别复用当前运行时
+
+- 持久Bash真实超时批已提交`c033208`。本批修复Node13遇到根目录*.test.js就自动执行PATH上的node --test的确认缺陷：按Node官方文档的16.17/18.1引入边界选择；Node13（及不支持的17/18.0等）给出明确framework/显式命令说明且零启动。支持版本使用execFile当前process.execPath与argv，显示字符串不交给shell执行。
+- package scripts.test优先级保留（仍需可用npm，未改npm lifecycle）；支持UTF8 BOM，错误类型/损坏/不可读package.json明确error而不偷偷落入其它自动路径；同名目录不当作测试文件。显式command保持原样且可覆盖损坏的自动配置；执行前复核取消。
+- Node13单次：新test-runtime **11/11**，包括版本边界选择/不可用零进程、带空格/中文/%/!虚拟可执行路径仍走argv、BOM/脚本优先/无效类型/损坏配置/目录、真实Node13在PATH完全清空时执行中文空格路径脚本并解析1 passing、取消前零新增子进程；B tests-runner **6/6**，原npm脚本及四类输出契约保留。三份相关JS语法与diff检查通过。现代Node分支只验证原函数选项与argv，没有谎称实际运行Node18/16；没有重复以前的debug及B/其它专项。
+- T22-23继续部分完成：可选npm（含自身Node版本需求）/Git/Python/csc及项目tsc/eslint仍需功能预检；随包Node13不包含这些开发工具。未跑全套A–J/UI/test-all、Win7、24/72h或打包，未推送。
+- 同步T22-07/T22-17实时行，纳入c033208解释器/真实close和超时oracle修正，历史原记录保持。本批按授权提交`fix(T22-23): detect tests against the bundled Node runtime`，继续T22-28 Git状态首列边界。
