@@ -7,6 +7,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { pairingValid } = require('./_protocol');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'J', wsPrefix: 'w-j-' });
@@ -22,13 +23,6 @@ function assembleSSE(body) {
     try { const c = JSON.parse(payload); if (c.choices && c.choices[0].delta && c.choices[0].delta.content) out += c.choices[0].delta.content; } catch (e) {}
   }
   return out;
-}
-function pairingValid(messages) {
-  const roles = messages.map(x => x.role);
-  for (let i = 0; i < roles.length; i++) {
-    if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) return false;
-  }
-  return true;
 }
 
 const scenarios = [];
@@ -108,7 +102,7 @@ scenarios.push({
       port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', ENABLE_RALPH_MODE: 'true', RALPH_ITERATIONS: '3', CONTEXT_CHARS: '2500' }, cwd, timeoutMs: 60000
     });
     const log = readLog(m.log);
-    let pairing = true;
+    let pairing = log.length > 0;
     for (const req of log) if (!pairingValid(req.messages || [])) pairing = false;
     record('ralph-compress: loop completes to R3', r.out.includes('R3 done') && r.out.includes('Completion promise fulfilled'), r.out.substring(0, 150));
     record('ralph-compress: compression fired during the loop', log.some(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]'))), '');

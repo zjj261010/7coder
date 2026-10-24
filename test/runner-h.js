@@ -6,6 +6,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { pairingValid } = require('./_protocol');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'H', wsPrefix: 'w-h-' });
@@ -72,13 +73,7 @@ scenarios.push({
     });
     const log = readLog(m.log);
     const compressed = log.some(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
-    let pairing = true;
-    for (const req of log) {
-      const roles = (req.messages || []).map(x => x.role);
-      for (let i = 0; i < roles.length; i++) {
-        if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) pairing = false;
-      }
-    }
+    const pairing = log.length > 0 && log.every(req => pairingValid(req.messages));
     const restored = fs.readFileSync(path.join(cwd, 'v.txt'), 'utf8');
     record('combo: compression engaged in same session as backups', compressed, '');
     record('combo: pairing valid under compression+tools', pairing, '');

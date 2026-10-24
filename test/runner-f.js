@@ -6,6 +6,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { pairingValid } = require('./_protocol');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'F', wsPrefix: 'w-f-' });
@@ -167,13 +168,7 @@ scenarios.push({
     fs.writeFileSync(path.join(cwd, 'big1.txt'), big);
     const r = await runCli({ port: m.port, args: ['--prompt', 'dig'], env: { PERMISSION_MODE: 'bypass', MAX_TOOL_RESULT_CHARS: '3000', CONTEXT_CHARS: '6000' }, cwd, timeoutMs: 60000 });
     const log = readLog(m.log);
-    let pairing = true;
-    for (const req of log) {
-      const roles = (req.messages || []).map(x => x.role);
-      for (let i = 0; i < roles.length; i++) {
-        if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) pairing = false;
-      }
-    }
+    const pairing = log.length > 0 && log.every(req => pairingValid(req.messages));
     const compReqs = log.filter(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
     record('subagent-long: sub-agent completes and returns its answer to main', tr(log, 's0') && tr(log, 's0').c.startsWith('Sub-agent'), tr(log, 's0') ? tr(log, 's0').c.substring(0, 60) : 'no result');
     record('subagent-long: compression fires INSIDE the sub-agent (A4 fixed)', compReqs.length >= 1 && compReqs.some(x => (x.messages || []).length >= 4), 'comp reqs=' + compReqs.length);

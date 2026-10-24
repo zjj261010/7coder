@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { pairingValid } = require('./_protocol');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: '', wsPrefix: 'w-', cliBaseEnv: { MAX_RETRIES: '1' } });
@@ -283,13 +284,7 @@ scenarios.push({
     });
     log = readLog(m.log);
     const compressed = log.filter(r => (r.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
-    let pairingOk = true;
-    if (compressed.length) {
-      const roles = compressed[0].messages.map(x => x.role);
-      for (let i = 0; i < roles.length; i++) {
-        if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) pairingOk = false;
-      }
-    }
+    const pairingOk = compressed.length > 0 && log.every(req => pairingValid(req.messages));
     record('ctx: compression triggered', compressed.length > 0, '');
     // The newest assistant turn may legitimately survive at the boundary; the
     // OLDEST user turn must be summarized away.

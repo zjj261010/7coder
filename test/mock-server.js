@@ -4,7 +4,11 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { requestError } = require('./_protocol');
 const script = JSON.parse(fs.readFileSync(process.env.MOCK_SCRIPT, 'utf8'));
+// Opt in per fixture while historical positional scripts are migrated.
+// A strict step may be {expect:{model,tools,lastUserIncludes,toolIds,toolResults},reply:...}.
+const strict = process.env.MOCK_STRICT === '1';
 const PORT = parseInt(process.env.MOCK_PORT, 10) || 17600;
 let i = 0;
 const logPath = path.join(__dirname, 'mock-log-' + PORT + '.jsonl');
@@ -19,14 +23,30 @@ http.createServer((req, res) => {
   req.on('data', c => body += c);
   req.on('end', () => {
     fs.appendFileSync(logPath, body + '\n');
+    const reject = (status, message) => {
+      res.writeHead(status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: { message: 'MOCK_PROTOCOL step ' + i + ': ' + message } }));
+    };
+    let request;
+    try { request = JSON.parse(body); } catch (e) { reject(400, 'invalid JSON'); return; }
+    if (!script.length || (strict && i >= script.length)) { reject(409, 'script exhausted'); return; }
     // AST-14: bare-string steps ('WF-DONE') are normalized to assistant objects,
     // otherwise step.content/tool_calls are undefined -> empty deltas -> client
     // sees "empty streamed response" even though a reply was scripted.
-    const raw = script[Math.min(i, script.length - 1)];
+    const entry = script[Math.min(i, script.length - 1)];
+    const wrapped = entry && typeof entry === 'object' && Object.prototype.hasOwnProperty.call(entry, 'reply');
+    const raw = wrapped ? entry.reply : entry;
     const step = (typeof raw === 'string') ? { role: 'assistant', content: raw } : raw;
+    if (strict) {
+      const error = requestError(request, wrapped ? entry.expect : null);
+      if (error) { reject(400, error); return; }
+      if (step && step.tool_calls && (!Array.isArray(request.tools) || step.tool_calls.some(tc => !request.tools.some(t => t.function && t.function.name === tc.function.name)))) {
+        reject(409, 'script tried to call an unavailable tool'); return;
+      }
+    }
     i++;
     const id = 'x' + i;
-    if (body.indexOf('"stream":true') >= 0) {
+    if (request.stream === true) {
       res.writeHead(200, { 'Content-Type': 'text/event-stream' });
       // GAP-8: usage rides on the finish_reason:'stop' chunk (OpenAI style).
       // Extra top-level field - the old client parsers only read choices[].delta.

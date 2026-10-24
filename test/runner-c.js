@@ -5,6 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { pairingValid } = require('./_protocol');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'C', wsPrefix: 'w-c-' });
@@ -20,15 +21,6 @@ function assembleSSE(body) {
     try { const c = JSON.parse(payload); if (c.choices && c.choices[0].delta && c.choices[0].delta.content) out += c.choices[0].delta.content; } catch (e) {}
   }
   return out;
-}
-function pairingValid(messages) {
-  const roles = messages.map(x => x.role);
-  for (let i = 0; i < roles.length; i++) {
-    // a tool message must follow the assistant that called it, or another
-    // tool result of the same assistant (multi-tool responses)
-    if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) return false;
-  }
-  return true;
 }
 
 const scenarios = [];
@@ -360,7 +352,7 @@ scenarios.push({
     const log = readLog(m.log);
     const mains = log.filter(x => x.stream === true);
     const compressions = log.filter(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
-    let allPairing = true;
+    let allPairing = log.length > 0;
     for (const req of log) if (!pairingValid(req.messages || [])) allPairing = false;
     const lastMain = mains[mains.length - 1];
     const lastSize = JSON.stringify(lastMain ? lastMain.messages : []).length;

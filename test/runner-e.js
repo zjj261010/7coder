@@ -6,19 +6,13 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const { pairingValid } = require('./_protocol');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'E', wsPrefix: 'w-e-' });
 const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18150;
 function startMock(scriptObj, customFile, extraEnv) { port += 1; return startProcessAt(port, null, scriptObj, extraEnv, customFile); }
-function pairingValid(messages) {
-  const roles = messages.map(x => x.role);
-  for (let i = 0; i < roles.length; i++) {
-    if (roles[i] === 'tool' && (i === 0 || (roles[i - 1] !== 'assistant' && roles[i - 1] !== 'tool'))) return false;
-  }
-  return true;
-}
 
 // ====================== SCENARIOS ======================
 const scenarios = [];
@@ -109,7 +103,7 @@ scenarios.push({
     const log = readLog(m.log);
     const all = toolResults(log);
     const allStrings = all.every(t => typeof t.c === 'string');
-    let pairing = true;
+    let pairing = log.length > 0;
     for (const req of log) if (!pairingValid(req.messages || [])) pairing = false;
     const results60 = ['fz0', 'fz59'].every(id => all.some(t => t.id === id));
     record('fuzz: process survives 60 mutated tool calls', r.out.includes('FUZZ-SURVIVED') && r.code === 0, r.out.substring(0, 120));
