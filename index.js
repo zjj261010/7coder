@@ -250,7 +250,15 @@ const ENABLE_HTTP_SERVER = process.env.ENABLE_HTTP_SERVER === 'true' || serverMo
 const HTTP_PORT = parseInt(process.env.HTTP_PORT, 10) || 7103;
 const HTTP_BIND = process.env.HTTP_BIND || '127.0.0.1';
 const HTTP_API_KEY = process.env.HTTP_API_KEY || null;
-const MAX_TOOL_STEPS = parseInt(process.env.MAX_TOOL_STEPS, 10) || 30;
+// Zero deliberately requests a final answer without entering a tool round.
+// Reject partial/negative/non-integer values instead of silently using them.
+const rawMaxToolSteps = (process.env.MAX_TOOL_STEPS || '').trim();
+const parsedMaxToolSteps = Number(rawMaxToolSteps);
+const validMaxToolSteps = /^\d+$/.test(rawMaxToolSteps) && Number.isSafeInteger(parsedMaxToolSteps);
+const MAX_TOOL_STEPS = validMaxToolSteps ? parsedMaxToolSteps : 30;
+if (rawMaxToolSteps && !validMaxToolSteps) {
+  console.warn('[WARN] Invalid MAX_TOOL_STEPS; expected a non-negative safe integer. Using 30.');
+}
 // Guard against nonsense values: a negative cap would reduce every tool result
 // to just the truncation marker.
 const MAX_TOOL_RESULT_CHARS = Math.max(1000, parseInt(process.env.MAX_TOOL_RESULT_CHARS, 10) || 30000);

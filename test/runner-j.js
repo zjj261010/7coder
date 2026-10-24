@@ -170,12 +170,13 @@ scenarios.push({
   fn: async () => {
     const cwd = freshCwd('j6');
     const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'z1', type: 'function', function: { name: 'read_file', arguments: '{"path":"x.txt"}' } }] },
       { role: 'assistant', content: 'ZERO-STEPS-DONE' }
     ]);
     await new Promise(r => setTimeout(r, 600));
     const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass', MAX_TOOL_STEPS: '0' }, cwd });
-    record('steps-zero: MAX_TOOL_STEPS=0 degrades to tool-free answer, no crash', r.code === 0 && (r.out.includes('ZERO-STEPS-DONE') || r.out.includes('step limit')), r.out.substring(0, 120));
+    record('steps-zero: MAX_TOOL_STEPS=0 returns the final answer cleanly', r.code === 0 && r.out.includes('ZERO-STEPS-DONE'), r.out.substring(0, 120));
+    const log = readLog(m.log), audit = readLog(path.join(cwd, '.7coder', 'audit.jsonl'));
+    record('steps-zero: exactly one tool-free request and no tool dispatch', log.length === 1 && !log[0].tools && log[0].messages.some(x => String(x.content).includes('Tool step limit (0)')) && audit.every(x => x.type !== 'tool'), 'requests=' + log.length);
     stopMock(m);
   }
 });
