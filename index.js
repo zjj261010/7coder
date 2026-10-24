@@ -2564,7 +2564,7 @@ Rules (strict, no exceptions):
 async function describeWithVision(imageUrl, modelContext, cancelled) {
   checkExecution(cancelled);
   if (!VISION_MODEL) {
-    return `[IMAGE] Image at ${imageUrl} - (VISION_MODEL not set in .env - add e.g. gpt-4o to enable real vision)`;
+    return makeToolResult('error', `[IMAGE] Image at ${imageUrl} - (VISION_MODEL not set in .env - configure it to enable vision)`);
   }
   try {
     const mcfg = (modelContext && modelContext.routes[String(VISION_MODEL).toLowerCase()]) || resolveModelConfig(VISION_MODEL);
@@ -2584,10 +2584,12 @@ async function describeWithVision(imageUrl, modelContext, cancelled) {
       headers: authHeadersFor(mcfg.apiKey),
       timeout: 30000
     }, cancelled);
-    return response.data.choices[0].message.content.trim();
+    const content = response.data && response.data.choices && response.data.choices[0] && response.data.choices[0].message && response.data.choices[0].message.content;
+    if (typeof content !== 'string' || !content.trim()) throw new Error('Vision response has no text content');
+    return makeToolResult('ok', content.trim());
   } catch (e) {
     if (cancelled && cancelled()) throw e;
-    return `Vision error: ${e.message}`;
+    return makeToolResult('error', `Vision error: ${e.message}`);
   }
 }
 
@@ -3364,7 +3366,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const isImage = url.match(/\.(png|jpg|jpeg|gif|webp|svg|bmp)$/i);
       if (isImage) {
         const desc = await describeWithVision(url, modelContext, cancelled);
-        return `[IMAGE] Image viewed at ${url}\nVision description:\n${desc}`;
+        if (toolResultStatus(desc) !== 'ok') return desc;
+        return makeToolResult('ok', `[IMAGE] Image viewed at ${url}\nVision description:\n${toolResultText(desc)}`);
       }
 
       const res = await executionHttp({ method: 'get', url, timeout: 15000, responseType: 'text' }, cancelled);
@@ -3386,10 +3389,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       } else if (action === 'click') {
         result += `[LINKS] Click simulated - navigated to the provided URL. Use the extracted links above for next steps.`;
       }
-      return result;
+      return makeToolResult('ok', result);
     } catch (e) {
-      if (cancelled && cancelled()) throw e;
-      return `[WEB] Browser error for ${url}: ${e.message}`;
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: browser operation cancelled]');
+      return makeToolResult('error', `[WEB] Browser error for ${url}: ${e.message}`);
     }
   }
 
@@ -3635,13 +3638,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const sv = server.trim();
       if (!mcpServers[sv]) {
         const names = Object.keys(mcpServers);
-        return `MCP error: unknown server "${sv}". Configured: ${names.length ? names.join(', ') : '(none - add one to .7coder/mcp.json)'}.`;
+        return makeToolResult('error', `MCP error: unknown server "${sv}". Configured: ${names.length ? names.join(', ') : '(none - add one to .7coder/mcp.json)'}.`);
       }
       try {
-        return await getMcpClient(sv, cancelled).callTool(String(toolName || ''), toolArgs, cancelled);
+        return makeToolResult('ok', await getMcpClient(sv, cancelled).callTool(String(toolName || ''), toolArgs, cancelled));
       } catch (e) {
         if (cancelled && cancelled()) return makeToolResult('cancelled', `[aborted: MCP cancelled; sent requests may have unknown effects] ${e.message}`);
-        return `MCP tool error (${sv}/${toolName}): ${e.message}`;
+        return makeToolResult('error', `MCP tool error (${sv}/${toolName}): ${e.message}`);
       }
     }
 
@@ -3656,21 +3659,23 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
           headers: { 'Content-Type': 'application/json' },
           timeout: 30000
         }, cancelled);
-        return typeof res.data === 'string' ? res.data : JSON.stringify(res.data, null, 2);
+        const responsePayload = res.data;
+        const failed = responsePayload && typeof responsePayload === 'object' && (responsePayload.isError === true || (responsePayload.jsonrpc === '2.0' && responsePayload.error != null));
+        return makeToolResult(failed ? 'error' : 'ok', typeof responsePayload === 'string' ? responsePayload : (JSON.stringify(responsePayload, null, 2) || ''));
       } catch (e) {
         if (cancelled && cancelled()) return makeToolResult('cancelled', `[aborted: MCP cancelled; remote result unknown] ${e.message}`);
-        return `MCP external error (${effectiveUrl}): ${e.message}`;
+        return makeToolResult('error', `MCP external error (${effectiveUrl}): ${e.message}`);
       }
     } else if (effectiveNpx) {
       console.log(`[MCP] Running MCP via npx: ${effectiveNpx} ${toolName}`);
       if (!/^[@a-zA-Z0-9._\/-]+$/.test(effectiveNpx)) {
-        return 'BLOCKED: npx package name contains shell metacharacters';
+        return makeToolResult('blocked', 'BLOCKED: npx package name contains shell metacharacters');
       }
       let argsToken = '';
       if (Object.keys(toolArgs).length) {
         const json = JSON.stringify(toolArgs);
         if (/[^a-zA-Z0-9 {}.,:_\/-]/.test(json)) {
-          return 'BLOCKED: MCP tool arguments contain shell metacharacters - pass simpler args or use run_command';
+          return makeToolResult('blocked', 'BLOCKED: MCP tool arguments contain shell metacharacters - pass simpler args or use run_command');
         }
         argsToken = json;
       }
@@ -3678,10 +3683,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       // the hard rail explicitly (calling executeToolRaw directly skips every
       // check in safeExecuteToolInner).
       const npxCmd = `npx ${effectiveNpx} ${toolName} ${argsToken}`.trim();
-      if (isSuperDangerous(npxCmd)) return 'BLOCKED: Super-dangerous command prevented (even in danger mode).';
+      if (isSuperDangerous(npxCmd)) return makeToolResult('blocked', 'BLOCKED: Super-dangerous command prevented (even in danger mode).');
       return await executeToolRaw('run_command', { command: npxCmd }, conversation, approvalBridge, cancelled, modelContext);
     } else {
-      return `MCP error: no endpoint configured. Add servers to .7coder/mcp.json (stdio, recommended - see README), or set MCP_SERVER_URLS / MCP_NPX_PKGS in .env, or pass server/mcp_url/npx_pkg parameters. Args: ${JSON.stringify(toolArgs)}`;
+      return makeToolResult('error', `MCP error: no endpoint configured. Add servers to .7coder/mcp.json (stdio, recommended - see README), or set MCP_SERVER_URLS / MCP_NPX_PKGS in .env, or pass server/mcp_url/npx_pkg parameters. Args: ${JSON.stringify(toolArgs)}`);
     }
   }
 
@@ -3689,8 +3694,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // GAP-1: discovery over the configured stdio servers. Spawning is limited
     // to commands the USER put in mcp.json, which is why this stays auto-safe.
     const names = Object.keys(mcpServers);
-    if (!names.length) return 'No MCP servers configured. Add one to .7coder/mcp.json:\n{"servers":{"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}}';
+    if (!names.length) return makeToolResult('ok', 'No MCP servers configured. Add one to .7coder/mcp.json:\n{"servers":{"fs":{"command":"npx","args":["-y","@modelcontextprotocol/server-filesystem","."]}}}');
     const out = [];
+    let failed = false;
     for (const sv of names) {
       checkExecution(cancelled);
       try {
@@ -3702,10 +3708,11 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         }
       } catch (e) {
         if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: MCP discovery cancelled]');
+        failed = true;
         out.push(sv + ': [ERROR] ' + e.message);
       }
     }
-    return '[MCP] configured servers and tools:\n' + out.join('\n');
+    return makeToolResult(failed ? 'error' : 'ok', '[MCP] configured servers and tools:\n' + out.join('\n'));
   }
 
   if (name === 'sleep_tool') {
@@ -3825,7 +3832,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
           const dataUrl = screenshotToDataUrl(shotPath);
           if (dataUrl) {
             const desc = await describeWithVision(dataUrl, modelContext, cancelled);
-            return makeToolResult('ok', `Screenshot saved to ${shotPath}.\nVision: ${desc}`);
+            return makeToolResult(toolResultStatus(desc), `Screenshot saved to ${shotPath}.\nVision: ${toolResultText(desc)}`, { screenshotPath: shotPath });
           }
         }
         return makeToolResult('ok', `Screenshot saved to ${shotPath}`);
@@ -3871,7 +3878,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       return out;
     };
     if (action === 'mouse_move' || action === 'click') {
-      if (process.platform !== 'win32') return `[WARN] ${action} is Windows-only in this build (got ${process.platform}).`;
+      if (process.platform !== 'win32') return makeToolResult('error', `[WARN] ${action} is Windows-only in this build (got ${process.platform}).`);
       const x = Math.max(0, Math.floor(Number(args.x) || 0));
       const y = Math.max(0, Math.floor(Number(args.y) || 0));
       const clickPart = action === 'click'
@@ -3885,22 +3892,22 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
           clickPart +
           'Write-Output done\n'
         );
-        return `[OK] ${action === 'click' ? 'Clicked' : 'Cursor moved'} at ${x},${y}`;
-      } catch (e) { return `Input error: ${e.message}`; }
+        return makeToolResult('ok', `[OK] ${action === 'click' ? 'Clicked' : 'Cursor moved'} at ${x},${y}`);
+      } catch (e) { return makeToolResult('error', `Input error: ${e.message}`); }
     }
     if (action === 'type_text' && args.text) {
-      if (process.platform !== 'win32') return `[WARN] type_text is Windows-only in this build (got ${process.platform}).`;
+      if (process.platform !== 'win32') return makeToolResult('error', `[WARN] type_text is Windows-only in this build (got ${process.platform}).`);
       try {
         runPsInput(
           'Add-Type -AssemblyName System.Windows.Forms;\n' +
           `[System.Windows.Forms.SendKeys]::SendWait('${escapeSendKeys(args.text).replace(/'/g, "''")}')\n` +
           'Write-Output done\n'
         );
-        return `[OK] Typed ${String(args.text).length} character(s) via SendKeys`;
-      } catch (e) { return `Input error: ${e.message}`; }
+        return makeToolResult('ok', `[OK] Typed ${String(args.text).length} character(s) via SendKeys`);
+      } catch (e) { return makeToolResult('error', `Input error: ${e.message}`); }
     }
     if (action === 'press_key' && args.key) {
-      if (process.platform !== 'win32') return `[WARN] press_key is Windows-only in this build (got ${process.platform}).`;
+      if (process.platform !== 'win32') return makeToolResult('error', `[WARN] press_key is Windows-only in this build (got ${process.platform}).`);
       const keyMap = { enter: '{ENTER}', tab: '{TAB}', esc: '{ESC}', escape: '{ESC}', backspace: '{BACKSPACE}', delete: '{DELETE}', del: '{DELETE}', up: '{UP}', down: '{DOWN}', left: '{LEFT}', right: '{RIGHT}', home: '{HOME}', end: '{END}', pageup: '{PGUP}', pagedown: '{PGDN}', space: ' ', win: '{LWIN}' };
       const k = String(args.key).trim().toLowerCase();
       const keys = k.split('+').map(part => {
@@ -3916,10 +3923,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
           `[System.Windows.Forms.SendKeys]::SendWait('${keys.replace(/'/g, "''")}')\n` +
           'Write-Output done\n'
         );
-        return `[OK] Pressed key: ${args.key}`;
-      } catch (e) { return `Input error: ${e.message}`; }
+        return makeToolResult('ok', `[OK] Pressed key: ${args.key}`);
+      } catch (e) { return makeToolResult('error', `Input error: ${e.message}`); }
     }
-    return `[WARN] Unknown computer_use action "${action}". Available: screenshot, mouse_move, click, type_text, press_key.`;
+    return makeToolResult('error', `[WARN] Unknown computer_use action "${action}". Available: screenshot, mouse_move, click, type_text, press_key.`);
   }
 
   if (name === 'workflow_tool') {
@@ -4288,23 +4295,25 @@ Reply with ONLY valid JSON:
 }`;
     try {
       const lightChoice = await callOpenAI([{ role: 'user', content: lightPrompt }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, cancel: cancelled, useTools: false, maxTokens: 1000 });
-      let planData = { improved_prompt: initialTask, refinement_loops: 2 };
-      const content = (lightChoice.message.content || '{}').replace(/```(?:json)?/gi, '').trim();
-      try {
-        planData = JSON.parse(content);
-        if (typeof planData.refinement_loops !== 'number') {
-          planData.refinement_loops = parseInt(planData.refinement_loops, 10) || 2;
-        }
-      } catch (e) {}
-      return `PLAN MODE ACTIVATED BY SMALL MODEL\nImproved prompt:\n${planData.improved_prompt}\nRefinement loops: ${planData.refinement_loops}\n\nHeavy model: Use the improved prompt above and perform exactly ${planData.refinement_loops} refinement iterations before final answer.`;
+      checkExecution(cancelled);
+      const content = lightChoice && lightChoice.message && lightChoice.message.content;
+      if (typeof content !== 'string') throw new Error('Plan response has no text content');
+      const planData = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
+      if (!planData || typeof planData.improved_prompt !== 'string' || !planData.improved_prompt.trim()) throw new Error('Plan response requires a nonempty improved_prompt');
+      const loops = typeof planData.refinement_loops === 'string' && /^[1-5]$/.test(planData.refinement_loops.trim()) ? Number(planData.refinement_loops) : planData.refinement_loops;
+      if (!Number.isInteger(loops) || loops < 1 || loops > 5) throw new Error('Plan refinement_loops must be an integer from 1 to 5');
+      return makeToolResult('ok', `PLAN MODE ACTIVATED BY SMALL MODEL\nImproved prompt:\n${planData.improved_prompt}\nRefinement loops: ${loops}\n\nHeavy model: Use the improved prompt above and perform exactly ${loops} refinement iterations before final answer.`);
     } catch (e) {
-      return `Plan mode error: ${e.message}. Falling back to original task.`;
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: plan mode cancelled]');
+      return makeToolResult('error', `Plan mode error: ${e.message}. Original task preserved; no plan was activated.`);
     }
   }
 
   // Bickering Tool - 2 small-model PM sub-agents debate until agreement
   if (name === 'bickering_tool') {
-    const task = args.task || 'No task provided';
+    try {
+    if (!Number.isInteger(BICKER_ROUNDS) || BICKER_ROUNDS < 1 || BICKER_ROUNDS > 20) return makeToolResult('error', 'Bickering error: BICKER_ROUNDS must be 1 through 20');
+    const task = String(args.task || 'No task provided');
     console.log(`Bickering Tool started - 2 PM sub-agents debating "${task.substring(0, 60)}..." for up to ${BICKER_ROUNDS} rounds`);
     let messagesPM1 = [{ role: 'system', content: `You are PM1, a strict product manager. Argue aggressively for the most robust, safe, scalable approach.` }];
     let messagesPM2 = [{ role: 'system', content: `You are PM2, a pragmatic product manager. Argue for the fastest, simplest, most practical approach.` }];
@@ -4312,16 +4321,21 @@ Reply with ONLY valid JSON:
     let agreement = null;
 
     while (round < BICKER_ROUNDS && !agreement) {
+      checkExecution(cancelled);
       round++;
       // PM1 speaks
       messagesPM1.push({ role: 'user', content: `Round ${round}: Debate the best way to ${task}. Reply in 1-2 sentences.` });
       const pm1Resp = await callOpenAI(messagesPM1, { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, cancel: cancelled, useTools: false, maxTokens: 300 });
+      checkExecution(cancelled);
+      if (!pm1Resp || !pm1Resp.message || typeof pm1Resp.message.content !== 'string' || !pm1Resp.message.content.trim()) throw new Error('PM1 returned no text');
       const pm1Text = pm1Resp.message.content.trim();
       messagesPM1.push({ role: 'assistant', content: pm1Text });
 
       // PM2 responds
       messagesPM2.push({ role: 'user', content: `Round ${round}: PM1 said "${pm1Text}". Counter or agree in 1-2 sentences.` });
       const pm2Resp = await callOpenAI(messagesPM2, { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, cancel: cancelled, useTools: false, maxTokens: 300 });
+      checkExecution(cancelled);
+      if (!pm2Resp || !pm2Resp.message || typeof pm2Resp.message.content !== 'string' || !pm2Resp.message.content.trim()) throw new Error('PM2 returned no text');
       const pm2Text = pm2Resp.message.content.trim();
       messagesPM2.push({ role: 'assistant', content: pm2Text });
 
@@ -4330,14 +4344,20 @@ Reply with ONLY valid JSON:
       // Check for agreement
       const agreementPrompt = `Do these two statements show clear agreement on a plan? Reply ONLY YES or NO.\nPM1: ${pm1Text}\nPM2: ${pm2Text}`;
       const agreeCheck = await callOpenAI([{ role: 'user', content: agreementPrompt }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, cancel: cancelled, useTools: false });
-      const agreeAnswer = (agreeCheck.message.content || '').replace(/[*'`"“”’‘.]/g, '').trim().toUpperCase();
-      if (agreeAnswer.startsWith('YES')) {
+      checkExecution(cancelled);
+      const agreeAnswer = String(agreeCheck && agreeCheck.message && agreeCheck.message.content || '').replace(/[*'`"“”’‘.]/g, '').trim().toUpperCase();
+      if (!['YES', 'NO'].includes(agreeAnswer)) throw new Error('Agreement verdict must be YES or NO');
+      if (agreeAnswer === 'YES') {
         agreement = `Agreed plan after ${round} rounds: ${pm2Text}`;
       }
     }
 
     if (!agreement) agreement = `No full agreement after ${BICKER_ROUNDS} rounds. Best compromise: ${messagesPM2[messagesPM2.length-1].content}`;
-    return `[OK] Bickering complete - ${agreement}`;
+    return makeToolResult('ok', `[OK] Bickering complete - ${agreement}`, { rounds: round, agreed: !agreement.startsWith('No full agreement') });
+    } catch (e) {
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: bickering cancelled]');
+      return makeToolResult('error', 'Bickering error: ' + e.message);
+    }
   }
 
   // Passive process observation plus bounded repair; never inject into an
@@ -4497,8 +4517,8 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   if (cancelled && cancelled() && toolResultStatus(raw) !== 'cancelled') {
     raw = makeToolResult('cancelled', '[aborted: execution cancelled; check completed side effects]\n' + toolResultText(raw));
   }
-  // Pilot tools are structured even when permission/argument checks return
-  // early. Other tools retain their string interface and legacy inference.
+  // Current tool names are structured, including early permission/argument
+  // control messages. Successful tool data is already explicitly branded.
   const res = STRUCTURED_RESULT_TOOLS.has(func.name) ? normalizeToolResult(raw) : raw;
   const first = toolResultText(res).split('\n')[0];
   const status = toolResultStatus(res);
@@ -4588,7 +4608,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
     }
 
     if (name === 'computer_use' && !ENABLE_COMPUTER_USE) {
-      return 'Computer use is disabled in .env (ENABLE_COMPUTER_USE=false).';
+      return makeToolResult('blocked', 'Computer use is disabled in .env (ENABLE_COMPUTER_USE=false).');
     }
 
     // GAP-11: user allow rules skip ONLY the approval layer. Placement is
@@ -4813,7 +4833,8 @@ const STRUCTURED_RESULT_TOOLS = new Set(['run_tests_tool', 'diagnostics_tool', '
   'run_command', 'bash_tool', 'powershell_tool',
   'write_file', 'append_file', 'edit_file', 'notebook_edit_tool', 'download_tool', 'brief_tool',
   'sleep_tool', 'snip_tool', 'tool_search_tool', 'cron_list_tool', 'git_commit_tool',
-  'auto_approval_return', 'ask_user_question_tool', 'web_search_tool', 'auto_debug_tool']);
+  'auto_approval_return', 'ask_user_question_tool', 'web_search_tool', 'auto_debug_tool',
+  'mcp_tool', 'mcp_list_tools_tool', 'web_browser_tool', 'plan_mode', 'bickering_tool']);
 function makeToolResult(status, text, data) {
   if (!TOOL_RESULT_STATUSES.includes(status) || typeof text !== 'string') throw new Error('Invalid ToolResult');
   const result = { [TOOL_RESULT_MARKER]: true, status, text };

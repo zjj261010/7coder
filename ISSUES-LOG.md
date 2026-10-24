@@ -416,7 +416,7 @@
 | # | 方向 | 状态 |
 |---|------|------|
 | OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ✅ 本轮统一为 index.js TOOL_METADATA：53 个工具逐一声明风险/审批说明/自动放行/只读并行/改动跟踪、执行性/资源/现有取消支持。初始化校验与旧策略基线对照见文末 OPT-12 记录；取消语义本身仍由 OPT-15 跟踪 |
-| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 第七批47/53为历史进度；10-24调试生命周期批新增auto_debug_tool，当前 **48/53工具名**。余下mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/bickering_tool，以及computer_use输入分支与MCP external完整状态归T22-20。子代理取消及命令exitCode收尾保留；debug现显式blocked/error/cancelled/ok，不再笼统成功。注册数不代表全部返回分支均已显式结构化。 |
+| OPT-13 | 统一ToolResult结构化状态 | ✅ 10-24 T22-20补余下5工具及computer_use/vision分支，当前53/53；完成raw返回路径静态扫描并有新41项、实际MCP8项、通用契约15项支撑，不只计数。成功数据不按error文本推断；中心权限/参数控制消息保留兼容归一化。第三方协议/真实GUI/Win7组合不因迁移完成自动验收；详见本日终态批。 |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ✅ internalStatePath/managedWorkspacePath 统一校验产品状态目录、会话、备份、MCP、skills、memory、todos、summaries、审计和工作区状态文件；junction/symlink 越界 fail-closed。普通用户文件仍走 sanitizePath，取消契约留 OPT-15 |
 | OPT-15 | 统一取消契约（上下文对象） | 🔶 T22-06前四批已贯穿主/辅助模型、审批、下载/网络/MCP/shell、dream/BTW与debug观察/修复等待，/bye撤销活动控制；保留位置参数兼容。仍待同步IO及完整副作用/进程树闭环，不宣称完整ExecutionContext改造；详见本日实施记录。 |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
@@ -610,7 +610,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | 🔶 | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：10-24落实受限方案，HTTP模式（含danger、子代理、workflow及启动维护）拒绝persistent=true，单次命令保留，schema/诊断明确提示；CLI主会话保留，子代理/根workflow结束finally退役自身shell、agent内workflow留到agent结束，不再让后续同深度scope继承cwd/env。新shell-scope17/17、B定向27/27、I定向24/24单次；超时oracle另经c033208修正、新真实Bash专项8/8；不等于树回收完成。**未完成**：HTTP跨请求持久会话身份/恢复/关闭协议，完整后代回收仍属T22-07；只能按persistent禁用的受限版本部署。 | R1 H05；OPT-16、GAP-2、A2-14；本日shell作用域记录 |
 | 🔶 | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：10-24已补pid/error/exit/close及退出码、仅操作未退出直属ChildProcess句柄、5秒close确认/未知结果、取消贯穿编译/观察/fixer/重启边界、3轮修复上限与递归拒绝、stdout+stderr合计8MB；失败明确error。JS用随包Node；C#每轮重编译（INC-24-02）。模板默认禁用，GUI仅被动观察，停用无目标确认的随机输入且不宣称验证UI。专项21/21、A定向20/20、B sec2 9/9。仍待进程树确认和真实Win7/GUI/C#环境验收，保持部分完成。 | R1 H11；R2疑点4；A2-09、C1/C3；本日第四批记录 |
 | ✅ | T22-19 | Medium／确认 | **网页会话保存与失败历史**：10-24单在途＋一个最新不可变快照、首存确认后复用file，dirty/可见失败/手动重试/15s超时及未保存离开提示；同会话发送不变身份。保留running/failed/cancelled/ok、partial正文和带turnId跨轮活动，手动/自动恢复相同；无DONE的EOF为失败，下一模型看到partial提醒。UI/Web/CLI统一2MiB UTF8字节；活动超2000拒绝而非丢前轮。新专项修共享UTF8工装后20/20，UI43＋DOM15、B边界7单次；实浏览器刷新/Win7仍待V22-02。 | R1 M03/M04；OPT-16/A2-12保护保留；本日会话批；OPT-6多客户端策略不重开 |
-| 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：当前 **48/53工具名**，包含本日auto_debug全部终态显式迁移。子代理取消/异常、命令stderr/exitCode收尾保留。余下mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/bickering_tool，以及computer_use输入分支显式状态、MCP external完整结果核对仍待实施；不以注册数代替分支正确性。 | R1 M05；A2-07；INC-24-01；本日第四批记录 |
+| ✅ | T22-20 | Medium／确认 | **收口权威工具状态**：10-24补5工具至53/53，raw返回路径静态核对、MCP发现部分失败/HTTP明确错误标志、浏览器/vision失败、计划JSON校验、辩论错误/取消及computer_use遗留分支显式状态；正常error样内容仍ok。新41/41和真实MCP8/8在修重名语法错误后定向复跑，I通用契约15/15仅首跑；不据注册数宣称第三方语义/真实GUI/Win7全部覆盖。 | R1 M05；A2-07/INC-24-01；本日工具终态批 |
 | ✅ | T22-21 | Medium／确认 | **统一有效权限和审批**：10-24 denial优先于danger/子代理，当前配置实时派生；风险/模型/人工等待后复核mode＋revision，模式切回也不复用旧批准，切换立即撤销pending。预览实际参数/完整workflow步骤（过64KiB拒绝拆分），UI仅确认成功才显示批准，400/401可见、Stop/结束/权限变化清timer且迟到回复不复活；danger强制项回显。新审批修DOM夹具后21/21，取消20/20、REPL26/26；再补真实重启6/6，进程身份＋请求顺序避免rev归零/旧响应漂移。实浏览器/Win7仍待门槛，不保证回滚已执行副作用。 | R1 M09/L05；R2 N05；P0-3/P2-12保护保留；本日审批批 |
 | 🔶 | T22-22 | Medium／确认＋风险 | **启动失败与 dream 恢复闭环**：T22-14启动门及dream owner/finally/deadline已做；10-24再补HTTP先bind再启动维护/显式任务、页面/诊断就绪；可选dream最多120秒且前台请求可取消，等待settle后交门；显式startup-task优先但状态可见，失败标failed且允许恢复。新startup-readiness13/13含真实端口失败零模型调用、dream挂起/抢占/超时、显式任务和直属Agent强杀重启锁恢复。仍待真实ACL/目录不可写、关机注销/进程树退出全链路及Win7；旧格式新锁保留4小时宽限。 | R1 M12；A2-08、A10；本日辅助/启动批记录，保持部分完成 |
 
@@ -663,7 +663,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | R1 M07 的绝对路径 .cmd 判断 | 按 R2 C01 撤回泛化断言，不列修复待办；管道异常与缓存竞争已由T22-12修复，进程树停止仍属T22-07。历史报告保留原文以便追溯。 |
 | R1 Critical 与 --help 证据 | 按 R2 C04/C05：Critical 不要求所有部署触发；--help不证明dotenv初始化。本清单没有新增Critical或扩大既有验证结论。 |
 | A5/A2-06/OPT-15 | 既有接线与T22-06首批模型/重试/审批修复保留；第二批已补下载/网络/视觉、MCP和持久shell活动等待及下载提交边界。dream/BTW/调试内部、同步IO、全部副作用/进程树截止仍开放；不能把A5旧✅或专项通过数理解为完整取消已验收。 |
-| OPT-13／10-20第四批 | 24/53与第七批47/53均为历史进度；截至本日debug批当前48/53，仍部分完成。子代理/命令/debug终态收尾保留；剩余5工具与computer_use遗留分支归T22-20，注册计数不代表所有返回分支均已显式结构化。 |
+| OPT-13／10-20第四批 | 24/53、47/53和debug批48/53为历史进度；10-24 T22-20最终批达53/53并补raw分支静态扫描及新41＋MCP8＋契约15证据。注册计数仍不代表所有第三方协议/真实GUI/Win7组合已验收。 |
 | OP5-4／多模型路由 | 启动回落保留；2026-10-23 T22-11已补热切换继承、执行路由快照与子代理模型传递，原缺口由第六批证据关闭；并非重新宣称旧启动测试覆盖全部路由。 |
 | GAP-2/A2-14、A2-12/OPT-16 | /clear清shell与页面sessGen已做；10-24 HTTP persistent先禁用，CLI子代理/workflow补scope退出清理；跨请求持久shell身份协议与保存最新快照仍归T22-17/19。 |
 | AST-R1/AST-15/NEW-2 | 非流式摘要后台化、主任务串行、cron防重叠均保留；补队列边界及进程归属，不能因此重开全并行架构。 |
@@ -1317,3 +1317,13 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 页面在任何应用初始化/请求/timer之前用ES5可解析的门检查Promise/fetch、AbortController实际abort事件/标志、UTF8 TextDecoder、Response.body.getReader以及基础DOM/字符串API；失败用不依赖CSS变量的独立文本面板显示具体缺项、离线说明/CLI替代。不是用UA字符串宣称浏览器兼容，也不提供联网CDN polyfill。原页面功能与已有localStorage/clipboard回退保留。
 - Node13新browser-baseline首次单次 **13/13**：有能力夹具正常初始化、8个缺失/错误API组合均显示原因且零请求/定时器，浏览器物料未验收标记不造假，源码原validator核对当前官方Node，实际私有packer脚本拒绝假node且旧stage sentinel完整、缺失运行时明确错误。Node13只走拒绝分支，在任何rmrf前退出；测试路径均检查在私有fixture内，没有删除真实dist。旧DOM专项 **15项**本批单次，补明确的Response/AbortSignal浏览器桩；未重跑UI43或其它已通过专项。
 - 相关JS/内联脚本语法、JSON读取和diff检查通过。未执行完整打包/解压验收、完整A–J/UI/test-all、真实浏览器/Win7 PS2/CLR/DLL补丁、物理断外网或24/72h。功能探针不证明CSS、真实fetch/取消/剪贴板或第三方浏览器长期行为；浏览器安装物料/来源/hash及实际模型服务尚未交付，故T22-03保持部分完成和发布门槛，不以文档替代实机。按授权提交本批、未推送。
+
+### 2026-10-24 —— T22-20剩余工具与明确终态
+
+- 浏览器候选基线批已提交`f458ccf`。剩余mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/bickering_tool加入统一结果，共53工具名；另迁移computer_use全部输入/未知/平台限制分支和vision辅助结果，中心computer_use禁用返回blocked。对executeToolRaw范围所有裸字符串/委托return再静态扫描，余者为内部解析/格式化helper、已结构化的agent/下载/命令委托，以及非现有schema的unknown兜底；不是只靠注册数关闭。
+- MCP stdio成功正文即使以MCP error开头仍ok，协议isError经client抛错映射error；发现任一server失败整体error但保留其它列表，没有server属于正常提示。legacy /invoke在HTTP成功时识别显式isError=true或JSON-RPC2 error envelope，普通JSON业务error字段/错误样文本保持数据；网络失败/cancel明确终态，npx阻断和run_command退出状态保留。该旧自定义协议不等于任意第三方服务器的全部业务结果语义已验证。
+- 页面读取/vision网络和无视觉模型/无正文不再伪称已看图；成功描述不按文字推断失败。截图已保存而vision失败保留路径和失败状态。computer_use输入成功/失败/非Win平台/未知action显式终态，测试只捕获dispatch，不注入真实键鼠。
+- plan_mode对JSON、非空improved_prompt和1..5整数循环数校验（保留数字字符串兼容），错误不再宣称计划已启用，JSON外围围栏只从边缘剥离、不破坏prompt内部代码围栏；晚到成功不能覆盖cancel。bickering校验1..20轮/非空PM文本/明确YES或NO，拒绝YESTERDAY前缀伪同意，失败和cancel结构化，合法无共识保留明确compromise并附agreed=false/rounds。
+- 本批先出现我引入的const payload重名：Node13静态检查失败后未及时阻止后续两条命令，新专项因语法退出，真实B MCP为0/8（Agent未启动）。集中改responsePayload、确认语法通过后，按现有失败自动复测授权仅复跑两条失败项：新tool-results-complete **41/41**，B mcp-stdio **8/8**；I tool-result-contract **15/15**只首跑，未因其它失败重复。I只提取部分函数，所以可在整体主文件语法错误时全绿，这正说明其证据不能替代全文件语法/实际启动。
+- 新41项涵盖原构造器/原分支、实际本地HTTP /invoke与vision/503、部分发现、无配置、正常error样内容、legacy阻断、GUI捕获、JSON/模型/取消/裁决边界；B真实stdio握手/cache/三工具及isError/未知server，I语义/取消/可选workflow契约。没有重跑model-routing、D页面/vision、tool-cancellation或完整A–J/UI/test-all。相关JS Node13语法及diff通过；新npm/test-all登记，README/实时进度和OPT-13对应行同步，历史计数不改写。
+- 未运行真实GUI/第三方MCP业务协议/真实模型质量、Win7/24/72h或打包；legacy npx的参数/离线依赖和进程树等既有边界不由本批状态迁移解决。T22-20对应状态迁移范围关闭，不能据此放行总体发布。按授权提交本批、未推送。

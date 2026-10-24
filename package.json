@@ -60,6 +60,7 @@
     "test:approval-lifecycle": "node test/approval-lifecycle.js",
     "test:permission-restart": "node test/permission-restart.js",
     "test:browser-baseline": "node test/browser-baseline.js",
+    "test:tool-results-complete": "node test/tool-results-complete.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",
