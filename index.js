@@ -723,7 +723,7 @@ function pruneTasks() {
   if (backgroundTasks.size <= 50) return;
   for (const [id, t] of backgroundTasks) {
     if (backgroundTasks.size <= 50) break;
-    if (t.status !== 'running') backgroundTasks.delete(id);
+    if (['completed', 'failed', 'stopped'].includes(t.status) && (!t.child || observeOwnedChild(t.child).closed)) backgroundTasks.delete(id);
   }
 }
 
@@ -2012,6 +2012,82 @@ function grepSearch(pattern, searchPath = '', opts = null) {
   return results.length ? results.join('\n') : `No matches for pattern: ${pattern}`;
 }
 
+// Keep the handle until close (exit alone does not close inherited pipes).
+// Win32 taskkill remains best effort, only while the direct child is known
+// live. Its PID-reuse race requires native Job Object ownership to eliminate.
+const ownedChildStates = new WeakMap();
+function observeOwnedChild(child) {
+  let state = ownedChildStates.get(child);
+  if (state) return state;
+  state = { exited: child.exitCode != null || child.signalCode != null, closed: false, error: null, waiters: new Set(), stopping: null };
+  ownedChildStates.set(child, state);
+  const closed = () => {
+    if (state.closed) return;
+    state.closed = true;
+    for (const notify of Array.from(state.waiters)) notify();
+    state.waiters.clear();
+  };
+  child.once('exit', () => { state.exited = true; });
+  child.once('close', closed);
+  child.on('error', error => {
+    state.error = error;
+    // Node 13 EMFILE/ENFILE may omit stdio and close. No child was created.
+    if (!child.pid) closed();
+  });
+  return state;
+}
+
+function stopOwnedChild(child, timeoutMs = 5000) {
+  if (!child) return Promise.resolve({ closed: true, message: 'No active direct child.' });
+  const state = observeOwnedChild(child);
+  if (state.closed) return Promise.resolve({ closed: true, message: 'Direct child already closed.' });
+  if (state.stopping) return state.stopping;
+  let settle, timer, killError = '';
+  const promise = new Promise(resolve => { settle = resolve; });
+  state.stopping = promise;
+  const finish = () => {
+    clearTimeout(timer);
+    state.waiters.delete(finish);
+    state.stopping = null;
+    settle({ closed: state.closed, message: state.closed ? 'Direct child closed; descendant state is unverified.' :
+      'Direct child close unconfirmed; result unknown. ' + (killError || 'Close deadline exceeded.') });
+  };
+  state.waiters.add(finish);
+  timer = setTimeout(finish, timeoutMs);
+  if (!state.exited && child.exitCode == null && child.signalCode == null && !child.killed) {
+    try {
+      if (process.platform === 'win32' && child.pid) {
+        child_process.execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'],
+          { windowsHide: true, timeout: Math.max(1, timeoutMs - 500), maxBuffer: 65536 }, error => {
+            if (error) killError = 'Tree stop attempt failed: ' + error.message;
+          });
+      } else if (!child.kill('SIGTERM')) killError = 'Stop request was refused.';
+    }
+    catch (error) { killError = error.message; }
+  }
+  return promise;
+}
+
+async function stopBackgroundTask(task) {
+  task.stopRequested = true;
+  task.status = 'stopping';
+  const result = await stopOwnedChild(task.child);
+  task.status = result.closed ? 'stopped' : 'stop-unknown';
+  task.endedAt = result.closed ? new Date().toISOString() : null;
+  task.stopMessage = result.message;
+  pruneTasks();
+  return result;
+}
+
+async function stopCronJob(job) {
+  job.stopped = true;
+  if (job.timer) clearTimeout(job.timer);
+  job.timer = null;
+  const result = await stopOwnedChild(job.child);
+  if (!result.closed) job.lastError = result.message;
+  return result;
+}
+
 // ====================== CRON SCHEDULING ======================
 // Supported schedules: "30s", "5m", "2h", "every 10m", "daily 09:30" (or just "09:30").
 function parseSchedule(schedule) {
@@ -2037,7 +2113,7 @@ function scheduleCronJob(jobId, schedule, command) {
   const runCommand = () => {
     // NEW-2: skip missed ticks while this job is still executing. Other jobs
     // keep their own slots; do not queue a burst of catch-up commands.
-    if (job.stopped || job.running) return;
+    if (shuttingDown || job.stopped || job.running) return;
     job.runs++;
     // OP2-2: re-check at FIRE time too - the job was vetted when created,
     // but isSuperDangerous patterns or the command string must not run just
@@ -2048,11 +2124,18 @@ function scheduleCronJob(jobId, schedule, command) {
     }
     job.running = true;
     try {
-      job.child = child_process.exec(command, { cwd: launchDir, timeout: 300000 }, (err) => {
+      job.child = child_process.exec(withUtf8Codepage(command), { cwd: launchDir, timeout: 300000 }, (err) => {
         if (err) job.lastError = err.message;
+      });
+      const child = job.child;
+      const state = observeOwnedChild(child);
+      const release = () => {
+        if (job.child !== child) return;
         job.child = null;
         job.running = false;
-      });
+      };
+      if (state.closed) release();
+      else state.waiters.add(release);
     } catch (err) {
       job.lastError = err.message;
       job.child = null;
@@ -3134,16 +3217,18 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       stopRequested: false
     };
     const child = child_process.exec(withUtf8Codepage(command), { cwd: launchDir, timeout: 1800000, maxBuffer: 20 * 1024 * 1024 }, (err) => {
-      task.endedAt = new Date().toISOString();
-      if (task.stopRequested || task.status === 'stopped') return;
       if (err) {
-        task.status = 'failed';
+        task.commandError = err.message;
         task.output += `\n[Task failed] ${err.message}`;
-      } else {
-        task.status = 'completed';
       }
-      pruneTasks();
     });
+    const state = observeOwnedChild(child);
+    const complete = () => {
+      task.status = task.stopRequested ? 'stopped' : (task.commandError || state.error ? 'failed' : 'completed');
+      task.endedAt = new Date().toISOString();
+      task.child = null;
+      pruneTasks();
+    };
     if (child.stdout) {
       child.stdout.setEncoding('utf8');
       child.stdout.on('data', d => { task.output += d.toString(); });
@@ -3154,12 +3239,14 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
     task.child = child;
     backgroundTasks.set(taskId, task);
+    if (state.closed) complete();
+    else state.waiters.add(complete);
     return makeToolResult('ok', `[OK] Background task ${taskId} started: ${command}`);
   }
   if (name === 'task_get_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
     if (!t) return makeToolResult('error', 'Task not found');
-    return makeToolResult('ok', JSON.stringify({ id: t.id, description: t.description, command: t.command, status: t.status, startedAt: t.startedAt, endedAt: t.endedAt }, null, 2));
+    return makeToolResult('ok', JSON.stringify({ id: t.id, description: t.description, command: t.command, status: t.status, startedAt: t.startedAt, endedAt: t.endedAt, stopMessage: t.stopMessage }, null, 2));
   }
   if (name === 'task_list_tool') {
     if (!backgroundTasks.size) return makeToolResult('ok', 'No tasks');
@@ -3180,19 +3267,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'task_stop_tool') {
     const t = backgroundTasks.get(args.task_id) || (!args.task_id ? latestTask() : null);
     if (!t) return makeToolResult('error', 'Task not found');
-    if (t.status !== 'running') return makeToolResult('ok', `Task ${t.id} already ${t.status}`);
-    t.stopRequested = true;
-    try {
-      if (process.platform === 'win32' && t.child && t.child.pid) {
-        child_process.execSync(`taskkill /PID ${t.child.pid} /T /F`, { stdio: 'ignore', timeout: 15000 });
-      } else if (t.child) {
-        t.child.kill('SIGTERM');
-      }
-    } catch (e) {}
-    t.status = 'stopped';
-    t.endedAt = new Date().toISOString();
-    pruneTasks();
-    return makeToolResult('ok', `[OK] Task ${t.id} stopped`);
+    if (['completed', 'failed', 'stopped'].includes(t.status) && !t.child) return makeToolResult('ok', `Task ${t.id} already ${t.status}`);
+    const stopped = await stopBackgroundTask(t);
+    return makeToolResult(stopped.closed ? 'ok' : 'error', `Task ${t.id}: ${stopped.message}`);
   }
 
   if (name === 'todo_write_tool') {
@@ -3425,15 +3502,15 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       return makeToolResult('error', 'Cron job not found: ' + (args.job_id || '(no job_id provided)'));
     }
     const job = cronJobs.get(args.job_id);
-    job.stopped = true;
-    clearTimeout(job.timer);
-    cronJobs.delete(args.job_id);
-    return makeToolResult('ok', `[OK] Cron job deleted`);
+    const stopped = await stopCronJob(job);
+    if (!stopped.closed) return makeToolResult('error', `Cron job disabled but retained: ${stopped.message}`);
+    if (cronJobs.get(args.job_id) === job) cronJobs.delete(args.job_id);
+    return makeToolResult('ok', `[OK] Cron job deleted. ${stopped.message}`);
   }
   if (name === 'cron_list_tool') {
     if (!cronJobs.size) return makeToolResult('ok', 'No cron jobs');
     return makeToolResult('ok', Array.from(cronJobs.entries()).map(([id, j]) =>
-      `${id} | schedule: ${j.schedule} | runs: ${j.runs} | next: ${j.nextRun ? new Date(j.nextRun).toISOString() : 'n/a'}${j.lastError ? ` | lastError: ${j.lastError}` : ''}`
+      `${id} | schedule: ${j.schedule} | runs: ${j.runs} | ${j.stopped ? 'disabled' : 'scheduled'} | running: ${j.running} | next: ${!j.stopped && j.nextRun ? new Date(j.nextRun).toISOString() : 'n/a'}${j.lastError ? ` | lastError: ${j.lastError}` : ''}`
     ).join('\n'));
   }
 
@@ -6015,35 +6092,16 @@ async function main() {
         shuttingDown = true;
         cancelActiveExecutions('Agent exiting.');
         cliQuestions.close();
+        const stopping = [];
         for (const t of backgroundTasks.values()) {
-          if (t.status === 'running') {
-            t.stopRequested = true;
-            try {
-              if (process.platform === 'win32' && t.child && t.child.pid) {
-                child_process.execSync(`taskkill /PID ${t.child.pid} /T /F`, { stdio: 'ignore', timeout: 15000 });
-              } else if (t.child) {
-                t.child.kill('SIGTERM');
-              }
-            } catch (e) {}
-            t.status = 'stopped';
-            t.endedAt = new Date().toISOString();
-          }
+          if (t.child) stopping.push(stopBackgroundTask(t));
         }
-        for (const j of cronJobs.values()) {
-          j.stopped = true;
-          if (j.timer) clearTimeout(j.timer);
-          if (j.child) {
-            try {
-              if (process.platform === 'win32' && j.child.pid) {
-                child_process.execSync(`taskkill /PID ${j.child.pid} /T /F`, { stdio: 'ignore', timeout: 15000 });
-              } else {
-                j.child.kill('SIGTERM');
-              }
-            } catch (e) {}
-          }
-        }
+        for (const j of cronJobs.values()) stopping.push(stopCronJob(j));
         disposeMcpClients(); // GAP-1: stop stdio MCP server children too
         disposePersistentShells(); // GAP-2: stop persistent bash sessions
+        const stopped = await Promise.all(stopping);
+        const unknown = stopped.filter(result => !result.closed);
+        if (unknown.length) console.warn('[EXIT] ' + unknown.length + ' direct child close(s) unconfirmed; check remaining processes before restart.');
         // P2-1: the dream lock lives at .7coder/dream.lock now; the legacy
         // root path is cleaned too so pre-migration stale locks never resurface.
         try { const lock = internalStatePath('.7coder', 'dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}

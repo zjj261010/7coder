@@ -2752,7 +2752,7 @@ scenarios.push({
   name: 'cron-overlap',
   fn: async () => {
     const src = fs.readFileSync(IDX, 'utf8');
-    const start = src.indexOf('function parseSchedule(schedule) {');
+    const start = src.indexOf('const ownedChildStates = new WeakMap();');
     const end = src.indexOf('// ====================== DREAM HELPERS', start);
     if (start < 0 || end < 0) throw new Error('cron scheduler block not found');
     const jobs = new Map();
@@ -2762,12 +2762,13 @@ scenarios.push({
     class ClockDate extends Date { static now() { return now; } }
     const ctx = {
       Date: ClockDate, cronJobs: jobs, launchDir: freshCwd('b-cron-overlap'),
-      isSuperDangerous: () => false,
+      isSuperDangerous: () => false, shuttingDown: false, withUtf8Codepage: command => command,
       setTimeout: (fn, delay) => ({ fn, delay, unref() {} }),
       child_process: { exec: (command, opts, done) => {
         if (throwNext) { throwNext = false; throw new Error('spawn probe failed'); }
-        const child = { pid: calls.length + 1 };
-        calls.push({ command, done, child });
+        const child = new (require('events').EventEmitter)();
+        child.pid = calls.length + 1;
+        calls.push({ command, done: err => { done(err); child.emit('close', err ? 1 : 0); }, child });
         return child;
       } }
     };

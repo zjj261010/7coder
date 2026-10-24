@@ -590,7 +590,7 @@
 | ✅ | T22-04 | High／确认 | **隔离 SSE 解析异常**：10-23完成结构校验、事件回调捕获、统一单次结算、提前close/aborted处理及失败销毁；原解析函数故障矩阵与实际HTTP null帧后下一请求恢复通过。 | R2 N02；index.js parseSSEStream；test/stream-context.js；本批31/31，详见10-23第二批记录；未宣称全部网络异常组合或Win7已验收 |
 | ✅ | T22-05 | High／确认 | **保护压缩前原始上下文**：10-23完成失败/空摘要明确报错且不改原数组；按20K分段全部输入成功后才提交；当前用户要求原文保留，工具参数/已完成副作用进入摘要输入；后续段失败零提交。 | R2 N03；index.js summarizeConversation/compressConversationIfNeeded；test/stream-context.js；31/31＋旧边界2/2；真实模型摘要质量仍有单独限制 |
 | 🔶 | T22-06 | High／确认 | **贯穿取消与截止时间**：68fa239、50e0d47、64daf8c已补模型/审批、网络/下载/MCP/shell、dream/BTW；第四批补debug观察、异步编译、fixer与重启前检查，取消后不再启动下一轮。debug21/21＋A定向20/20＋B sec2 9/9，均Node13单次。**未完成**：同步IO、全部副作用截止及进程树停止；远端/后代结果仍可能未知，继续与T22-07联动，不关闭整项。 | R1 H03；R2 C02；OPT-15、A5、A2-06；本日第四批记录 |
-| ⬜ | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：覆盖普通命令、后台 task、cron、MCP、持久 shell、调试；超时/取消/正常退出树杀并确认结果；明确 one-shot 后台任务语义。删除运行中 cron 不能丢句柄；强杀后重启可诊断残留。保留 cron running 防重叠。 | R1 H04、M08；A10、NEW-2；与 T22-06 联动 |
+| 🔶 | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：10-24首批补task/cron直属close观察与5秒停止期限；cron删除失败禁用但保留句柄，task超时为stop-unknown、迟到close纠正，/bye并行等待并诊断；保留异步有界taskkill树停尝试和cron防重叠。专项19/19＋Windows树夹具6/6＋B定向13/13。**未完成**：原生进程树所有权、taskkill PID复用竞态、所有命令/MCP/shell/debug统一回收、强杀/注销及one-shot语义；直属close不证明任意后代已停。 | R1 H04、M08；A10、NEW-2；与 T22-06 联动；本日进程生命周期首批记录 |
 | ✅ | T22-08 | High／确认＋风险 | **串行化交互审批并修 REPL 等待**：2026-10-23 第三批落地单一 CLI 问题队列，EOF/close 结算全部问题、取消结算对应问题；审批和询问用户共用输入分派。任务在首个 await 前占位并取走草稿，BTW 按草稿排队，后续输入进入下一草稿，clear 后旧回调不污染新草稿。Node13 新回归20/20＋既有btw-eof 1/1，均单次；真实Win7终端待验收，HTTP活动取消仍属T22-06。 | R2 N01；R1 M10；D6；提交5149903 |
 | ✅ | T22-09 | High／确认 | **下载替换不先删原文件**：2026-10-23 第四批移除目标 unlink；独占打开唯一临时文件，等 close＋fsync，严格完整旧版备份发布后单次 rename 覆盖，失败不删目标；复用有保留上限的 /undo 恢复。Node13故障专项获准复跑41/41，既有下载6/6；提交边界骤停及新进程恢复通过，实Win7/占用/断电仍待验收。 | R1 H07；AST-05；提交7ce82f9 |
 | ✅ | T22-10 | High／确认错误路径 | **文件编辑编码止损**：2026-10-23 第五批对读/提示词文件/写/追加/编辑/notebook实施UTF-8可逆检查，拒绝不支持的字节与NUL，不猜测GBK；保留BOM及单一换行风格。现存文件写入统一完整严格备份，失败阻断；恢复时间戳顺序保护。Node13专项46/46、既有读取/保留6/6，均单次。普通文本写入仍可能部分失败，需undo恢复；实Win7/字节编码歧义见第五批边界。 | R1 H08；A2 的 chcp 修复不覆盖文件编码；提交f2e9409 |
@@ -1173,3 +1173,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 2. **提交纪律**：状态变更与对应代码修复同一提交；提交信息引用条目号（如 `fix(P1-1): ...`）。**跨号联动（2026-10-03 增补）**：当以新编号（DS-/AST-/OPT- 等）修复的问题在旧表有同源行时，必须在同一提交内回翻旧行状态——2026-10-03 盘点发现 11 行"账实不符"正是只记新区块、漏翻旧行所致。
 3. **归档（OPT-9 已执行 2026-10-02）**：KNOWN-ISSUES.md、REVIEW-CHECKLIST-2026-09-30.md、deepseek4.1flash审阅.md 已移入 `docs/history/`，只读历史快照，不再更新。
 4. **套件计数防漂移（OPT-10 已执行 2026-10-02）**：`scripts/count-assertions.js --write` 回填头部标记段；实测通过数在规模快照行手写，两口径并列标注。
+
+### 2026-10-24 —— T22-07首批：停止结果与cron句柄保全
+
+- 修复删除运行中cron只停timer却遗失child的确认缺口：立即禁用后续调度，等待直属child的close；5秒内未确认则error并保留registry/句柄，cron_list显示disabled/running/错误，后续删除可重试。
+- task_stop不再无条件伪报stopped：stopping→stopped或stop-unknown；未知时无结束时间且保留child，迟到close纠正状态。pruneTasks只裁剪已结束且没有活动child的条目；命令回调不再直接释放cron运行位，必须观察close，避免继承管道未关时下一轮重叠。
+- /bye将task/cron停止并行等待，最多各5秒，输出未确认数量；Windows保留树停尝试但改为异步execFile参数数组、隐藏窗口、有限timeout/maxBuffer。已观察exit/close时不再按旧PID停止。taskkill启动与目标退出间仍有PID复用竞态，未宣称解决；完整Job Object所有权需兼顾Win7不支持嵌套job及离线分发，本批未新增.NET/二进制依赖。
+- Node13最小验证：新task-lifecycle **19/19**（直属handle、重复停止、exit但pipe未close、kill拒绝/异常、EMFILE缺stdio、未知/迟到状态、cron注册表、prune与真实Node直属关闭）；随后保留Windows树停分支，单元fixture明确走直属分支，新增task-windows **6/6**验证实际异步taskkill、失败未知、已知exit不重杀以及真实两层Node子树释放端口。B的cron-overlap/tool-results-b4 **13/13**，旧cron假child补EventEmitter/close事件。auxiliary-lifecycle **10/10**作为dream锁局部检查，不能计作/bye进程树验收。以上专项各单次，无失败复跑；Node13语法及diff静态检查通过。
+- 新npm/test-all登记两个专项（Windows树专项只在Windows完整入口加入）。未运行全套A–J/UI/test-all、真实REPL带后台进程的/bye、Win7/关窗口/注销/强杀后的多层树、one-shot收尾或长时间运行。T22-07保持部分完成；不把两层夹具通过当成内核所有权证明，不推送/打包。
+- 本批按授权提交为 `fix(T22-07): retain task ownership until observed close`，接着推进T22-15后台任务输出预算。

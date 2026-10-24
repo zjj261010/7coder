@@ -27,9 +27,11 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'tool-cancellation.js', args: [path.join(ROOT, 'test', 'tool-cancellation.js')] },
     { name: 'auxiliary-lifecycle.js', args: [path.join(ROOT, 'test', 'auxiliary-lifecycle.js')] },
     { name: 'debug-lifecycle.js', args: [path.join(ROOT, 'test', 'debug-lifecycle.js')] },
+    { name: 'task-lifecycle.js', args: [path.join(ROOT, 'test', 'task-lifecycle.js')] },
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
+if (process.platform === 'win32') targets.push({ name: 'task-windows.js', args: [path.join(ROOT, 'test', 'task-windows.js')] });
 if (process.env.BROWSER_TEST === '1') targets.push({name:'webui-browser.js',args:[path.join(ROOT,'test','webui-browser.js')]});
 
 function loadBaseline() {
