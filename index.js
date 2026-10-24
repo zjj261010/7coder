@@ -5101,7 +5101,26 @@ async function processWithTools(currentMessages, opts = {}) {
     if (cancelled()) return '[aborted: client disconnected]';
     const choice = await callOpenAI(currentMessages, { onDelta, onReasoning, model: reqModel, modelContext, cancel: cancelled });
     if (cancelled()) return '[aborted: client disconnected]';
-    const assistantMsg = choice.message;
+    const assistantMsg = choice && choice.message;
+    if (!assistantMsg || typeof assistantMsg !== 'object' || Array.isArray(assistantMsg)) throw new Error('Invalid assistant response: message must be an object');
+    // Preflight the entire round before any callback or side effect. The step
+    // limit counts model rounds, so it cannot itself bound a huge fan-out.
+    if (assistantMsg.tool_calls != null) {
+      const batch = assistantMsg.tool_calls;
+      if (!Array.isArray(batch)) throw new Error('Tool batch rejected: tool_calls must be an array');
+      if (batch.length > 64) throw new Error('Tool batch rejected: more than 64 calls in one round; split into smaller rounds');
+      const ids = new Set();
+      for (let i = 0; i < batch.length; i++) {
+        const tc = batch[i], fn = tc && tc.function;
+        if (!tc || typeof tc.id !== 'string' || !tc.id || ids.has(tc.id) ||
+            (tc.type !== undefined && tc.type !== 'function') || !fn ||
+            typeof fn.name !== 'string' || !fn.name.trim() ||
+            (fn.arguments !== undefined && typeof fn.arguments !== 'string')) {
+          throw new Error('Tool batch rejected: invalid or duplicate call ID/function at position ' + (i + 1));
+        }
+        ids.add(tc.id);
+      }
+    }
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
       // Notify UI about each tool call before execution
