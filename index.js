@@ -1665,6 +1665,33 @@ function isProtectedTarget(name, args) {
 //     files, the super-dangerous command block, or denial mode.
 //   - the built-in PROTECTED_FILES rails remain first and unbeatable.
 const permRules = { allow: [], deny: [], protectedExtra: [] };
+function compilePermissionWildcard(pattern) {
+  const literals = pattern.split('*').filter(part => part.length);
+  if (literals.length > 128) throw new Error('Permission wildcard exceeds 128 literal segments; simplify the rule');
+  const pieces = literals.map(part => ({ length: part.length, re: new RegExp(part.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi') }));
+  const hasStar = pattern.includes('*');
+  const minimum = pieces.reduce((n, part) => n + part.length, 0);
+  const head = pattern.charAt(0) !== '*' ? pieces.shift() : null;
+  const tail = hasStar && pattern.charAt(pattern.length - 1) !== '*' ? pieces.pop() : null;
+  const at = (piece, text, start) => { piece.re.lastIndex = 0; return piece.re.test(text.slice(start, start + piece.length)); };
+  return { test(value) {
+    const text = String(value);
+    if (text.length < minimum) return false;
+    if (!hasStar) return text.length === pattern.length && (!head || at(head, text, 0));
+    let from = 0, end = text.length;
+    if (head) { if (!at(head, text, 0)) return false; from = head.length; }
+    if (tail) { end -= tail.length; if (!at(tail, text, end)) return false; }
+    // Each search regex is an escaped fixed literal. Earliest nonoverlapping
+    // matches leave the most space for later pieces; no wildcard backtracking.
+    for (const piece of pieces) {
+      piece.re.lastIndex = from;
+      const match = piece.re.exec(text);
+      if (!match || match.index + piece.length > end) return false;
+      from = match.index + piece.length;
+    }
+    return from <= end;
+  } };
+}
 function compilePermRule(raw, bucket) {
   const s = String(raw);
   // rule syntax: "tool(pattern)" - tool is an exact name or '*', pattern is
@@ -1672,7 +1699,7 @@ function compilePermRule(raw, bucket) {
   // means "this tool, any args".
   let tool = '';
   let pat = '*';
-  const m = s.match(/^([A-Za-z_0-9*]+)\((.*)\)$/);
+  const m = s.match(/^([A-Za-z_0-9*]+)\(([\s\S]*)\)$/);
   if (m) { tool = m[1]; pat = m[2]; }
   else if (/^[A-Za-z_0-9*]+$/.test(s)) { tool = s; }
   else return null;
@@ -1683,7 +1710,7 @@ function compilePermRule(raw, bucket) {
   else return null;
   // wildcard text pattern: '*' spans anything (including separators), the
   // rest is literal, case-insensitive, full-match against the arg text.
-  const argRe = new RegExp('^' + pat.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
+  const argRe = compilePermissionWildcard(pat);
   return { raw: s, bucket: bucket, toolRe: toolRe, argRe: argRe };
 }
 function loadPermRules() {
@@ -1718,7 +1745,7 @@ function loadPermRules() {
           // slashes so patterns are platform-independent.
           const pat = String(raw).trim();
           if (pat) {
-            const argRe = new RegExp('^' + pat.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$', 'i');
+            const argRe = compilePermissionWildcard(pat);
             c = { raw: pat, bucket: 'protected_extra', toolRe: /^[a-z_0-9]+$/i, argRe: argRe };
           }
         } else {
@@ -1749,8 +1776,12 @@ function permRuleArgText(name, args) {
   return JSON.stringify(args || {});
 }
 function matchPermRule(bucket, name, args) {
+  let text;
   for (const r of permRules[bucket]) {
-    if (r.toolRe.test(name) && r.argRe.test(permRuleArgText(name, args))) return r;
+    if (r.toolRe.test(name)) {
+      if (text === undefined) text = permRuleArgText(name, args);
+      if (r.argRe.test(text)) return r;
+    }
   }
   return null;
 }

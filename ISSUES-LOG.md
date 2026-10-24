@@ -1505,3 +1505,13 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新config-admission首次前 **18项**通过：BOM/1MiB、两层MCP覆盖、12类坏MCP字段、32与跨层33拒绝、原型名字client缓存真实对象、10类坏permission字段/规则零部分发布、1000及跨层1001、超大配置零对应data-read/close、EACCES，以及4个真实Agent坏JSON/超限启动exit1、不ready、不泄露parser输入且原件未动。
 - 随后集成断言失败；仅integration范围重跑加实际SSE诊断，发现fixture双调用漏index，被流协议拼成write_filewrite_file＋拼接参数，并非规则合并失败。补0/1 index后按授权仅integration **2/2**：有效修复配置启动，真实同请求两call ID分别blocked/completed，workspace deny压过安装allow且无blocked.txt，另一个allow真实写scratch文件。旧B perm-rules首次单次 **8/8**，未随夹具失败重跑；前18项也未重跑。输出明确所选integration，不声称修后全20项又一次通过。
 - npm/test-all登记、Node13语法与diff检查通过；未重跑其它已通过专项、旧MCP8/完整A–J/UI/test-all、Win7/真实ACL/.NET/浏览器、24/72h或打包。新server-name cache检查用实际getMcpClient＋所属fake客户端，不在HTTP Agent里创建无法由测试确认关闭的额外MCP后代。T22-15/21只补上述范围，实际全局资源、原生进程树、剩余同步配置/日志读取及通配符CPU仍开放。按授权提交本批、未推送，继续通配符匹配的隔离验证与有界实现。
+
+### 2026-10-25 —— INC-25-03权限通配符阻塞与多行遗漏
+
+| ID | 确认依据与影响 | 处理与范围 |
+|---|---|---|
+| INC-25-03 | **High／已确认错误路径与高可信阻塞风险**：原compilePermRule把每个*变成.*；24个*a加*b的小规则，匹配80个a加!时在私有原函数Node13子进程超过1秒无DONE，监督进程按直属句柄终止。deny/allow/protected-extra都在执行前同步匹配，能卡住核心/取消。另在当前Node13直接验证原run_command(*)对两行echo返回false，与“* spans anything”规则承诺不符，明确deny可因命令换行失效。不是公网攻击场景。 | 已修：escaped固定literal按顺序搜索，前/后缀和非重叠边界保证整串匹配，不拼接通配符正则，不对星号分配组合进行回溯；保留原生/i字面Unicode大小写语义。*跨换行，显式多行pattern可解析；每条最多128个非空literal段，重复相邻*意义不变。 |
+
+- 配置准入批已提交`379baeb`。编译出的matcher保留argRe.test接口供deny/allow/protected-extra消费，内部只有escaped literal regex，重用时重置lastIndex。matchPermRule每bucket最多生成一次参数文本，避免1000规则重复JSON.stringify同一对象。未改glob工具的**/路径语义；其独立globToRegex仍需检查，不能把权限matcher修复扩大为所有glob已受限。
+- 新permission-wildcard Node13首次单次 **12/12**：危险匹配都在所属子进程、独立2秒监督，19种字面/转义/边界/Unicode/跨行矩阵，重复true-false-true无状态串扰；原missing-tail立即false、1000次missing-middle不组合回溯，128段边界/129拒绝、4096相邻星号保持全匹配；1000匹配selector只做一次参数序列化。实际私有Agent同时经过复杂deny与protected-extra后完成写入，run_command(*)阻断真实含换行的私有marker命令（marker不创建），*.key仍在bypass阻断，三个call ID审计分别ok/blocked/blocked且活动归零。
+- npm/test-all登记，Node13语法/diff检查通过；未重跑前批已通过的配置18＋integration2/旧权限8等，旧path-boundaries提取器静态核对会包含新helper且仍使用.test。没有为纯matcher更换重跑完整A–J/UI/test-all。未做Win7/真实浏览器/24/72h或打包；聚合1000规则×大输入仍有扫描成本，不等于全执行硬期限或统一内存上限。按授权提交本批、未推送，继续glob扫描匹配的同步阻塞边界。

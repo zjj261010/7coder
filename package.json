@@ -79,6 +79,7 @@
     "test:tool-http-budget": "node test/tool-http-budget.js",
     "test:html-deadline": "node test/html-deadline.js",
     "test:config-admission": "node test/config-admission.js",
+    "test:permission-wildcard": "node test/permission-wildcard.js",
     "test:debug-prerequisites": "node test/debug-prerequisites.js",
     "test:tool-result-evidence": "node test/tool-result-evidence.js",
     "test:git-snapshot-retention": "node test/git-snapshot-retention.js",
