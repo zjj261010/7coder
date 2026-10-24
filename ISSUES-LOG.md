@@ -23,7 +23,7 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 337 |
+| runner-b.js | 349 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
@@ -35,7 +35,7 @@
 | runner-k.js | 11 |
 | runner-r.js | 11 |
 | runner.js | 60 |
-| **合计** | **655** |
+| **合计** | **667** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -384,7 +384,7 @@
 | A2-03 | index.js:513-520, 2693-2722 | **diagnostics 免审批执行项目代码**：node_modules 里的 tsc/eslint 是项目自己的 JS，eslint 还加载项目配置/插件；动态复现伪 tsc 写标记文件零审批。GAP-5 的 auto-safe 决策过信 | ✅ 批次一机械轮（GLM+终检）：移出 AUTO_SAFE、LOW→MEDIUM、schema/提示语/注释三处 read-only 谎报一并纠正（default 拒绝 / bypass 照常，sec2 2 断言先红后绿） |
 | A2-04 | webui.html:386-399, 543 | **错误消息 innerHTML 注入路径**：正常回复走 esc() 但 addMsg('err', '错误: '+e.message) 直进 innerHTML；DOM 模拟复现错误气泡原样含 <img onerror>。上游可控错误文案 = XSS 面 | ✅ 机械轮：addMsg err/sys 分支改 textContent（user/bot 保留 markdown 路径）；12 处 innerHTML sink 全审计无第二处漏点；dom-sim 新增 a204 两项（payload 转义 + onerror 未触发），10/10 |
 | A2-05 | index.js:4677-4693 | **/fork 拆散工具配对**：保留 user+紧邻 assistant，若该 assistant 带 tool_calls 则孤儿化（配对非法+该轮最终答复丢失）；fork 测试只用纯文本回合故未覆盖。GAP-14 的真缺陷 | ✅ 8fb0a99：回合边界 = 第 N+1 个 user 消息起点，工具链整段保留；端到端证明含孤儿检测（sec3 4 断言：保 FINAL1 弃 FORK-B、零孤儿 tool、banner） |
-| A2-06 | index.js:3139-3142 | **bypass 分支漏传 cancelled**（核 实：executeToolRaw(name,args,conversation,approvalBridge) 少第五参）+ 同族：子代理不继承取消、持久 shell 仅事后检查、axios 无活动取消、审批等待期断连不即时 dispose。AST-09 的取消缺口 | ✅ 8fb0a99（最小范围）：bypass 补传 cancelled + 子代理经 processWithTools({cancel}) 继承；接线为源码级断言，行为级取消离线时序敏感未测（如实标注）；已知残留：axios 无活动中止（Node13 无 AbortController）、审批等待靠超时释放——随 OPT-15 上下文对象根治 |
+| A2-06 | index.js:3139-3142 | **bypass 分支漏传 cancelled**（核 实：executeToolRaw(name,args,conversation,approvalBridge) 少第五参）+ 同族：子代理不继承取消、持久 shell 仅事后检查、axios 无活动取消、审批等待期断连不即时 dispose。AST-09 的取消缺口 | ✅ 8fb0a99（最小范围）：bypass补传cancelled＋子代理继承，保留历史接线证据。2026-10-24 T22-06首批另补callOpenAI流/非流、重试、辅助模型的活动中止及HTTP审批即时撤销（Axios CancelToken兼容Node13，无需AbortController），专项20/20。下载/网络/MCP、视觉、持久shell/调试内部及dream/BTW仍未闭合，完整取消仍由OPT-15/T22-06跟踪。 |
 | A2-07 | index.js:2666-2679, 3251 | **失败测试不停工作流**：run_tests_tool 非零退出仍返回 [TESTS] 前缀文本，TOOL_FAIL_RE 不识别 → 复现 [OK] Workflow complete 后接写入步骤。Fetch error/Tests error 等散落前缀也未纳入 | ✅ 批次二机械轮（start-plan GLM + 主会话）：exit≠0 两个返回点改 Tests error: 前缀，TOOL_FAIL_RE 增补该前缀（修复员 escalation 抓出规格假前提——正则里本没有 Tests error，主会话核实后亲自补上）；sec4 3 断言（STOPPED、后续写步不执行、前缀携带）；tests-runner ts1 契约同步钉新前缀 |
 | A2-08 | index.js:1377-1395, 1426-1432 | **dream 失败覆盖 7CODER.md**（catch 直接写 DREAM FALLBACK 单行，原文无备份丢失）+ 新工作区 DREAM_ALLOW=true 无 .7coder 目录时写锁 ENOENT 崩 | ✅ 机械轮：catch 不再写 DREAM FALLBACK（原文逐字保留，console.error 报错）+ 写锁前 mkdir（sec2 4 断言先红：HEAD 实测覆盖与 ENOENT 均复现）；dream 场景 6/6 回归 |
 | A2-09 | index.js:2999-3016 | **auto_debug spawn 无 error 监听**：不存在 exe → 未捕获 error 事件 → HTTP 服务 exit 1（实测复现）。两条 spawn 路径同病 | ✅ 机械轮：两条 spawn 挂 error 监听（spawnFailed 闭包 + 观察循环 break + 外层修复循环 break——防 3 轮空转）；sec2 3 断言先红（HEAD 实测 ECONNRESET 服务死）后绿（200 + spawn failed 文案 + 事后健康）；GLM 并纠规格两处旧参数名/默认值错误 |
@@ -416,9 +416,9 @@
 | # | 方向 | 状态 |
 |---|------|------|
 | OPT-12 | 工具声明元数据表（执行性/资源/取消/并行集中声明，防四表漂移） | ✅ 本轮统一为 index.js TOOL_METADATA：53 个工具逐一声明风险/审批说明/自动放行/只读并行/改动跟踪、执行性/资源/现有取消支持。初始化校验与旧策略基线对照见文末 OPT-12 记录；取消语义本身仍由 OPT-15 跟踪 |
-| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 试点 run_tests/diagnostics/workflow 三工具（status/text/data，工作流/审计/SSE 共用显式状态）＋**第二批 7 个只读工具**（read_file/glob/grep/list_dir/git_status/git_diff/process_list——内容驱动误判修复）＋**第三批 7 个状态读取/内容透传工具**（task_get/task_list/task_output/memory/list_mcp_resources/read_mcp_resource/prompt_from_file——内容透传误判与 not-found 缺口）＋**第四批 7 个校验/查找缺口工具（2026-10-20）**：skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool——Skill/Task/Cron/PID/Agent 七类失败文本获显式 error、task_stop 幂等停止锁定为 ok＋**第五批 6 工具名（2026-10-24，T22-20 首片）**：web_fetch/synthetic_output/enter_worktree/computer_use/schedule_cron/cron_create——Fetch/Synthetic/Worktree/Screenshot/schedule 前缀缺口修复、抓取内容透传 ok、agent 返工（runSubAgent 失败不再被包成 ok）＋**第六批命令族 3 工具（2026-10-24，T22-20）**：run_command/bash_tool/powershell_tool——aborted→cancelled（取消不再报 ok）、成功保留 stderr 尾巴（唯一有意文本变更）、bash 缺失/非 Windows 前缀缺口。累计 **47/53**（第七批清扫 14 工具：写入/编辑/杂项——handover 透传 ok、git_commit 非仓库 error）；其余 6 工具（MCP×2/web_browser/plan_mode/auto_debug/bickering）留末批。实现与验收见文末 |
+| OPT-13 | 统一 ToolResult 结构化状态（先三工具试点） | 🔶 截至2026-10-24第七批，累计已登记 **47/53工具名**（试点3＋第二至四批各7＋第五批6＋第六批3＋第七批14）；其余6个为mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/auto_debug_tool/bickering_tool。后续收尾已修子代理取消终态并补命令data.exitCode（取消/结果未知为null），Node13定向27/27、无跳过、单次。仍待computer_use输入分支显式状态、上述6工具迁移及MCP external分支核对；47/53不代表全部返回分支已显式结构化，继续归T22-20。活动取消/截止时间仍属T22-06；各批与本日收尾记录见文末 |
 | OPT-14 | 统一文件访问门（内建状态路径过真实路径校验） | ✅ internalStatePath/managedWorkspacePath 统一校验产品状态目录、会话、备份、MCP、skills、memory、todos、summaries、审计和工作区状态文件；junction/symlink 越界 fail-closed。普通用户文件仍走 sanitizePath，取消契约留 OPT-15 |
-| OPT-15 | 统一取消契约（上下文对象） | ⬜（A2-06 根治） |
+| OPT-15 | 统一取消契约（上下文对象） | 🔶 2026-10-24 T22-06首批加入可订阅的执行取消令牌及共享截止时间，贯穿HTTP/CLI任务的callOpenAI、压缩、子代理、审批与执行前边界；保留位置参数兼容，不宣称完整ExecutionContext改造。下载/网络/MCP、视觉、持久shell/调试内部及dream/BTW、全部副作用截止仍待后续；详见本日取消首批记录。 |
 | OPT-16 | 会话 generation/id（异步回调只改所属会话） | 🔶 A2-12 的 Web UI 局部 sessGen 守卫已做（15c7e7d）；统一的端到端会话身份/上下文仍未完成，勿将局部修复等同整项关闭 |
 | OPT-17 | 测试总入口 + 少量真实浏览器测试 | ✅ 2026-10-13 补齐真实 headless Chrome 回归（test/webui-browser.js），消息编辑/停止/会话切换/用量刷新；`npm run test:browser` 独立运行，`BROWSER_TEST=1` 可追加到全量入口。Playwright 由开发环境提供，未增加生产依赖 |
 
@@ -589,7 +589,7 @@
 | ⬜ | T22-03 | High／部署风险 | **固定离线浏览器与依赖基线**：明确 Win7 x64、固定 Node13、可写工作区、浏览器版本、本地/内网模型条件；离线准备浏览器，页面检测关键 API 并显示不支持原因。目标机无系统 Node/npm 也能完成基本聊天。 | R1 H02、Win7/离线章节；C5 |
 | ✅ | T22-04 | High／确认 | **隔离 SSE 解析异常**：10-23完成结构校验、事件回调捕获、统一单次结算、提前close/aborted处理及失败销毁；原解析函数故障矩阵与实际HTTP null帧后下一请求恢复通过。 | R2 N02；index.js parseSSEStream；test/stream-context.js；本批31/31，详见10-23第二批记录；未宣称全部网络异常组合或Win7已验收 |
 | ✅ | T22-05 | High／确认 | **保护压缩前原始上下文**：10-23完成失败/空摘要明确报错且不改原数组；按20K分段全部输入成功后才提交；当前用户要求原文保留，工具参数/已完成副作用进入摘要输入；后续段失败零提交。 | R2 N03；index.js summarizeConversation/compressConversationIfNeeded；test/stream-context.js；31/31＋旧边界2/2；真实模型摘要质量仍有单独限制 |
-| ⬜ | T22-06 | High／确认 | **贯穿取消与截止时间**：主/轻/摘要/子代理模型、重试、审批和工具共享取消；断连立即撤销待审批，执行前再次检查；主动关闭上游。取消后不得再开始写入/启动进程，旧执行结束后才释放执行门，下一任务能继续。 | R1 H03；R2 C02；OPT-15、A5、A2-06 |
+| 🔶 | T22-06 | High／确认 | **贯穿取消与截止时间**：2026-10-24首批以可订阅令牌＋共享时限接通HTTP流/非流、CLI任务、主/轻/摘要/子代理、压缩、重试、审批及工具入口；Axios CancelToken主动关闭上游，断连立即撤销待审批，迟到批准不执行，旧调用结算后才释放门。默认30分钟，EXECUTION_TIMEOUT_MS可配置。专项20/20＋流/压缩31/31＋路由33/33，均Node13单次。**未完成**：下载/网络/MCP、视觉、持久shell/调试内部及dream/BTW、同步IO、全部副作用截止和进程树停止；不可据此宣称所有取消后零写入/零进程或整个T22-06关闭。 | R1 H03；R2 C02；OPT-15、A5、A2-06；本日首批记录，尚未提交 |
 | ⬜ | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：覆盖普通命令、后台 task、cron、MCP、持久 shell、调试；超时/取消/正常退出树杀并确认结果；明确 one-shot 后台任务语义。删除运行中 cron 不能丢句柄；强杀后重启可诊断残留。保留 cron running 防重叠。 | R1 H04、M08；A10、NEW-2；与 T22-06 联动 |
 | ✅ | T22-08 | High／确认＋风险 | **串行化交互审批并修 REPL 等待**：2026-10-23 第三批落地单一 CLI 问题队列，EOF/close 结算全部问题、取消结算对应问题；审批和询问用户共用输入分派。任务在首个 await 前占位并取走草稿，BTW 按草稿排队，后续输入进入下一草稿，clear 后旧回调不污染新草稿。Node13 新回归20/20＋既有btw-eof 1/1，均单次；真实Win7终端待验收，HTTP活动取消仍属T22-06。 | R2 N01；R1 M10；D6；提交5149903 |
 | ✅ | T22-09 | High／确认 | **下载替换不先删原文件**：2026-10-23 第四批移除目标 unlink；独占打开唯一临时文件，等 close＋fsync，严格完整旧版备份发布后单次 rename 覆盖，失败不删目标；复用有保留上限的 /undo 恢复。Node13故障专项获准复跑41/41，既有下载6/6；提交边界骤停及新进程恢复通过，实Win7/占用/断电仍待验收。 | R1 H07；AST-05；提交7ce82f9 |
@@ -610,7 +610,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：shell 归属真实后端会话；新建/恢复/结束时正确释放，cwd/env 不跨对话或不同子代理串扰。身份协议未定义前可先禁用 HTTP persistent。 | R1 H05；OPT-16、GAP-2、A2-14；不要求取消请求门串行 |
 | ⬜ | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：记录 spawn/exit/close/code，避免按过期 PID 杀其它进程；失败不报 OK；桌面操作确认目标窗口与焦点；取消贯穿 fixer，限制递归再入。可靠前默认禁用/明确限制；静默 exit1、spawn失败、仍有错误、焦点丢失都有真实结果。 | R1 H11；R2 重大疑点4；A2-09、C1/C3 |
 | ⬜ | T22-19 | Medium／确认 | **会话保存与失败历史完整性**：保存有 dirty/最新快照补存、失败可见、容量一致；保存 failed/cancelled 回合、部分正文及已完成副作用；活动按回合保留，手动/自动恢复一致。慢保存、413/500、停止后刷新不能静默丢最新状态。 | R1 M03/M04；OPT-16、A2-12；不自动重开 OPT-6 多客户端保存设计 |
-| 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：首片＋命令族批完成（2026-10-24，主会话）：agent 失败仍为 ok 已修（runSubAgent 结构化返工）；Worktree/Fetch/Synthetic/Screenshot/schedule 前缀缺口全清、抓取内容透传显式 ok；命令族 aborted→cancelled（取消不再报 ok）、成功保留 stderr 尾巴、bash 缺失/非 Windows 缺口；OPT-13 推进至 33/53。剩余：MCP external 前缀缺口、余下 20 工具分小批迁移（写入类/模型面），保留内容透传语义。必选失败步骤不执行后续写入。 | R1 M05；A2-07；10-20 主动留下的 Worktree 缺口已随首片关闭 |
+| 🔶 | T22-20 | Medium／确认 | **继续收口权威工具状态**：2026-10-24第五至七批＋本日收尾已落地，OPT-13已登记 **47/53工具名**。子代理异常/嵌套拒绝为error，取消按令牌为cancelled，finally恢复depth/权限覆盖；命令族保留stderr并提供data.exitCode，已确认退出为整数，取消/启动失败/超时或结果未知为null，持久shell内部-1/退役124不冒充真实命令退出。Node13新增14＋既有首片6/命令族7，共27/27、无跳过、单次。剩余：computer_use输入分支显式状态，mcp_tool/mcp_list_tools_tool/web_browser_tool/plan_mode/auto_debug_tool/bickering_tool迁移，以及MCP external逐分支核对。保留内容透传语义，必选失败步骤不执行后续写入；不以工具名注册判断状态正确。 | R1 M05；A2-07；INC-24-01已修；活动取消联动T22-06；10-24收尾记录，尚未提交 |
 | ⬜ | T22-21 | Medium／确认 | **统一有效权限、审批展示与生命周期**：执行前复核 mode/cancel；界面反映 --danger 强制项；收到成功审批响应才显示批准；工作流展示真实嵌套 steps/参数再继承批准；停止/切会话 dispose 审批倒计时。denial切换、迟到审批、400/401、具体命令预览均有验收。 | R1 M09/L05；R2 N05；P0-3/P2-12；取消实现复用 T22-06 |
 | 🔶 | T22-22 | Medium／确认＋风险 | **启动失败与 dream 恢复闭环**：T22-14已把配置恢复移到工作区独占之后、顶层执行异常改为非零退出；后台确认只代表持锁及同步初始化成功。dream仍可能阻塞ready，interaction覆盖HTTP、dream锁的owner/finally/陈旧恢复、模型离线/目录不可写全链路仍待修，不能据此关闭。 | R1 M12；A2-08、A10；10-23第九批仅启动门与catch局部 |
 
@@ -638,7 +638,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 |---|---|---|---|
 | ⬜ | V22-01／P0 | **干净 Win7 SP1 x64**：PS2/CLR2、无系统Node/npm、普通用户与管理员、双击/CLI、中文/空格/盘符根工作区；确认真正 ready、失败退出码、DLL/补丁与浏览器前提。Node13在现代Windows运行不能代替此项。 | T22-02/03/23/24/25；C5；R1 Win7专项、R2重大疑点1 |
 | ⬜ | V22-02／P0 | **真实目标浏览器＋实际后端＋物理断外网**：本地模型聊天/工具/审批/停止/重发/保存/恢复、无隐式在线资源；关键API缺失显示明确原因。不能仅用UI fixture替代后端。 | T22-03/06/19/21；OPT-17已有浏览器测试仍有价值 |
-| 🔶 | V22-03／P0 | **核心负向时序**：T22-04/05/08/12已有坏SSE恢复、摘要/20K、双保护读取、管道结算/旧对象身份等局部证据；模型/重试/审批/工具各阶段活动取消与零迟到副作用仍待T22-06等验收。 | T22-04/05/06/08/12；R2新增High；10-23第二/三/七批 |
+| 🔶 | V22-03／P0 | **核心负向时序**：T22-04/05/08/12已有坏SSE恢复、摘要/20K、双保护读取、管道结算/旧对象身份等局部证据；10-24 T22-06首批20/20另证实模型流/非流/等头取消、重试中断、压缩保全、审批撤销/迟到批准阻断、超时后下一请求及摘要截止。工具内部全部活动取消与零迟到副作用、Win7仍未验收。 | T22-04/05/06/08/12；R2新增High；10-24首批仅模型/审批及执行入口子范围 |
 | ⬜ | V22-04／P1 | **启用能力专项**：记录双模型主/子/辅助调用路由；MCP断stdin/超时/重连；持久shell跨对话cwd/env；cron删除/超长间隔/重叠；auto_debug spawn/exit/焦点/取消/再入。危险桌面场景仅在受控环境。 | T22-07/11/12/17/18/31；C1/C3/C6、GAP-4（启用视觉时） |
 | 🔶 | V22-05／P0 | **进程树与第二次启动**：T22-14已有真实直属Agent强终止、/bye、冻结owner、one-shot后台交接及再启动的OS独占证据；三层心跳/文件锁/端口、活动取消、真实Ctrl+C/关窗口/注销/关机与Win7仍待验收。独占释放不能证明后代停止。 | T22-06/07/14/22；R1 H04/M08；10-23第九批仅直属进程与所有权 |
 | 🔶 | V22-06／P0 | **数据完整性故障注入**：T22-09/10/13/14已完成本地下载、编码/快照、关键状态IO故障/损坏恢复/提交边界骤停、新进程恢复及双实例拒绝/先后写入不丢todo证据；尚须真实磁盘满/只读/占用、Win7双实例/不同账户与断电验收。不能以本地注入或process.exit边界替代真实断电与整项发布验收。 | T22-09/10/13/14/19/24；R1 H07/H08/H10；10-23第四/五/八/九批记录 |
@@ -662,8 +662,8 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 |---|---|
 | R1 M07 的绝对路径 .cmd 判断 | 按 R2 C01 撤回泛化断言，不列修复待办；管道异常与缓存竞争已由T22-12修复，进程树停止仍属T22-07。历史报告保留原文以便追溯。 |
 | R1 Critical 与 --help 证据 | 按 R2 C04/C05：Critical 不要求所有部署触发；--help不证明dotenv初始化。本清单没有新增Critical或扩大既有验证结论。 |
-| A5/A2-06/OPT-15 | 既有取消接线视为历史已做；活动取消、迟到审批与副作用截止仍未完成，合并到T22-06；不能把A5旧✅理解为完整取消已验收。 |
-| OPT-13／10-20第四批 | 24/53迁移保持部分完成；参数校验失败获error不等于agent运行失败获error，余量及M05归T22-20，不重做已完成的24个工具。 |
+| A5/A2-06/OPT-15 | 既有取消接线保留；10-24 T22-06首批补模型/重试/审批活动取消与迟到批准阻断，工具内部及全部副作用截止仍未完成；不能把A5旧✅或本批20/20理解为完整取消已验收。 |
+| OPT-13／10-20第四批 | 24/53为10-20历史进度；截至2026-10-24第七批已登记47/53工具名，仍为部分完成。第五批修子代理抛异常/嵌套拒绝，本日收尾补取消终态与命令exitCode；剩余6工具与computer_use遗留分支由T22-20跟踪。注册计数不代表所有返回分支均已显式结构化，不重做已有效完成的迁移。 |
 | OP5-4／多模型路由 | 启动回落保留；2026-10-23 T22-11已补热切换继承、执行路由快照与子代理模型传递，原缺口由第六批证据关闭；并非重新宣称旧启动测试覆盖全部路由。 |
 | GAP-2/A2-14、A2-12/OPT-16 | /clear清shell与页面sessGen已做；HTTP身份隔离与保存最新快照未做，分别归T22-17/19。 |
 | AST-R1/AST-15/NEW-2 | 非流式摘要后台化、主任务串行、cron防重叠均保留；补队列边界及进程归属，不能因此重开全并行架构。 |
@@ -1013,6 +1013,94 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - **md-corrupt 测试适配（T22-13 有意语义，非产品缺陷）**：含 NUL 的 7CODER.md 且无有效旧版，新契约为任务正常完成、摘要拒绝追加并显式告警（`summary not written: Invalid state has no valid previous version`）、损坏字节原样保全待人工修复；旧断言（损坏文旁照样追加 auto-log）改为断言新契约（字节不变 + code 0 + 告警出现 + .env.local 保护不变）。
 - **runner-h 静态两项（第九/八批尾巴，小修）**：`_7CODER_LEASE_HANDOFF` 为父→子内部交接变量（spawn 时注入、启动即消费并删除），不应进 .env.example——runner-h 检查加 `internalIpcAllow` 豁免表；index.js 日志文案 "[WARN] TODO log save failed" 的 `TODO` 撞标记检查（e862a03 引入），改小写 "todo log"。
 - 检查确认 computer_use 输入类路径（`[WARN]`/`[OK]`/`Input error:`）推断分类全部正确，无新误判面。
+
+---
+
+## 2026-10-24 —— GLM改动独立复核与进度修正
+
+本节复核范围为`5fb6d38..b7f16e2`的4个提交、9个文件，以及相关调用链；不以Git作者字段判断模型归属。T22-14主体是此前实施的工作，本轮不将其算作GLM新增实现。产品源码未改，本次仅修正文档。未发现本范围内新增、已确认的Critical/High问题；这不关闭既有发布门槛。
+
+### 独立复核时的进度与口径（后续关闭情况见本日收尾记录）
+
+- **OPT-13/T22-20仍为🔶**：已登记47/53工具名，未登记6个为`mcp_tool`、`mcp_list_tools_tool`、`web_browser_tool`、`plan_mode`、`auto_debug_tool`、`bickering_tool`。T22-20原33/53、剩20及归并表24/53已更新；各历史批次的当时计数保留。
+- **计数边界**：47/53是`STRUCTURED_RESULT_TOOLS`登记数，不是所有返回分支的完成率。`computer_use`截图分支已显式结构化，输入及未知action仍返回字符串（`index.js:3429`及相邻分支），经`normalizeToolResult`按文本推断（`index.js:4235`）。这是迁移残留，不能仅凭登记或注册断言关闭。
+- **命令结果尚未包含结构化exitCode**：`run_command`、`bash_tool`、`powershell_tool`成功分支分别在`index.js:2675/2706/2722`调用`makeToolResult('ok', okText)`，没有传第三参data。stderr保留已完成，不能据此认为原stderr/exitCode要求全部满足；exitCode继续列入T22-20。属原需求未完成，不认定为本轮新增回归。
+- **历史门禁计数待核对**：第七批原记录`runner-i 51/50+1跳过`口径有歧义，后文另记Node13复验`I 51/51`。保留原始记录，不推算替换为新的通过数；需原运行日志区分通过断言数与跳过场景数，`input-escape`仍要求`DESKTOP_TEST=1`。这些历史结果本次未独立重跑，不作为桌面输入已验收的证据。
+- **dream勘误**：`169c0b3`补传`modelContext`的修复有效；旧文“6小时空闲触发”应按`index.js:2130`的`hoursSince < 5`更正为5小时门槛。锁、ready阻塞等其它生命周期缺口仍属T22-22。
+
+### 待修：子代理取消仍被记录为成功
+
+| 状态 | ID／归属 | 严重程度／证据 | 触发、后果与完成条件 |
+|---|---|---|---|
+| ✅ | INC-24-01／T22-20，联动T22-06 | Medium／已确认；既有缺口，非GLM新增回归 | 复核基线`runSubAgent`（`index.js:663`）等待`processWithTools`后无条件返回ok（`:683–685`）；后者取消时返回普通字符串，不抛异常，探针确认status为ok。本日收尾已在启动前、返回后及catch中检查取消令牌并传递cancelled，finally恢复状态；不匹配模型正文猜取消。新增回归使用真实processWithTools边界验证取消、迟到成功/异常、状态恢复和错误样正文透传，14/14；连同既有首片/命令族共27/27、单次。尚未提交。未据此宣称活动上游中止或零迟到副作用已完成，仍归T22-06。 |
+
+第五批“agent失败不再被包成ok”仅对抛异常与嵌套拒绝成立，不覆盖取消。`test/runner-b.js:3130–3135`现有VM测试覆盖异常/嵌套/成功，未覆盖上述取消返回路径。
+
+### 测试证据与发布判断
+
+- **测试证据缺口归T22-33**：第七批`statusOf`按结果前缀关联SSE、audit用工具名/状态存在性匹配；当前夹具未证实误匹配，但不能替代按调用ID逐次核验。`runner-i`注册断言也不能证明工具全部分支都返回权威状态；本次不把这两点列为新增已确认Bug。
+- **本轮实际验证**：上一轮独立复核已单次完成`git diff 5fb6d38..HEAD --check`及Node13纯内存源码探针，得到登记47/53、剩余6个工具名和子代理取消仍ok；探针未启动Agent、未调用模型或命令工具、未写工作区。本次文档修正仅核对源码/引用及文档差异，不重复运行探针或业务测试。
+- **未独立运行**：GLM记录的A/B/I及test-all、真实模型、桌面输入、Win7实机、24/72小时长期运行与打包验收。历史绿测保留为原实施记录，不升级为本轮复现证据。
+- **发布风险不变**：T22-06贯穿取消、T22-07进程树及T22-03离线运行基线等仍开放，Win7及长期运行尚未验收，不能据47/53或本轮未发现新增High判断可直接发布。
+
+---
+
+## 2026-10-24 —— T22-20 状态收尾：子代理取消与命令退出码
+
+### 实施范围
+
+- `runSubAgent`在启动前、`processWithTools`返回后及异常结算时检查取消令牌，取消统一返回`cancelled`；保留嵌套拒绝/普通异常为`error`，正常完成为`ok`。已经取消时不启动子代理；进入执行后仍用finally恢复depth和权限覆盖。模型正文即使恰为`[aborted: client disconnected]`，未取消时仍是正常成功内容。
+- `runCommandAsync`在回调中记录退出码；`run_command`、`bash_tool`、`powershell_tool`通过`ToolResult.data.exitCode`传递：确认的正常退出为0，确认的非零退出为整数；取消、spawn失败、同步启动异常、buffer错误、超时/信号终止均为null。持久shell仅采信命令完成marker的非负整数；退役/超时合成124与内部-1为null，正常marker返回的124仍保留124。文本输出及stderr保留规则未变，data沿既有契约仅供内部消费。
+- 复用B套件新增`tool-results-followup`，原命令族VM夹具补齐runner新字段，未删减原断言；不增加生产依赖或新运行时要求。OPT-13仍是47/53工具名、T22-20仍为部分完成，INC-24-01关闭。
+
+### 本批验证（均单次）
+
+| 检查 | 结果 | 证据范围 |
+|---|---|---|
+| Node13语法检查index.js、test/runner-b.js | 2/2，exit0 | 使用随包runtime/node.exe，不代表Win7系统能力验收。 |
+| Node13 B定向：tool-results-followup、tool-results-b5、tool-results-b6 | **27/27，0场景跳过，exit0** | 新增14项：真实processWithTools取消边界、启动前取消、迟到成功/异常、状态恢复、取消样正文透传；runner故障回调与三命令族状态/exitCode；持久shell真实marker/合成码区分；真实短命Node子进程退出0/7、缺失可执行文件。既有首片6项＋命令族7项含隔离HTTP/SSE/audit与活体命令兼容。 |
+| 差异检查与静态复核 | 通过 | 核对共同runner其它调用方仍按原error/stdout/stderr消费，新exitCode为新增字段；未运行第二轮行为测试。 |
+
+### 边界与剩余风险
+
+- 新增故障时序主要采用源码原函数＋受控模型/进程回调；真实子进程只覆盖退出0/7及缺失文件，不把它们等同于Win7原生超时、管道错误或强杀验收。既有SSE/audit测试保留原关联方式，按调用ID严格逐次核验仍属T22-33。
+- 未运行完整A–J/UI/test-all、真实模型、Win7实机、24/72小时长期运行、打包验收。本批没有主动中断所有上游/审批/工具，也没有实现进程树停止；T22-06/07及其它发布门槛继续开放。
+- 本批尚未提交、未推送、未打包。后续优先T22-06贯穿取消与截止时间，再处理T22-07进程树所有权；不因本次终态修复关闭完整取消链路。
+
+---
+
+## 2026-10-24 —— T22-06 首批：模型、审批与执行前取消
+
+### 已实施范围
+
+- HTTP聊天（流/非流）与CLI任务创建独立执行控制，主/轻/摘要/子代理及工具模型面复用同一取消令牌和截止时间；主循环在压缩后、模型返回后、强制最终回答前后检查取消。`EXECUTION_TIMEOUT_MS`默认1800000毫秒，限制1000–86400000毫秒；HTTP从完整请求体进入处理时计时，CLI从executeTask开始计时，含排队/重试/审批/摘要，不是每次模型调用重置。
+- `callOpenAI`通过`executionHttp`使用当前Axios的CancelToken，覆盖等待响应头、JSON正文和SSE解析全程；取消后不进入重试，退避等待可中断。通过该入口的风险分类、说明、自动审批、压缩、synthetic/plan/bickering模型调用均传递令牌；压缩和任务摘要不将取消吞为成功或fallback，不提交取消后的摘要。
+- HTTP正常结束与异常断开区分；断连/写失败取消当前执行，流/非流路径均适用。待审批由独立bridge管理，审批回复/超时/取消统一一次结算并移除登记及timer，迟到审批无有效ID；工具入口及人工/自动批准返回后检查取消。保留执行门，等待实际调用结算后才释放，不用只让外层Promise提前结束的方式放行下一任务。
+- 正常流式响应结束仍允许摘要使用剩余时限；非流式后台摘要保留原请求的绝对截止时间，排队过期时不再调用模型或写日志。现有summaryChain的无界排队与流式摘要占门仍属T22-16，未把增加截止时间视为有界队列完成。
+- 控制器、观察订阅、退避timer、审批timer在结算或finally释放；兼容旧函数式令牌时仅在活动等待中轮询100ms，不依赖Node13不存在的AbortController。未新增生产依赖。
+
+### 本批验证（均单次）
+
+| 检查 | 结果 | 实际证据 |
+|---|---|---|
+| Node13语法：index.js、test/execution-cancel.js、scripts/test-all.js | 3/3，exit0 | 随包runtime/node.exe。 |
+| 新增test/execution-cancel.js | **20/20，exit0，无跳过** | 原控制/请求/审批/权限/压缩函数＋真实Axios连接本地HTTP夹具；流/非流请求等头、SSE正文等待时主动关闭且不重试、退避中断、时限、4类辅助调用取消不fallback、压缩原数组保全、审批登记即时清理/迟到回复、执行前零启动、timer释放；真实隔离Agent断连后下一请求恢复、旧审批400/零文件写入、超时恢复、正常DONE后摘要超时不落盘。非流式响应已发头但JSON正文停顿未单独驱动。 |
+| 既有test/stream-context.js | **31/31，exit0** | SSE异常与恢复、压缩输入/事务边界；保留原有行为。 |
+| 既有test/model-routing.js | **33/33，exit0** | 两个严格本地模型端点，含流/非流摘要、主/子/辅助路由、审批、workflow、设置热切换。 |
+
+新增npm入口`test:execution-cancel`并接入test-all（本批未运行完整入口）。三套行为检查合计84项，分别单次执行；不宣称完整项目84项全部覆盖。保留上一批T22-20的27/27为上一批证据，本批未重跑该组。
+
+### 未完成范围与发布限制
+
+- T22-06/OPT-15保持🔶。直接视觉axios请求、启动dream与BTW尚未接入此执行控制；下载/其它网络/MCP的活动等待、持久shell及auto_debug内部等待与副作用尚未贯穿。已进入这些工具的操作仍可能在取消/过期后提交；后续需逐个在异步恢复后的写入/启动前拦截并验收，不能只靠executeToolRaw入口检查。直属命令kill的既有轮询保留，进程树结果仍归T22-07。
+- 同步IO/execSync不能被JS timer中断；取消不是回滚已经完成的副作用。排队请求仍要等待前任结算才释放自己的队列位置，数量/字节/队龄准入仍由T22-16处理。Ctrl+C/注销/关机及异常终止未在本批闭环。
+- 未运行完整A–J/UI/test-all、真实模型、真实桌面、Win7实机、长期运行和打包；本机Node13实证不替代Win7。未改用户真实配置，未提交、未推送、未重新打包。
+
+---
+
+## 2026-10-24 —— Git提交登记
+
+本次提交合并独立复核后的清单修正、T22-20状态收尾及T22-06取消首批（提交标题：`fix(T22-06,T22-20): cancel model requests and preserve tool outcomes`）。上文各实施阶段“尚未提交”描述为当时状态，以本节提交登记为准；未推送、未打包。沿用此前单次验证：T22-20定向27/27，T22-06取消20/20、流/压缩31/31、模型路由33/33；提交阶段只检查差异和暂存范围，不重跑测试。T22-06/20剩余范围与Win7发布限制不变。
 
 ---
 

@@ -3100,6 +3100,148 @@ scenarios.push({
 });
 
 scenarios.push({
+  name: 'tool-results-followup',
+  fn: async () => {
+    // T22-20 / INC-24-01: execute the real cancellation boundaries and
+    // command callback decoder; never infer status from model/output text.
+    const vm = require('vm');
+    const src = fs.readFileSync(IDX, 'utf8');
+    const cut = (from, to) => {
+      const start = src.indexOf(from), end = src.indexOf(to, start);
+      if (start < 0 || end <= start) throw Error('source boundary missing: ' + from);
+      return src.slice(start, end);
+    };
+    const api = {};
+    vm.runInNewContext(cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
+      '\nthis.api={makeToolResult,isToolResult,toolResultText};', api);
+    const route = Object.freeze({ main: 'fixture' });
+    const agent = vm.createContext({
+      ...api.api, console: { log() {} }, agentDepth: 0, subAgentModeOverride: '', PERMISSION_MODE: 'default',
+      systemPrompt: 'fixture', HEAVY_MODEL: 'fixture', MAX_TOOL_STEPS: 2,
+      compressConversationIfNeeded: async () => {}, createModelContext: () => route,
+      READ_ONLY_TOOLS: new Set(), safeExecuteTool: () => { throw Error('unexpected tool call'); }
+    });
+    vm.runInContext(cut('async function runSubAgent(', 'function pruneTasks()') +
+      cut('async function processWithTools(', '// ====================== TASK CHANGE SUMMARY'), agent);
+    const runSub = cancel => agent.runSubAgent('followup', 'task', cancel, route);
+    const reset = () => agent.agentDepth === 0 && agent.subAgentModeOverride === '';
+    let modelCalls = 0, stop = false;
+    agent.callOpenAI = async (messages, options) => {
+      modelCalls++;
+      if (options.modelContext !== route) throw Error('lost model route');
+      return { message: { role: 'assistant', content: '[aborted: client disconnected]' } };
+    };
+    const before = await runSub(() => true);
+    record('ToolResult-followup: pre-cancelled sub-agent never starts model or mutates state',
+      before.status === 'cancelled' && modelCalls === 0 && reset(), '');
+    let polls = 0;
+    const boundary = await runSub(() => ++polls > 1);
+    record('ToolResult-followup: real processWithTools cancellation text becomes cancelled and restores state',
+      boundary.status === 'cancelled' && modelCalls === 0 && reset(), '');
+    const textOnly = await runSub(() => false);
+    record('ToolResult-followup: cancellation-looking model content remains a successful answer',
+      textOnly.status === 'ok' && textOnly.text.endsWith('[aborted: client disconnected]') && modelCalls === 1 && reset(), '');
+    agent.callOpenAI = async () => { stop = true; return { message: { role: 'assistant', content: 'late answer' } }; };
+    const late = await runSub(() => stop);
+    record('ToolResult-followup: cancellation during model completion wins over late success', late.status === 'cancelled' && reset(), '');
+    stop = false;
+    agent.callOpenAI = async () => { stop = true; throw Error('connection closed'); };
+    const cancelledError = await runSub(() => stop);
+    record('ToolResult-followup: model rejection after cancellation remains cancelled', cancelledError.status === 'cancelled' && reset(), '');
+    agent.callOpenAI = async () => { throw Error('model failed'); };
+    const failure = await runSub(() => false);
+    record('ToolResult-followup: ordinary model failure remains error and restores state',
+      failure.status === 'error' && failure.text.includes('model failed') && reset(), '');
+
+    const runnerSource = cut('function runCommandAsync(', '// Race a running command');
+    const commands = vm.createContext({
+      ...api.api, Buffer, process: { platform: 'win32' }, DANGER_MODE: false,
+      effectivePermissionMode: () => 'default', withUtf8Codepage: c => c,
+      findBash: () => 'fixture-bash', getPersistentShell: () => commands.shell,
+      shellSessionKey: () => 'fixture', runCommandAsync: spec => spec,
+      awaitCommandCancellable: async () => commands.outcome
+    });
+    vm.runInContext('async function run(name,args,cancelled){\n' +
+      cut("  if (name === 'run_command') {", "  if (name === 'glob_tool') {") + '\n}', commands);
+    const decoded = async error => {
+      const ctx = { launchDir: 'fixture', child_process: { execFile(file, args, opts, cb) { cb(error, 'OUT', 'ERR'); return {}; } } };
+      vm.runInNewContext(runnerSource, ctx);
+      return ctx.runCommandAsync({ file: 'fixture', args: [] }).promise;
+    };
+    const success = await decoded(null);
+    const failed = await decoded(Object.assign(Error('exit 7'), { code: 7 }));
+    const unknown = [];
+    for (const error of [
+      Object.assign(Error('spawn'), { code: 'ENOENT' }),
+      Object.assign(Error('buffer'), { code: 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER' }),
+      Object.assign(Error('timeout'), { code: 1, killed: true }),
+      Object.assign(Error('signal'), { code: 1, signal: 'SIGTERM' })
+    ]) unknown.push(await decoded(error));
+    record('ToolResult-followup: runner distinguishes observed exits from spawn buffer timeout and signal errors',
+      success.exitCode === 0 && failed.exitCode === 7 && unknown.every(r => r.exitCode === null), '');
+    const sync = { launchDir: 'fixture', child_process: { execFile() { throw Error('sync spawn failure'); } } };
+    vm.runInNewContext(runnerSource, sync);
+    record('ToolResult-followup: synchronous launch failure has no exit code',
+      (await sync.runCommandAsync({ file: 'fixture', args: [] }).promise).exitCode === null, '');
+    for (const name of ['run_command', 'bash_tool', 'powershell_tool']) {
+      const results = [];
+      for (const r of [success, failed, ...unknown]) {
+        commands.outcome = { r, aborted: false };
+        results.push(await commands.run(name, { command: 'fixture' }, () => false));
+      }
+      commands.outcome = { r: success, aborted: true };
+      const cancelled = await commands.run(name, { command: 'fixture' }, () => false);
+      record('ToolResult-followup: ' + name + ' preserves exit codes status stderr and content semantics',
+        results[0].status === 'ok' && results[0].data.exitCode === 0 && results[0].text === 'Command OK:\nOUT\n[STDERR]\nERR' &&
+        results[1].status === 'error' && results[1].data.exitCode === 7 &&
+        results.slice(2).every(r => r.status === 'error' && r.data.exitCode === null) &&
+        cancelled.status === 'cancelled' && cancelled.data.exitCode === null &&
+        !api.api.toolResultText(results[0]).includes('[object Object]'), '');
+    }
+    const shellResults = [];
+    for (const [code, restarted] of [[0, false], [7, false], [124, false], [124, true], [-1, false]]) {
+      commands.shell = { run: async () => ({ code, restarted, out: 'fixture' }) };
+      shellResults.push(await commands.run('bash_tool', { persistent: true, command: 'fixture' }, () => false));
+    }
+    const shellCancelled = await commands.run('bash_tool', { persistent: true }, () => true);
+    record('ToolResult-followup: shell marker exits differ from synthetic timeout and unavailable codes',
+      shellResults.every((r, i) => r.data.exitCode === [0, 7, 124, null, null][i]) &&
+      shellResults[0].status === 'ok' && shellResults.slice(1).every(r => r.status === 'error') &&
+      shellCancelled.status === 'cancelled' && shellCancelled.data.exitCode === null, '');
+    commands.findBash = () => null; commands.shell = null;
+    const noBash = await commands.run('bash_tool', {}, null);
+    const noShell = await commands.run('bash_tool', { persistent: true }, null);
+    commands.process = { platform: 'linux' };
+    const noPs = await commands.run('powershell_tool', {}, null);
+    record('ToolResult-followup: unavailable command runtimes expose null exit code',
+      [noBash, noShell, noPs].every(r => r.status === 'error' && r.data.exitCode === null), '');
+
+    // Original callback decoder with real short-lived Node children in an
+    // isolated workspace; no Agent startup or developer config is loaded.
+    const owned = [], cp = require('child_process');
+    const real = { launchDir: freshCwd('command-exits'), child_process: {
+      execFile(file, args, opts, callback) {
+        const child = cp.execFile(file, args, opts, callback); owned.push(child); return child;
+      }
+    } };
+    vm.runInNewContext(runnerSource, real);
+    try {
+      const good = await real.runCommandAsync({ file: NODE_BIN, args: ['-e', 'console.log("[ERROR] sample");console.error("warning")'] }, { timeout: 5000 }).promise;
+      const bad = await real.runCommandAsync({ file: NODE_BIN, args: ['-e', 'process.exit(7)'] }, { timeout: 5000 }).promise;
+      const missing = await real.runCommandAsync({ file: path.join(real.launchDir, 'missing-runtime.exe'), args: [] }, { timeout: 5000 }).promise;
+      commands.outcome = { r: good, aborted: false };
+      const content = await commands.run('run_command', { command: 'fixture' }, null);
+      record('ToolResult-followup: real Node children report exit 0 exit 7 and missing executable without text inference',
+        !good.error && good.exitCode === 0 && good.stdout.includes('[ERROR] sample') && good.stderr.includes('warning') &&
+        !!bad.error && bad.exitCode === 7 && !!missing.error && missing.exitCode === null &&
+        content.status === 'ok' && content.data.exitCode === 0 && content.text.includes('[ERROR] sample'), '');
+    } finally {
+      for (const child of owned) if (child.exitCode === null && child.signalCode === null) { try { child.kill(); } catch (e) {} }
+    }
+  }
+});
+
+scenarios.push({
   name: 'tool-results-b5',
   fn: async () => {
     // OPT-13 batch 5 (T22-20 first slice): runSubAgent failures ("Sub-agent
@@ -3207,11 +3349,11 @@ scenarios.push({
     let outcomes, persistentShell, ctx;
     const isStruct = (r, status, textHead) => api.isToolResult(r) && api.toolResultStatus(r) === status && r.text.startsWith(textHead);
 
-    outcomes = [{ r: { error: null, stdout: '', stderr: '' }, aborted: true }];
+    outcomes = [{ r: { error: null, stdout: '', stderr: '', exitCode: 0 }, aborted: true }];
     ctx = mkCtx({}); const rcAb = await runBranch(ctx, 'run_command', { command: 'slow' }, null);
-    outcomes = [{ r: { error: null, stdout: '', stderr: '' }, aborted: true }];
+    outcomes = [{ r: { error: null, stdout: '', stderr: '', exitCode: 0 }, aborted: true }];
     ctx = mkCtx({}); const bashAb = await runBranch(ctx, 'bash_tool', { command: 'slow' }, null);
-    outcomes = [{ r: { error: null, stdout: '', stderr: '' }, aborted: true }];
+    outcomes = [{ r: { error: null, stdout: '', stderr: '', exitCode: 0 }, aborted: true }];
     ctx = mkCtx({}); const psAb = await runBranch(ctx, 'powershell_tool', { command: 'slow' }, null);
     persistentShell = { run: async () => ({ code: 0, out: 'X', restarted: false }) };
     ctx = mkCtx({}); const bpAb = await runBranch(ctx, 'bash_tool', { command: 'slow', persistent: true }, () => true);
@@ -3228,14 +3370,14 @@ scenarios.push({
       isStruct(bashMiss, 'error', 'bash not found.') && isStruct(bashMissP, 'error', 'bash not found.') && isStruct(psNonWin, 'error', 'powershell_tool is Windows-only'),
       JSON.stringify([typeof bashMiss, typeof bashMissP, typeof psNonWin]));
 
-    outcomes = [{ r: { error: null, stdout: 'OUT-VM', stderr: 'ERR-VM \n' } }];
+    outcomes = [{ r: { error: null, stdout: 'OUT-VM', stderr: 'ERR-VM \n', exitCode: 0 } }];
     ctx = mkCtx({}); const stderrOk = await runBranch(ctx, 'run_command', { command: 'build' }, null);
     record('ToolResult-b6: successful command retains a non-empty stderr tail',
       isStruct(stderrOk, 'ok', 'Command OK:') && stderrOk.text.includes('OUT-VM') && stderrOk.text.includes('[STDERR]') && stderrOk.text.includes('ERR-VM'),
       JSON.stringify(stderrOk && stderrOk.text));
-    outcomes = [{ r: { error: null, stdout: 'CLEAN-VM', stderr: '' } }];
+    outcomes = [{ r: { error: null, stdout: 'CLEAN-VM', stderr: '', exitCode: 0 } }];
     ctx = mkCtx({}); const cleanOk = await runBranch(ctx, 'run_command', { command: 'clean' }, null);
-    outcomes = [{ r: { error: { message: 'Command failed with exit code 3', code: 3 }, stdout: '', stderr: 'boom' } }];
+    outcomes = [{ r: { error: { message: 'Command failed with exit code 3', code: 3 }, stdout: '', stderr: 'boom', exitCode: 3 } }];
     ctx = mkCtx({}); const fail = await runBranch(ctx, 'bash_tool', { command: 'x' }, null);
     persistentShell = { run: async () => ({ code: 0, out: 'POK', restarted: false }) };
     ctx = mkCtx({}); const pOk = await runBranch(ctx, 'bash_tool', { command: 'x', persistent: true }, null);
