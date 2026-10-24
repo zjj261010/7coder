@@ -9,7 +9,7 @@ const http = require('http');
 const S = require('./_shared').create({ suite: 'stream-context' });
 const src = fs.readFileSync(S.IDX, 'utf8');
 const cut = (from, to) => src.slice(src.indexOf(from), src.indexOf(to, src.indexOf(from)));
-const parse = vm.runInNewContext('(' + cut('function parseSSEStream(', 'async function callOpenAI(') + ')');
+const parse = vm.runInNewContext(src.match(/^const MODEL_RESPONSE_MAX_BYTES = .*;$/m)[0] + '\n(' + cut('function parseSSEStream(', 'async function callOpenAI(') + ')', { Buffer });
 let checks = 0, backend, upstream;
 function check(name, condition) { assert.ok(condition, name); checks++; console.log('PASS ' + name); }
 const tick = () => new Promise(resolve => setImmediate(resolve));

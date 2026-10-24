@@ -2409,7 +2409,7 @@ scenarios.push({
 
     // A2-15 (unit-level on parseSSEStream with a fake stream):
     const fnSrc = (() => { const a = src.indexOf('function parseSSEStream'); const b = src.indexOf('\n}', src.indexOf('stream.on(\'error\'', a)); return src.substring(a, b + 2); })();
-    const parseSSEStream = eval('(' + fnSrc + ')');
+    const parseSSEStream = eval('(()=>{' + src.match(/^const MODEL_RESPONSE_MAX_BYTES = .*;$/m)[0] + '\nreturn (' + fnSrc + ');})()');
     const EventEmitter = require('events');
     function fakeStream(lines) {
       const em = new EventEmitter();

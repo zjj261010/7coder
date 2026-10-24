@@ -605,7 +605,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
 | ✅ | T22-14 | High／数据风险 | **建立工作区多实例协调**：2026-10-23 第九批采用同机真实工作区单Agent，Windows命名管道独占在配置读取/恢复前获取，大小写/junction同身份；OS随进程释放，无持久锁/PID删除。冲突/冻结/未知身份拒绝启动，不误杀；后台父子显式交接并确认子进程持锁。共享安装配置只读回退。专项首跑19项后夹具关闭超时，修夹具后获准仅复跑一次25/25，无跳过。实Win7/跨账户及会话/复杂进程树待验收。 | R1 H10多实例部分；T22-13；不含旧版Agent/外部写入、跨主机共享或重叠工作区；详见第九批；提交5fb6d38 |
-| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell/MCP帧/debug/task/cron见10-24；10-25模型单轮64预检14/14，分块read窗口20/20＋编码46＋格式4；再补MCP每客户端32pending/4MiB待写，新11/11＋真实MCP8/8单次。仍待全Agent总字节预算、全部MCP客户端/cache/stderr、模型响应/摘要准入、编辑/备份/prompt等完整物化；局部限制不等于全进程有界。 | R1 H06；C8；T22-12及各局部预算记录 |
+| 🔶 | T22-15 | High／高可信风险 | **在采集处限制内存**：shell/MCP帧/debug/task/cron见10-24；10-25工具批次64/14项、分块read20＋编码46＋格式4、MCP32pending/4MiB待写11＋旧8；再补流/非流/vision模型响应8MiB、超限不重试，新11/11＋流/上下文31/31单次。仍待全Agent总字节预算、全部MCP/cache/stderr、摘要输入准入、编辑/备份/prompt等完整物化；局部限制不等于全进程有界。 | R1 H06；C8；T22-12及各局部预算记录 |
 | ✅ | T22-16 | High风险＋Medium确认 | **有界摘要队列与聊天准入**：10-24流/非流共用独立串行摘要队列，8项/2MiB（含活动与路由）、60秒排队/120秒或原截止时间，超载/排队过期写有界简短记录、原请求过期及shutdown不fallback；<200字符继续跳过。聊天读正文前最多8项、正文共享16MiB/每项10MiB/读取30秒，核心排队60秒，取消立即移除，仍串行权限状态。/api/info提供负载。新专项25/25、B正文/摘要15/15、C混合6并发1/1、E日志竞争1/1均Node13单次；24/72h/Win7仍由V22-08/01验收，不等于全Agent内存有界。 | R1 M01；R2 N04；AST-R1/AST-15；本日队列批记录 |
 | 🔶 | T22-17 | High／确认＋风险 | **隔离 HTTP 持久 shell 状态**：10-24落实受限方案，HTTP模式（含danger、子代理、workflow及启动维护）拒绝persistent=true，单次命令保留，schema/诊断明确提示；CLI主会话保留，子代理/根workflow结束finally退役自身shell、agent内workflow留到agent结束，不再让后续同深度scope继承cwd/env。新shell-scope17/17、B定向27/27、I定向24/24单次；超时oracle另经c033208修正、新真实Bash专项8/8；不等于树回收完成。**未完成**：HTTP跨请求持久会话身份/恢复/关闭协议，完整后代回收仍属T22-07；只能按persistent禁用的受限版本部署。 | R1 H05；OPT-16、GAP-2、A2-14；本日shell作用域记录 |
 | 🔶 | T22-18 | High／确认＋风险 | **修 auto_debug 生命周期与终态**：10-24已补pid/error/exit/close及退出码、仅操作未退出直属ChildProcess句柄、5秒close确认/未知结果、取消贯穿编译/观察/fixer/重启边界、3轮修复上限与递归拒绝、stdout+stderr合计8MB；失败明确error。JS用随包Node；C#每轮重编译（INC-24-02）。模板默认禁用，GUI仅被动观察，停用无目标确认的随机输入且不宣称验证UI。专项21/21、A定向20/20、B sec2 9/9。仍待进程树确认和真实Win7/GUI/C#环境验收，保持部分完成。 | R1 H11；R2疑点4；A2-09、C1/C3；本日第四批记录 |
@@ -1418,3 +1418,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新mcp-budget Node13首次单次 **11/11**：32满额/33拒绝且零新写与不误杀、真实响应释放一格/再准入、dispose结算全部；中文字节计数、合计溢出只拒新请求、回调释放额度、迟到回调不复活/不负数。真实所属Node子进程不读stdin，观察到3MiB真实管道背压，第二帧被限流、只有一条pending；dispose后真实close与已发结果未知一起验证，不拿返回文字当进程回收证明。
 - 旧B mcp-stdio本批首次单次 **8/8**：握手、initialized通知、发现/cache、三次真实调用/协议isError/未知server保留。新npm/test-all登记、Node13语法及diff检查通过；未重跑已通过的pipe-lifecycle、其它预算专项或完整A–J/UI/test-all。
 - 预算是每客户端，不等于全部server/cache/参数原对象/连续stderr的全局预算。直属close不证明任意后代树，Win7原生管道/长时/断连仍需V22-04/06。未跑Win7、24/72h或打包；按授权提交本批、未推送，继续模型流/非流式响应的采集上限。
+
+### 2026-10-25 —— T22-15模型响应采集上限
+
+- MCP预算批已提交`627fb6d`。新增统一MODEL_RESPONSE_MAX_BYTES=8MiB，callOpenAI的流与非流、直接vision请求配置本地Axios maxContentLength；原解析器额外累计全部UTF8响应字节，在追加buffer/内容/arguments之前检查。因此无换行、被忽略的comment、reasoning或工具参数不能绕过总响应预算。maxContentLength失败归入明确upstream budget错误，不再重复模型请求；原其它有限重试规则保留。
+- SSE超限沿原settle销毁流、清理监听，只能保留已经发给页面的partial显示，不能完成工具choice或执行它。非流/vision在HTTP采集处止损，不先收完整大JSON再截断。使用当前已安装Axios实现并核对其maxContentLength在解压后responseStream处计数；没有为本批升级依赖或目标Node。
+- 新model-response-budget Node13首次单次 **11/11**：共享常量、原解析器ASCII无换行/中文按bytes/累计reasoning超额即销毁并清监听、精确8MiB合法响应仍接受；实际私有Agent的大JSON/gzip解压超限/未换行SSE/累计工具参数都只调用模型一次、上游socket真实close、零工具副作用/工具审计且活动归零；原vision helper同样限制，原Agent下一小请求正常完成。root fixture自己构造的有界大响应不是Agent RSS压力实测，不外推长期峰值。
+- 旧stream-context本批首次单次 **31/31**：结构/UTF8/fragments/usage/异常流/consumer回调和上下文压缩原始输入保全、真实后端失败后下一请求恢复均保持。提取解析器的两处旧夹具从源码读取统一常量并提供Buffer；B sec3仅语法核对，未重跑。共享loadContext显式载入原常量，避免给vision测试写死另一政策。
+- npm/test-all登记、Node13语法及diff检查通过。未重跑已通过的MCP/read/工具批次、完整A–J/UI/test-all或真实外部模型；未跑Win7/真实浏览器/24/72h或打包。8MiB仅每个上游响应，多个模型上下文/大输入请求、全文件编辑/备份、缓存/DOM/磁盘日志等仍可能累计，T22-15不整体关闭。按授权提交本批、未推送，继续T22-23可选依赖预检。

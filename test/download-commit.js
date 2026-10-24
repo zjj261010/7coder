@@ -21,7 +21,8 @@ function loadContext(source, cwd, overrides, extra) {
     EXECUTION_TIMEOUT_MS: 5000, MAX_TOOL_RESULT_CHARS: 30000,
     makeToolResult: (status, text) => ({ status, text }) }, extra || {});
   vm.createContext(ctx);
-  vm.runInContext(cut(source, 'function executionCancelledError(', 'function parseSSEStream(') +
+  vm.runInContext(cut(source, 'const MODEL_RESPONSE_MAX_BYTES =', '\n') + '\n' +
+    cut(source, 'function executionCancelledError(', 'function parseSSEStream(') +
     cut(source, 'function isInsideDir(', '// Files the AI must never edit') +
     cut(source, 'function recursiveReaddir(', '// P2-3: grep budgets') +
     cut(source, 'const backupsDir =', '// Small unified-ish diff') +

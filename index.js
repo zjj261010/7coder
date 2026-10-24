@@ -262,6 +262,7 @@ if (rawMaxToolSteps && !validMaxToolSteps) {
 // Guard against nonsense values: a negative cap would reduce every tool result
 // to just the truncation marker.
 const MAX_TOOL_RESULT_CHARS = Math.max(1000, parseInt(process.env.MAX_TOOL_RESULT_CHARS, 10) || 30000);
+const MODEL_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 const CONTEXT_CHARS = Math.max(500, parseInt(process.env.CONTEXT_CHARS, 10) || 120000);
 const EXECUTION_TIMEOUT_MS = Math.max(1000, Math.min(86400000, parseInt(process.env.EXECUTION_TIMEOUT_MS, 10) || 1800000));
 const ENABLE_COMPUTER_USE = process.env.ENABLE_COMPUTER_USE === 'true';
@@ -2642,6 +2643,7 @@ async function describeWithVision(imageUrl, modelContext, cancelled) {
     };
     const response = await executionHttp({ method: 'post', url: `${base}/chat/completions`, data: payload,
       headers: authHeadersFor(mcfg.apiKey),
+      maxContentLength: MODEL_RESPONSE_MAX_BYTES,
       timeout: 30000
     }, cancelled);
     const content = response.data && response.data.choices && response.data.choices[0] && response.data.choices[0].message && response.data.choices[0].message.content;
@@ -2786,6 +2788,7 @@ function parseSSEStream(stream, onDelta, onReasoning) {
     let upstreamErrorSeen = false;
     let sawReasoning = false;
     let buffer = '';
+    let receivedBytes = 0;
     let settled = false;
     function settle(error, choice) {
       if (settled) return;
@@ -2815,6 +2818,9 @@ function parseSSEStream(stream, onDelta, onReasoning) {
     function onData(chunk) {
       if (settled) return;
       try {
+      const bytes = Buffer.isBuffer(chunk) ? chunk.length : Buffer.byteLength(String(chunk), 'utf8');
+      if (receivedBytes + bytes > MODEL_RESPONSE_MAX_BYTES) throw new Error('upstream error: model response exceeds 8MiB budget');
+      receivedBytes += bytes;
       buffer += chunk.toString('utf8');
       let nl;
       while ((nl = buffer.indexOf('\n')) >= 0) {
@@ -2957,6 +2963,7 @@ async function callOpenAI(currentMessages, options = {}) {
         payload.stream_options = { include_usage: true };
         const choice = await executionHttp({ method: 'post', url, data: payload,
           headers: authHeadersFor(mcfg.apiKey),
+          maxContentLength: MODEL_RESPONSE_MAX_BYTES,
           timeout: 420000,
           responseType: 'stream'
         }, options.cancel, response => parseSSEStream(response.data, onDelta, onReasoning));
@@ -2968,6 +2975,7 @@ async function callOpenAI(currentMessages, options = {}) {
       }
       const response = await executionHttp({ method: 'post', url, data: payload,
         headers: authHeadersFor(mcfg.apiKey),
+        maxContentLength: MODEL_RESPONSE_MAX_BYTES,
         timeout: 420000, // 7 minutes - generous for slow local LLM endpoints
       }, options.cancel);
       if (response.data && response.data.choices && response.data.choices[0]) {
@@ -2981,6 +2989,7 @@ async function callOpenAI(currentMessages, options = {}) {
       if (error.response && error.response.data && error.response.data.error && error.response.data.error.message) {
         msg = error.response.data.error.message;
       }
+      if (/maxContentLength size of \d+ exceeded/.test(msg)) throw new Error('upstream error: model response exceeds 8MiB budget');
       console.error(`[WARN] API attempt ${attempt}/${MAX_RETRIES} failed: ${msg}`);
       // Upstream in-stream errors (e.g. LMStudio context overflow) and
       // reasoning-only responses will not get better by retrying.
