@@ -37,7 +37,7 @@ function reply(res, body, message) {
     res.end(JSON.stringify({ choices: [{ message: Object.assign({ role: 'assistant' }, message) }] }));
   }
 }
-async function cli(name, handle, drive) {
+async function cli(name, handle, drive, extraEnv) {
   const cwd = S.freshCwd(name);
   // Fake values in a disposable workspace; never use real credentials/config.
   fs.writeFileSync(path.join(cwd, '.env'), 'FIXTURE_A=FAKE_ALPHA\n');
@@ -57,7 +57,7 @@ async function cli(name, handle, drive) {
     OPENAI_API_KEY: 'fixture', OPENAI_ENDPOINT: 'http://127.0.0.1:' + server.address().port + '/v1',
     HEAVY_MODEL: 'fixture', LIGHT_MODEL: 'fixture', SUMMARY_MODEL: 'fixture', MAX_RETRIES: '1',
     PERMISSION_MODE: 'default', DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_HTTP_SERVER: 'false'
-  }) });
+  }, extraEnv || {}) });
   let out = '', code = null, closed = false;
   child.stdout.on('data', d => out += d.toString());
   child.stderr.on('data', d => out += d.toString());
@@ -184,10 +184,13 @@ const count = (text, needle) => text.split(needle).length - 1;
       c.write('/bye\n');
     });
 
-    held = null; taskBodies = [];
+    held = null; taskBodies = []; let discardedClosed = false;
     await cli('btw-clear', (body, res) => {
       if (!body.tools) {
-        if (body.messages[0].content.includes('BTW sub-agent')) { held = () => reply(res, body, { content: 'DISCARDED_NOTE' }); return; }
+        if (body.messages[0].content.includes('BTW sub-agent')) {
+          res.on('close', () => { discardedClosed = true; });
+          held = () => reply(res, body, { content: 'DISCARDED_NOTE' }); return;
+        }
         return reply(res, body, { content: 'fixture summary' });
       }
       taskBodies.push(body.messages.filter(m => m.role === 'user').slice(-1)[0].content);
@@ -198,12 +201,53 @@ const count = (text, needle) => text.split(needle).length - 1;
       c.write('/clear\nFRESH_DRAFT\n');
       await c.wait(t => t.includes('[OK] Conversation cleared.'), 'clear');
       held();
-      await c.wait(t => t.includes('DISCARDED_NOTE'), 'old callback');
+      await c.wait(t => t.includes('Note cancelled:') && discardedClosed, 'old request cancelled');
       c.write('/execute-task-now\n');
       await c.wait(t => t.includes('CLEAR_COMPLETE') && t.includes('[USAGE]'), 'fresh task');
-      check('stale BTW callback cannot contaminate cleared draft', taskBodies.length === 1 && taskBodies[0].includes('FRESH_DRAFT') && !taskBodies[0].includes('DISCARDED_NOTE'));
+      check('stale BTW callback cannot contaminate cleared draft or persist discarded note', taskBodies.length === 1 && taskBodies[0].includes('FRESH_DRAFT') && !taskBodies[0].includes('DISCARDED_NOTE') && !fs.existsSync(path.join(c.cwd, '.7coder', 'BTW.md')));
       c.write('/bye\n');
     });
+    let expiredNote = false; taskBodies = [];
+    await cli('btw-deadline', (body, res) => {
+      if (body.messages[0].content.includes('BTW sub-agent')) { res.on('close', () => { expiredNote = true; }); return; }
+      taskBodies.push(body.messages.filter(m => m.role === 'user').slice(-1)[0].content);
+      reply(res, body, { content: 'NOTE_TIMEOUT_RECOVERED' });
+    }, async c => {
+      c.write('/btw EXPIRED_NOTE_MUST_NOT_FALLBACK\n');
+      await c.wait(t => t.includes('Note cancelled:') && expiredNote, 'expired note stops');
+      c.write('FRESH_AFTER_NOTE_TIMEOUT\n/execute-task-now\n');
+      await c.wait(t => t.includes('NOTE_TIMEOUT_RECOVERED') && t.includes('[USAGE]'), 'task after note deadline');
+      check('expired BTW closes transport and cannot fall back into prompt or log',
+        taskBodies.length === 1 && !taskBodies[0].includes('EXPIRED_NOTE') && !fs.existsSync(path.join(c.cwd, '.7coder', 'BTW.md')));
+      c.write('/bye\n');
+    }, { EXECUTION_TIMEOUT_MS: '1000' });
+
+    let activeCalls = 0, activeClosed = false;
+    await cli('bye-active-model', (body, res) => {
+      activeCalls++; res.on('close', () => { activeClosed = true; });
+    }, async c => {
+      c.write('ACTIVE_MAIN\n/execute-task-now\n');
+      await c.wait(() => activeCalls === 1, 'main model active');
+      c.write('/bye\n/btw MUST_NOT_START\n');
+      await c.wait(t => t.includes('Goodbye!'), 'bye');
+      await until(() => activeClosed, 'active upstream closed');
+      check('bye cancels active model without starting another note or writing summary',
+        activeCalls === 1 && !fs.existsSync(path.join(c.cwd, '7CODER.md')) && !fs.existsSync(path.join(c.cwd, '.7coder', 'BTW.md')));
+    });
+
+    let dreamCalls = 0, dreamClosed = false;
+    await cli('bye-active-dream', (body, res) => {
+      dreamCalls++; res.on('close', () => { dreamClosed = true; });
+    }, async c => {
+      fs.writeFileSync(path.join(c.cwd, '7CODER.md'), 'PRESERVE_DREAM_BYTES');
+      c.write('AFTER_DREAM_MUST_NOT_START\n/execute-task-now\n');
+      await c.wait(() => dreamCalls === 1, 'dream active');
+      c.write('/bye\n');
+      await c.wait(t => t.includes('Goodbye!'), 'bye during dream');
+      await until(() => dreamClosed, 'dream upstream closed');
+      check('bye during dream cancels upstream, releases lock and never starts following task',
+        dreamCalls === 1 && !fs.existsSync(path.join(c.cwd, '.7coder', 'dream.lock')) && fs.readFileSync(path.join(c.cwd, '7CODER.md'), 'utf8') === 'PRESERVE_DREAM_BYTES');
+    }, { DREAM_ALLOW: 'true' });
     console.log('REPL/APPROVAL: ' + checks + '/' + checks);
   } finally { clearTimeout(suiteDeadline); S.cleanup(); }
 })().catch(e => { console.error(e.stack); process.exitCode = 1; });

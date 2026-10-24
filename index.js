@@ -2162,14 +2162,19 @@ function migrateWorkspaceRootFiles() {
 }
 
 async function triggerDreamIfNeeded(modelContext) {
+  if (triggerDreamIfNeeded.owner || shuttingDown) return false;
   const lastTime = getLastInteractionTime();
   const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60);
   const lockPath = internalStatePath('.7coder', 'dream.lock');
   if (!DREAM_ALLOW || hoursSince < 5) return false;
-  // Clear stale locks left behind by a crashed session (older than 4 hours).
+  // The workspace lease excludes another current Agent. Recognized locks
+  // from a previous owner can therefore recover immediately; legacy locks
+  // retain their existing four-hour grace period.
   try {
-    if (fs.existsSync(lockPath) && Date.now() - fs.statSync(lockPath).mtimeMs > 4 * 60 * 60 * 1000) {
-      fs.unlinkSync(lockPath);
+    if (fs.existsSync(lockPath)) {
+      let recognized = false;
+      try { recognized = JSON.parse(fs.readFileSync(lockPath, 'utf8')).kind === '7coder-dream-owner-v1'; } catch (e) {}
+      if (recognized || Date.now() - fs.statSync(lockPath).mtimeMs > 4 * 60 * 60 * 1000) fs.unlinkSync(lockPath);
     }
   } catch (e) {}
   if (fs.existsSync(lockPath)) return false;
@@ -2178,15 +2183,24 @@ async function triggerDreamIfNeeded(modelContext) {
   // A2-08: a brand-new workspace has no .7coder/ yet - create it before the
   // lock write, otherwise the dream path dies with ENOENT (the write below is
   // not otherwise guarded, and triggerDreamIfNeeded has no try/catch around it).
-  try { fs.mkdirSync(path.dirname(lockPath), { recursive: true }); } catch (e) {}
-  fs.writeFileSync(lockPath, new Date().toISOString());
-  await runDreamSession(modelContext);
-  fs.unlinkSync(lockPath);
-  updateLastInteractionTime();
-  return true;
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+  const owner = JSON.stringify({ kind: '7coder-dream-owner-v1', pid: process.pid, nonce: crypto.randomBytes(16).toString('hex') });
+  fs.writeFileSync(lockPath, owner, { flag: 'wx' });
+  triggerDreamIfNeeded.owner = owner;
+  const cancelled = createExecutionControl();
+  try {
+    const completed = await runDreamSession(modelContext, cancelled);
+    if (completed) updateLastInteractionTime();
+    return true;
+  } finally {
+    cancelled.dispose();
+    triggerDreamIfNeeded.owner = null;
+    try { if (fs.readFileSync(lockPath, 'utf8') === owner) fs.unlinkSync(lockPath); }
+    catch (e) { if (e.code !== 'ENOENT') console.warn('[WARN] dream lock cleanup failed: ' + e.message); }
+  }
 }
 
-async function runDreamSession(modelContext) {
+async function runDreamSession(modelContext, cancelled) {
   const mdPath = managedWorkspacePath('7CODER.md');
   let currentContent = 'No prior content.';
   try {
@@ -2216,12 +2230,15 @@ Rules (strict, no exceptions):
   ];
   console.log('Dreaming deeply (self-consolidation in progress)...');
   try {
-    await processWithTools(dreamMessages, { modelContext });
+    await processWithTools(dreamMessages, { modelContext, cancel: cancelled });
+    checkExecution(cancelled);
     console.log('[OK] Dream consolidation complete.');
+    return true;
   } catch (e) {
     // A2-08: a failed consolidation must NEVER overwrite 7CODER.md - the old
     // fallback destroyed the user's whole memory file on a transient API error.
     console.error('[DREAM] consolidation failed - original 7CODER.md preserved: ' + e.message);
+    return false;
   }
 }
 
@@ -2309,6 +2326,7 @@ function watchExecution(cancelled, callback) {
   return () => clearInterval(timer);
 }
 function createExecutionControl(timeoutMs = EXECUTION_TIMEOUT_MS) {
+  const active = createExecutionControl.active || (createExecutionControl.active = new Set());
   const listeners = new Set();
   const deadlineAt = Date.now() + timeoutMs;
   let timer;
@@ -2330,9 +2348,13 @@ function createExecutionControl(timeoutMs = EXECUTION_TIMEOUT_MS) {
     listeners.add(callback);
     return () => listeners.delete(callback);
   };
-  token.dispose = () => { clearTimeout(timer); listeners.clear(); };
+  token.dispose = () => { clearTimeout(timer); listeners.clear(); active.delete(token); };
   timer = setTimeout(() => token.cancel('Execution deadline exceeded.'), timeoutMs);
+  active.add(token);
   return token;
+}
+function cancelActiveExecutions(reason) {
+  for (const token of Array.from(createExecutionControl.active || [])) token.cancel(reason);
 }
 function waitForExecution(ms, cancelled) {
   checkExecution(cancelled);
@@ -5154,6 +5176,7 @@ function updateCompleteSummary(newSummary) {
 
 // ====================== CORE EXECUTION ======================
 async function executeTask(modelContext = createModelContext()) {
+  if (shuttingDown) return;
   const cancelled = createExecutionControl();
   resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
   createTaskGitCheckpoint();
@@ -5194,10 +5217,11 @@ async function executeTask(modelContext = createModelContext()) {
     printTaskChanges(); // GAP-12: silent when the task changed nothing
     logSessionUsage(); // GAP-8
   } catch (err) {
-    console.error(`[ERROR] Error: ${err.message}`);
+    const exiting = shuttingDown && cancelled();
+    console.error(`${exiting ? '[CANCELLED]' : '[ERROR]'} Error: ${err.message}`);
     printTaskChanges(); // GAP-12: failure path reports what did happen too
     logSessionUsage(); // GAP-8
-    process.exitCode = 1;
+    if (!exiting) process.exitCode = 1;
   } finally {
     cancelled.dispose();
   }
@@ -5709,6 +5733,7 @@ function startHttpServer() {
               await new Promise(r => setTimeout(r, clientGone ? 0 : 150));
               if (clientGone) return; // aborted: skip summary, 7CODER.md untouched
               checkExecution(execution);
+              updateLastInteractionTime();
               writeChunk({}, 'stop');
               res.write('data: [DONE]\n\n');
               res.end();
@@ -5730,6 +5755,7 @@ function startHttpServer() {
             createTaskGitCheckpoint();
             result = await processWithTools(tempMessages, { modelContext, cancel: execution });
             checkExecution(execution);
+            updateLastInteractionTime();
           } finally {
             releaseGate();
           }
@@ -5950,7 +5976,7 @@ async function main() {
     // Each execution takes ownership of one draft before its first await.
     // Later input (including BTW) belongs to the next draft, even while the
     // previous draft is still waiting for its own note summaries.
-    const newDraft = () => ({ text: '', pending: Promise.resolve(), modelContext: createModelContext() });
+    const newDraft = () => ({ text: '', pending: Promise.resolve(), modelContext: createModelContext(), discarded: false, notes: new Set() });
     let currentDraft = newDraft();
     let taskRunning = false;
     // After stdin EOF the readline interface is closed; calling prompt() on it
@@ -5962,6 +5988,7 @@ async function main() {
     safePrompt();
 
     replLineHandler = async (input) => {
+      if (shuttingDown) return;
       const trimmed = input.trim();
 
       if (trimmed.toLowerCase() === '/bye') {
@@ -5969,6 +5996,7 @@ async function main() {
         // in-flight cron command, drop the dream lock, then exit. Their
         // handles would otherwise keep the event loop alive (hang) or leak.
         shuttingDown = true;
+        cancelActiveExecutions('Agent exiting.');
         cliQuestions.close();
         for (const t of backgroundTasks.values()) {
           if (t.status === 'running') {
@@ -6025,7 +6053,9 @@ async function main() {
         if (taskRunning) { console.log('A task is running - wait before /clear.'); safePrompt(); return; }
         messages = [{ role: 'system', content: systemPrompt }];
         try { const safeSession = sessionFilePath(); if (fs.existsSync(safeSession)) fs.unlinkSync(safeSession); } catch (e) {}
-        currentDraft = newDraft(); // stale BTW callbacks retain only the discarded draft
+        currentDraft.discarded = true;
+        for (const token of currentDraft.notes) token.cancel('Draft cleared.');
+        currentDraft = newDraft();
         disposePersistentShells(); // A2-14: a fresh conversation must not inherit the old bash env/cwd
         console.log('[SHELL] persistent shell sessions cleared with /clear');
         console.log('[OK] Conversation cleared.');
@@ -6052,8 +6082,12 @@ async function main() {
         if (note) {
           console.log(`[BTW] /btw note received - small-model sub-agent summarizing for main task...`);
           const draft = currentDraft;
+          const noteExecution = createExecutionControl();
+          draft.notes.add(noteExecution);
           // Preserve every note, in input order, and attach it to this draft.
           const work = draft.pending.then(async () => {
+            if (draft.discarded || shuttingDown) return;
+            checkExecution(noteExecution);
             const btwPrompt = `You are 7coder's BTW sub-agent (light model only).
 The user just appended this note to the CURRENT heavy-model coding task WITHOUT interrupting it:
 
@@ -6064,12 +6098,14 @@ Output ONLY the summarized user message text (no extra explanation, no quotes, n
 Make it read like a direct continuation of the user's task instructions for the main agent.`;
             let summarized = note;
             try {
-              const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: draft.modelContext.light, modelContext: draft.modelContext, useTools: false });
+              const resp = await callOpenAI([{ role: 'user', content: btwPrompt }], { model: draft.modelContext.light, modelContext: draft.modelContext, cancel: noteExecution, useTools: false });
               summarized = (resp.message.content || note).trim() || note;
             } catch (e) {
+              if (noteExecution()) { console.log('[BTW] Note cancelled: ' + noteExecution.reason); return; }
               console.log(`[BTW] BTW sub-agent error - injecting original note as fallback.`);
             }
-            if (shuttingDown) return;
+            if (shuttingDown || draft.discarded) return;
+            checkExecution(noteExecution);
             draft.text += '\n' + summarized + '\n';
             console.log(`[BTW] BTW sub-agent injected into queued task prompt:\n${summarized}`);
             // P2-1: BTW.md lives under .7coder/ now (dir created first - at
@@ -6081,7 +6117,7 @@ Make it read like a direct continuation of the user's task instructions for the 
               const record = readStateRecord(btwPath);
               writeStateFile(btwPath, (record ? record.value : '') + `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`);
             } catch (e) { console.error(`[BTW] Cannot persist note to ${btwPath}: ${e.message}`); }
-          });
+          }).finally(() => { draft.notes.delete(noteExecution); noteExecution.dispose(); });
           // A failed note must neither reject the next note's chain nor leave
           // an unhandled rejection before /execute starts waiting for it.
           draft.pending = work.catch(e => console.error(`[BTW] ${e.stack || e.message}`));
@@ -6142,6 +6178,7 @@ Make it read like a direct continuation of the user's task instructions for the 
             } catch (e) {
               console.error(`[WARN] dream check failed (task continues): ${e.message}`);
             }
+            if (shuttingDown) return;
             console.log(`7coder is ${getRandomSpinner()}`);
             currentRawPrompt = taskText;
             // Session continuity: the FIRST task seeds the conversation (with the

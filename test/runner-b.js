@@ -2362,7 +2362,7 @@ scenarios.push({
     const cwd2b = freshCwd('b-sec2dreamnew');
     const r2b = await runCli({ port: 1, args: ['--prompt', 't'], env: { DREAM_ALLOW: 'true', MAX_RETRIES: '1', PERMISSION_MODE: 'bypass' }, cwd: cwd2b, timeoutMs: 60000 });
     record('sec2/a208: dream on fresh workspace does not crash on missing .7coder (no ENOENT)', r2b.out.indexOf('[DREAM]') >= 0 && r2b.out.indexOf('ENOENT') < 0, 'out=' + r2b.out.substring(0, 200));
-    record('sec2/a208: lock dir created and lock cleaned up afterwards', !fs.existsSync(path.join(cwd2b, '.7coder', 'dream.lock')) && fs.existsSync(path.join(cwd2b, '.7coder', 'last_interaction')), 'lock exists=' + fs.existsSync(path.join(cwd2b, '.7coder', 'dream.lock')));
+    record('sec2/a208: failed dream creates directory and cleans lock without recording successful interaction', !fs.existsSync(path.join(cwd2b, '.7coder', 'dream.lock')) && fs.existsSync(path.join(cwd2b, '.7coder')) && !fs.existsSync(path.join(cwd2b, '.7coder', 'last_interaction')), 'lock exists=' + fs.existsSync(path.join(cwd2b, '.7coder', 'dream.lock')));
 
     // A2-09: auto_debug spawn failure reaches the model as a tool result, server stays up
     const cwd3 = freshCwd('b-sec2dbg');
