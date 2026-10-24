@@ -108,6 +108,12 @@ function check(name, ok, detail) { console.log((ok ? 'PASS' : 'FAIL') + '  ' + n
   const mixed = hook.render('before\r\n```c++\r\nint x = 1;\r\n```\r\nafter\n```c#\nvar y = 2;');
   check('display: mixed C++ / C# fences render as separate code blocks', (mixed.match(/<pre/g) || []).length === 2 && mixed.indexOf('data-language="c++"') >= 0 && mixed.indexOf('data-language="c#"') >= 0, mixed);
   check('display: unfinished streaming fence remains a code block', hook.render('```powershell\nGet-ChildItem').indexOf('<pre data-language="powershell">') >= 0, hook.render('```powershell\nGet-ChildItem'));
+  const quotedFence = hook.render('```x"onmouseover="window.__fence=1\n<unsafe>\n```');
+  const openingPre = quotedFence.match(/<pre[^>]*>/)[0];
+  check('display: quoted language remains exactly one escaped attribute', openingPre === '<pre data-language="x&quot;onmouseover=&quot;window.__fence=1">', openingPre);
+  const entities = hook.render('```a\'&<>"\n<code>&\n```');
+  check('display: language escapes both quotes and HTML delimiters in attribute context', entities.indexOf('data-language="a&#39;&amp;&lt;&gt;&quot;"') >= 0 && entities.indexOf('<code>&lt;code&gt;&amp;</code>') >= 0, entities);
+  check('display: empty language still omits the optional attribute', hook.render('```\nbody\n```') === '<pre><code>body</code></pre>', hook.render('```\nbody\n```'));
 
   // --- AST-06: first save has no `file`, response file is remembered ---
   hook.setHistory([{ role: 'user', content: 'q1' }, { role: 'assistant', content: 'a1' }]);

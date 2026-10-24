@@ -622,7 +622,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ⬜ | T22-24 | Medium／确认编码路径 | **PowerShell 输入输出编码闭环**：脚本用 BOM 或 EncodedCommand；输出明确编码后解码；CP936 下中文内容、路径、错误输出不乱码。保持 PS2 兼容。 | R1 M06；A2/chcp 只解决部分命令 |
 | ✅ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：10-24用relative边界判断，排除父级/绝对结果，消除drive/UNC根末尾双分隔符误拒；保留Win大小写、不同卷/共享及realpath/junction门。新专项修夹具后25/25：纯路径边界＋映射到私有目录的drive/UNC根真实state/文件/备份IO及实际外指junction拒绝；无真实根/网络共享写入。Win7真实根/远程文件系统语义仍由V22-01/05实机验收。 | R1 M11；OPT-14原安全门保留；本日路径批记录 |
 | ⬜ | T22-26 | Medium／确认＋风险 | **磁盘保留与会话历史策略**：为 snapshot refs、Web会话、截图、background/BTW/TODO日志设时间/总字节策略；T22-13新增的不同损坏证据/骤停临时文件亦需保留策略，不能删活动实例文件；CLI/Web 不按文件名前缀误删对方历史；会话列表可分页/索引。保留现有审计轮转、每源5/全局200备份，不重复实现。 | R1 M14；GAP-12、OP5-5、C8；10-23第八批补充保留范围 |
-| ⬜ | T22-27 | Medium／确认 | **修 Markdown 语言属性转义**：使用 DOM 属性赋值或有限字符规则，含引号的 fenced language 不能改变 HTML 属性；普通 c++/c#、未闭合围栏仍正确。 | R1 M15；A2-04 只修错误气泡，不应反向宣布其修复无效 |
+| ✅ | T22-27 | Medium／确认 | **修 Markdown语言属性转义**：10-24新增属性上下文escAttr，在原HTML转义后补单双引号实体，仅data-language使用；文本/code渲染保持。DOM专项15项单次通过，含相邻属性注入形状、引号/&/尖括号、空language、c++/c#与未闭合围栏。实际目标浏览器仍属V22-02；不把桩DOM宣称为真实脚本执行验证。 | R1 M15；A2-04保护保留；本日Markdown属性批 |
 | ✅ | T22-28 | Low／确认 | **修 git status 首行 trim**：10-24只去末尾CR/LF，保留首项XY的index空格；CRLF按行计数。旧Git集成断言由错误staged:1/modified:0改为staged:0/modified:1并检查实际前导空格。新真实隔离Git专项9/9（未暂存/已暂存/MM/未跟踪/clean/CRLF/故障）、旧Git集成4/4，Node13均单次。 | R1 L01；DS-4/P2-11原分列保留；本日Git首列记录 |
 | ✅ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：10-24先将relative路径分隔符归一为/再匹配例外；原函数＋实际私有磁盘写入证实反斜杠memory在default模式可自动写，普通source仍需审批，deny/denial/protected-extra不被绕过，外指junction仍拒绝；新路径25/25、旧权限8/8。 | R1 L02；GAP-9；本日路径批记录 |
 | ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。同步readdir分配和正则CPU预算未解决，详见疑点。 | R1 L03；P2-3、A2-20保护保留；本日扫描批记录 |
@@ -1277,3 +1277,9 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 写前按UTF8字节预算轮转，保留current/old各最多1MiB；旧代替换失败/rename失败就跳过append，防日志故障反而无限增长。磁盘满/权限失败不影响原任务结果，记录loggingError且console最多每分钟提示一次，下次写成功清除故障。保持原审计机制，不把本批新增runtime限额冒充T22-26全部磁盘策略。
 - Node13新runtime-diagnostics首次单次 **21/21**：活动计数/幂等、成功失败并存、UTF8 errno/path、字段脱敏/截断及快照不可变、连续轮转、EACCES阻止append/告警限频、ENOSPC结果不变/恢复；真实自有Node exit7与无PID spawn错误；真实HTTP ready、活动＋排队、503失败恢复、流式成功、AUDIT_LOG=false仍记工具失败、断连取消和日志终态。旧tool-cancellation **20/20**、B cron-overlap **6/6**单次，确认工具取消/审计契约及独立cron继续；无失败复测。为提取源码的旧夹具显式补新诊断依赖的空实现，不改原业务断言；新专项另行加载并检查真实诊断函数。收尾静态核对工具退出码来源为res.data.exitCode，非顶层属性。
 - 新专项登记npm/test-all，README写明日志位置/预算/降级。相关JS Node13语法及diff检查通过。未重复其它task/Win32专项，未跑完整A–J/UI/test-all、真实CLI执行诊断链、Win7/实际ACL/磁盘耗尽/强制终止、24/72h或打包。故障注入不等于真实磁盘满验收；早期配置加载失败尚未进入诊断初始化，仍依赖stderr/启动脚本日志。MCP/持久shell/任意树的全部进程事件未纳入，close仍只证明直属句柄；完整runId和跨会话提交统计按OPT-3/DS-13暂缓。T22-32最低范围关闭，按授权提交本批、未推送。
+
+### 2026-10-24 —— T22-27代码围栏语言属性边界
+
+- 运行诊断批已提交`fcc4072`。实际render将esc(lang)拼入双引号data-language，而esc用DOM.textContent→innerHTML只承担文本转义，不保证双引号转义。新增escAttr复用文本转义并显式把双/单引号转为实体，只有属性位置改用；语言标签文字、代码内容、围栏解析与copy逻辑保持原实现。
+- Node13 webui-dom-sim单次 **15项通过**（新增3项）：含紧邻onmouseover形状的引号只能留在一个data-language值内，单双引号/&/尖括号编码正确，空language不产生属性；原c++/c#、CRLF、未闭合围栏、SSE/保存/错误气泡回归保留。此桩DOM不执行HTML事件，原“window未变化”断言本身不能证明浏览器执行隔离；本批证据是原render输出的属性边界编码，真实目标浏览器继续由V22-02验收。
+- webui内联脚本经该专项vm解析，测试文件Node13语法及diff检查通过。未运行其它UI/真实浏览器、完整A–J/test-all、Win7、24/72h或打包；未推送。T22-27关闭，按授权提交本批，继续T22-24 PowerShell编码闭环。
