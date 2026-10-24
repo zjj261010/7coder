@@ -62,6 +62,7 @@
     "test:browser-baseline": "node test/browser-baseline.js",
     "test:tool-results-complete": "node test/tool-results-complete.js",
     "test:tool-prerequisites": "node test/tool-prerequisites.js",
+    "test:session-ownership": "node test/session-ownership.js",
     "test:browser": "node test/webui-browser.js",
     "test:b": "node test/runner-b.js",
     "test:r": "node test/runner-r.js",

@@ -5496,6 +5496,33 @@ function simpleLineDiff(oldText, newText, contextLines = 2, maxLines = 40) {
 // continue it via --resume (CLI) or /resume (REPL command). Only user/
 // assistant turns are saved: tool messages would break API pairing on load.
 function sessionFilePath() { return internalStatePath('.7coder', 'session.json'); }
+function pruneCliSessionHistory(currentName) {
+  const directory = internalStatePath('.7coder/sessions'), candidates = [];
+  let unreadable = 0;
+  for (const name of fs.readdirSync(directory)) {
+    if (!/^cli-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9]{8}\.json$/.test(name)) continue;
+    try {
+      const file = internalStatePath('.7coder/sessions', name), stat = fs.lstatSync(file);
+      if (!stat.isFile() || stat.size > SESSION_MAX_BYTES) continue;
+      // Retention must not repair/quarantine or reinterpret an unknown file.
+      const bytes = fs.readFileSync(file), record = parseSessionState(decodeUtf8Text(bytes));
+      if (record.kind !== '7coder-cli-session-v1' || !Number.isFinite(Date.parse(record.savedAt))) continue;
+      candidates.push({ name, time: Date.parse(record.savedAt), hash: crypto.createHash('sha256').update(bytes).digest('hex') });
+    } catch (error) { unreadable++; }
+  }
+  candidates.sort((a, b) => a.time - b.time || a.name.localeCompare(b.name));
+  let remove = candidates.length - 20;
+  for (const candidate of candidates) {
+    if (remove <= 0) break;
+    if (candidate.name === currentName) continue; // protect latest save even after clock rollback
+    const file = internalStatePath('.7coder/sessions', candidate.name);
+    if (crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== candidate.hash) {
+      console.warn('[WARN] CLI history changed during retention; cleanup stopped without deleting it.'); break;
+    }
+    deleteStateFile(file); remove--;
+  }
+  if (unreadable) console.warn('[WARN] CLI history retention preserved ' + unreadable + ' unreadable file(s).');
+}
 function saveSession() {
   try {
     if (messages.length <= 1) return; // system only - nothing to save
@@ -5504,17 +5531,19 @@ function saveSession() {
     const keep = messages
       .filter(m => m.role === 'system' || m.role === 'user' || m.role === 'assistant')
       .map(m => (m.role === 'assistant' && m.tool_calls) ? { role: 'assistant', content: m.content || '' } : m);
-    const body = JSON.stringify({ savedAt: new Date().toISOString(), messages: keep });
+    const savedAt = new Date().toISOString();
+    const body = JSON.stringify({ kind: '7coder-cli-session-v1', savedAt, messages: keep });
     if (Buffer.byteLength(body, 'utf8') > SESSION_MAX_BYTES) { console.warn('[WARN] session too large to save (>2 MiB UTF-8)'); return; }
     fs.mkdirSync(internalStatePath('.7coder'), { recursive: true });
     writeStateFile(sessionFilePath(), body, parseSessionState);
-    // timestamped history copy for the web session browser (newest 20 kept)
+    // Explicit CLI ownership: keep twenty new CLI archives, never prune
+    // Web/legacy/unknown records by their filename ordering.
     try {
       const sdir = internalStatePath('.7coder/sessions');
       fs.mkdirSync(sdir, { recursive: true });
-      writeStateFile(internalStatePath('.7coder/sessions', new Date().toISOString().replace(/[:.]/g, '-') + '.json'), body, parseSessionState);
-      const olds = fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort();
-      while (olds.length > 20) { try { deleteStateFile(internalStatePath('.7coder/sessions', olds.shift())); } catch (e2) { break; } }
+      const name = 'cli-' + savedAt.replace(/[:.]/g, '-') + '-' + crypto.randomBytes(4).toString('hex') + '.json';
+      writeStateFile(internalStatePath('.7coder/sessions', name), body, parseSessionState);
+      pruneCliSessionHistory(name);
     } catch (e2) { console.warn('[WARN] session history save/prune failed: ' + e2.message); }
   } catch (e) { console.warn('[WARN] session save failed: ' + e.message); }
 }
@@ -5971,7 +6000,7 @@ function startHttpServer() {
                 return { file: f, savedAt: j.savedAt || '?', turns: (j.messages || []).length, preview: firstUser ? String(firstUser.content).substring(0, 80) : '' };
               } catch (e) { return { file: f, savedAt: '?', turns: 0, preview: '(unreadable)' };
               }
-            })
+            }).sort((a, b) => (Date.parse(b.savedAt) || 0) - (Date.parse(a.savedAt) || 0) || b.file.localeCompare(a.file))
           : [];
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ sessions: list }));
@@ -6052,11 +6081,16 @@ function startHttpServer() {
             text: a.text ? String(a.text).substring(0, 12000) : undefined,
             args: a.args && typeof a.args === 'object' ? sanitizeAuditArgs(a.args) : undefined,
             result: a.result ? sanitizeAuditLine(String(a.result)).substring(0, 12000) : undefined })) : [];
-        // 客户端可携带 file 名原地覆盖同一会话记录；否则生成新记录
+        // 原地更新只适用于Web自有记录；继续CLI/legacy档案时新建Web记录。
         const wanted = String(JSON.parse(body).file || "");
-        let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + ".json";
-        if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted) && readStateRecord(internalStatePath('.7coder/sessions', wanted), parseSessionState)) name = wanted;
-        const stored = JSON.stringify({ savedAt: new Date().toISOString(), messages: clean, activities });
+        let name = "web-" + new Date().toISOString().replace(/[:.]/g, "-") + '-' + crypto.randomBytes(4).toString('hex') + ".json";
+        if (/^[A-Za-z0-9._-]+[.]json$/.test(wanted)) {
+          const existing = readStateRecord(internalStatePath('.7coder/sessions', wanted), parseSessionState);
+          // Continuing a CLI/legacy archive in the UI creates a Web record;
+          // it must not transfer or overwrite an archive owned by another path.
+          if (existing && existing.value.kind === '7coder-web-session-v1') name = wanted;
+        }
+        const stored = JSON.stringify({ kind: '7coder-web-session-v1', savedAt: new Date().toISOString(), messages: clean, activities });
         if (Buffer.byteLength(stored, 'utf8') > SESSION_MAX_BYTES) {
           res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'Session exceeds 2 MiB UTF-8; previous saved state was not overwritten.' } })); return;
         }
