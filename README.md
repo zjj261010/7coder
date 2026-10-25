@@ -200,21 +200,38 @@ a Windows-only warning instead of being injected.
   the raw `data.bak` bytes plus a `manifest.json` (source path, size, sha256).
   A backup reserves its sequence, copies through held descriptors in 64KiB
   chunks, verifies the digest by re-reading, and publishes with one rename.
-- Retention only ever deletes records it can fully attribute to this store
-  (manifest + payload + digest re-verified): newest 5 per source, 200 global,
-  1GiB owned-bytes target, 2GiB hard admission including the new snapshot, and
-  1GiB per snapshot. Over-budget writes are rejected before the original file
-  is touched. Deletion renames records to `.deleting-*` first; failures keep
-  the evidence and report it. Legacy flat `*.bak` files, foreign/corrupt
-  records, staging and crash residue are never auto-deleted.
+- Retention computes ONE survivor set: the count quotas (newest 5 per source,
+  200 global) and the byte quotas (1GiB owned-bytes target, 2GiB hard
+  admission including the new snapshot, 1GiB per snapshot) all count every
+  owned record - the just-published snapshot and pinned records occupy quota
+  slots and bytes and are only exempt from becoming victims. If pins keep the
+  byte target unreachable, that is reported instead of pretended. Deletion
+  re-verifies the record immediately before touching it (directory type and
+  real path inside the store root, exactly the two protocol members, payload
+  identity and exclusive ownership, manifest storeId and every field, content
+  digest), renames it to `.deleting-*`, re-checks the moved object, and only
+  then unlinks the two members - a record swapped to a junction or stripped of
+  ownership after discovery is preserved and reported, never deleted through.
+  Over-budget writes are rejected before the original file is touched. Legacy
+  flat `*.bak` files, foreign/corrupt records, staging and crash residue are
+  never auto-deleted. Backup/restore copy, hash and cleanup phases check
+  cancellation and a per-operation wall-clock budget chunk by chunk (5 minutes
+  for create/restore, 5 seconds for cleanup passes; a single synchronous OS
+  call still cannot be interrupted in JavaScript).
 - `/undo <file>` restores the newest backup of a file. New-format history
   wins; legacy flat backups are a fallback only when the source has no v1
-  record. The restore stages and verifies the content (digest, and the strict
-  parser for managed state files) in a sibling temp file and commits with a
-  single rename; any failure or conflict before that rename leaves the
-  current file byte-for-byte intact. Outcomes are explicit: restored,
-  no backup found, failed (with stage), conflict, or unknown (index/identity
-  cannot be proven) - read failures are never reported as "not found".
+  record, and hard-linked legacy payloads are excluded under the same rule as
+  the v1 store. A damaged record sharing the newest sequence makes the result
+  unknown instead of a guessed restore. The restore stages and verifies the
+  content (digest, and the strict parser for managed state files) in a sibling
+  temp file, stays inside its operation budget, and commits with a single
+  rename; any failure or conflict before that rename leaves the current file
+  byte-for-byte intact. Outcomes are explicit: restored, no backup found,
+  failed (with stage), conflict, or unknown (index unreadable/incomplete or
+  identity cannot be proven) - read failures are never reported as "not
+  found". Successful restores may carry warnings (legacy snapshots have no
+  creation-time digest; restored managed configuration changes disk only -
+  restart or reload to affect running state), printed as `[UNDO WARNING]`.
 - In default permission mode, file edits are approved against a **real diff
   preview** (`-` removed / `+` added lines), not an LLM paraphrase.
 
