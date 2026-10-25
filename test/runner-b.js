@@ -698,30 +698,25 @@ scenarios.push({
   name: 'audit-log',
   fn: async () => {
     const cwd = freshCwd('b-audit');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'au1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'ok.txt', content: 'fine' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'au2', type: 'function', function: { name: 'read_file', arguments: '{"path":"ghost.txt"}' } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'au3', type: 'function', function: { name: 'run_command', arguments: '{"command":"rm -rf /"}' } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'au4', type: 'function', function: { name: 'run_command', arguments: '{"command":"echo check Bearer sk-audit-secret-12345"}' } }] },
-      { role: 'assistant', content: 'AUDIT-DONE' }
-    ]);
+    const fixture = require('./_audit-log-fixture');
+    const m = startProcess('mock-server.js', fixture.script, { MOCK_STRICT: '1' });
+    try {
     await new Promise(r => setTimeout(r, 600));
-    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const run = await runCli({ port: m.port, args: ['--prompt', fixture.prompt], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const requests = readLog(m.log);
+    record('audit: strict five-step model protocol completes without helper calls or shifted script', run.code === 0 && run.out.includes('AUDIT-DONE') && !run.out.includes('MOCK_PROTOCOL') && requests.length === fixture.script.length && requests.every(req => Array.isArray(req.tools) && req.tools.length > 0), 'exit=' + run.code + ' requests=' + requests.length);
     const auditPath = path.join(cwd, '.7coder', 'audit.jsonl');
     record('audit: audit.jsonl created', fs.existsSync(auditPath), '');
-    if (!fs.existsSync(auditPath)) { stopMock(m); return; }
+    if (!fs.existsSync(auditPath)) return;
     const entries = fs.readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map(l => { try { return JSON.parse(l); } catch (e) { return null; } });
-    record('audit: every JSON event has timestamp and its type-specific required fields', entries.length >= 3 && entries.every(e => e && e.ts &&
-      (e.type === 'usage' ? e.model && typeof e.prompt === 'number' && typeof e.completion === 'number' && e.total === e.prompt + e.completion
-        : e.type === 'tool' && e.tool && e.mode && e.status)), 'lines=' + entries.length);
-    const byTool = {};
-    for (const e of entries) if (!byTool[e.tool]) byTool[e.tool] = e.status;
-    record('audit: ok / error / blocked statuses recorded', byTool.write_file === 'ok' && byTool.read_file === 'error' && byTool.run_command === 'blocked', JSON.stringify(byTool));
-    const wf = entries.find(e => e.tool === 'write_file');
+    record('audit: every raw JSON event has valid timestamp and type-specific fields', entries.length > 0 && entries.every(fixture.validEvent), 'lines=' + entries.length);
+    record('audit: all four call IDs have exactly one correct tool/status and all usage records exist', fixture.evidence(entries), JSON.stringify(entries.filter(e => e && e.type === 'tool').map(e => [e.callId, e.tool, e.status])));
+    const wf = fixture.forCall(entries, 'au1');
     record('audit: args preview truncated and present', wf && wf.args && String(wf.args.path).includes('ok.txt') && JSON.stringify(wf.args).length < 400, JSON.stringify(wf && wf.args));
-    const au4 = entries.find(e => e.tool === 'run_command' && JSON.stringify(e.args || {}).includes('echo check'));
-    record('audit: secrets redacted in args preview (Bearer/sk- tokens masked)', au4 && JSON.stringify(au4.args).includes('Bearer ***') && !JSON.stringify(au4.args).includes('sk-audit-secret-12345'), au4 ? JSON.stringify(au4.args) : 'no echo-check entry');
-    stopMock(m);
+    const au4 = fixture.forCall(entries, 'au4');
+    record('audit: exact successful command call has redacted args and no secret in any audit line', au4 && au4.status === 'ok' && JSON.stringify(au4.args || {}).includes('echo check Bearer ***') && !JSON.stringify(entries).includes('sk-audit-secret-12345'), au4 ? JSON.stringify(au4.args) : 'no unique au4');
+    record('audit: confirmed write exists and failed read did not create its missing target', fs.readFileSync(path.join(cwd, 'ok.txt'), 'utf8') === 'fine' && !fs.existsSync(path.join(cwd, 'ghost.txt')), '');
+    } finally { stopMock(m); }
   }
 });
 

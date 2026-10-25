@@ -23,18 +23,18 @@
 <!-- assert-count:start -->
 | 文件 | 静态断言点数 |
 | --- | ---: |
-| runner-b.js | 349 |
+| runner-b.js | 348 |
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 23 |
-| runner-g.js | 31 |
+| runner-g.js | 30 |
 | runner-h.js | 27 |
-| runner-i.js | 55 |
-| runner-j.js | 17 |
-| runner-k.js | 11 |
-| runner-r.js | 11 |
-| runner.js | 60 |
+| runner-i.js | 54 |
+| runner-j.js | 18 |
+| runner-k.js | 13 |
+| runner-r.js | 12 |
+| runner.js | 59 |
 | **合计** | **667** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
@@ -1674,3 +1674,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 页面单在途并禁用两个按钮，accepted提示“系统启动器已接受…请查看桌面”；明确拒绝提示启动请求失败，504/网络/响应异常及旧无status成功响应标结果未知。10秒fetch期限释放按钮/局部timer，不自动重放，也不把AbortError当服务端操作回滚。
 - 新open-feedback随包Node13首次单次 **33/33**：pid/exit尚无close不成功、0/7/signal、无pid异步error/无close（含脱敏与late error）、sync throw、4个timeout仍占slot/第5零spawn/late回收；原handler在VM中验证等待与200/500/504/429/400/dry/config错误、audit状态和迟到单次响应。所属真实Node子进程分别exit0/7/hang超时后close/不存在cwd异步error，全部观察槽位清零；预期missing-cwd产生一条fixture ENOENT诊断，不是套件失败。页面夹具覆盖双按钮防重复、accepted措辞/失败/unknown/legacy、网络期限及错误释放且不重试。
 - 接口handler是原函数VM＋受控事件，**不是实际HTTP＋Windows编辑器端到端**；真实子进程也是私有Node fixture，没有打开编辑器、工作区窗口、浏览器或改真实.env。首跑通过后仅给native测试进程补windowsHide属性，静态检查，不为此重复专项。npm/test-all登记、Node13语法/diff检查；未重复原UI全套、安装资源/其它已通过专项或A–J/test-all，未验收Win7/PS2/文件关联/真实cmd特殊字符路径/GUI/24–72h/进程树。按既有授权提交、未推送；完成后重新读取额度，无法确认余量或不足下一完整项则停止。
+
+### 2026-10-25 —— T22-33审计场景的严格协议与逐调用证据
+
+- 上批已提交`19b4503`。用户补充当前还有20%余量，按既有自动继续授权选择独立的小测试任务；备份恢复闭环仍未启动，本批不改index.js/webui.html或其它产品代码。
+- 原B audit-log以工具名取第一条status，两个run_command即使au3/au4 ID互换也可能通过该状态检查；脱敏行又按echo文本搜索，未绑定确切调用。现独立测试fixture给出au1/write_file/ok、au2/read_file/error、au3/run_command/blocked、au4/run_command/ok业务期望，要求每ID唯一、无额外tool事件、5次usage齐全，原始JSON每行验证时间/字段/mode与usage数值。脱敏只查唯一au4并扫描全审计无fake secret，真实写文件/缺失read目标不被创建也有断言。
+- 本场景单独启用MOCK_STRICT：5步每次要求工具可用、指定任务、累计完整tool ID与结果片段，前序错误/辅助请求不能静默消耗位置脚本；CLI须exit0、得到最终AUDIT-DONE且恰5个请求。au3改为无副作用的`echo mkfs AUDIT_NONEXEC_PROBE`，即使产品防护回归也只echo，移除原真实危险命令探针。其它历史mock未整体迁移，T22-33继续部分完成。
+- 新audit-log-oracle随包Node13首次单次 **17/17**：有效/乱序证据、旧first-by-tool检查会接受但新oracle拒绝的错ID反例、同名状态交换/缺失/重复/额外call、丢失/重复usage、坏JSON占位/空/坏时间/mode/数值、error样普通内容；五步正确累计协议、错业务正文/配对/辅助请求/错误任务均拒绝，确认blocked probe本身无破坏性。
+- 更新后的旧B仅RUN_ONLY=audit-log本批首次单次 **7/7**，真实私有CLI＋严格本地mock及审计文件证据，无失败复跑。新npm/test-all登记、Node13语法/diff通过。执行count-assertions --write校准当前静态表（B348、总667），该块仅源码record调用统计，不宣称完整B或全套运行通过；未改冻结的旧审阅报告。
+- 未重复上批open33或其它已通过专项，未跑完整A–J/UI/test-all、真实模型/浏览器/Win7/24–72h/打包，未改真实.env或工作区业务数据。仍缺其它位置mock的逐业务迁移、跨请求execution ID、真实模型质量及发布门槛。按授权提交、未推送；本项完成后停止，不把剩余额度投入备份大项；重新读取额度仅作收尾记录。
