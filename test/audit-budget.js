@@ -1,0 +1,45 @@
+const assert = require('assert'), fs = require('fs'), path = require('path'), vm = require('vm'), http = require('http');
+const { loadContext } = require('./download-commit'), { create } = require('./_endpoint'), S = require('./_shared').create({ suite: 'audit-budget' });
+const source = fs.readFileSync(S.IDX, 'utf8'), limit = 5 * 1024 * 1024, sockets = new Set(); let server, H, checks = 0;
+const deadline = setTimeout(() => { console.error('AUDIT/BUDGET deadline'); if (H) H.S.cleanup(); S.cleanup(); process.exit(1); }, 30000);
+function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
+function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, a); assert.ok(a >= 0 && b > a, from); return source.slice(a, b); }
+function fixture(name, overrides, extra) { const cwd = S.freshCwd(name), root = path.join(cwd, '.7coder'), warnings = [];
+  const c = loadContext(source, cwd, overrides, Object.assign({ Buffer, appDir: path.dirname(S.IDX), AUDIT_ENABLED: true, auditDirReady: false, console: { warn: s => warnings.push(s) } }, extra));
+  vm.runInContext(cut('function runtimeText(', 'function recordRuntimeEvent(') + cut('function sanitizeAuditArgs(', '// Bounded operating diagnostics:'), c);
+  return { cwd, root, file: path.join(root, 'audit.jsonl'), old: path.join(root, 'audit.old.jsonl'), c, warnings }; }
+function seed(file, size) { fs.mkdirSync(path.dirname(file), { recursive: true }); const fd = fs.openSync(file, 'w'); try { fs.ftruncateSync(fd, size); if (size) fs.writeSync(fd, Buffer.from('\n'), 0, 1, size - 1); } finally { fs.closeSync(fd); } }
+const event = () => ({ ts: '2026-10-25T00:00:00Z', type: 'tool', tool: 'read_file', callId: 'audit-id', status: 'ok', args: { path: '中文😀.txt', token: 'FAKE_SECRET', text: 'Bearer FAKE_BEARER' } });
+(async () => { try {
+  let f = fixture('normal'); check('normal audit records full IDs/status and scrubs argument secrets', f.c.audit(event()) === true && fs.readFileSync(f.file, 'utf8').includes('中文😀') && !/FAKE_SECRET|FAKE_BEARER/.test(fs.readFileSync(f.file, 'utf8')) && JSON.parse(fs.readFileSync(f.file, 'utf8')).callId === 'audit-id');
+  const payload = { type: 'tool', tool: 'read_file', callId: 'boundary', status: 'ok', text: '' }, overhead = Buffer.byteLength(JSON.stringify(payload)); payload.text = 'x'.repeat(16383 - overhead); f.c.audit(payload);
+  check('exact 16KiB including newline is retained as one full record', fs.readFileSync(f.file, 'utf8').trimEnd().split('\n').map(line => JSON.parse(line)).slice(-1)[0].text.length === payload.text.length && f.c.auditSnapshot().compacted === 0);
+  payload.text += 'x'; f.c.audit(payload); const compact = JSON.parse(fs.readFileSync(f.file, 'utf8').trimEnd().split('\n').slice(-1)[0]);
+  check('oversized audit record becomes marked bounded metadata preserving tool identity/status', compact.metadataOmitted && compact.callId === 'boundary' && compact.tool === 'read_file' && compact.status === 'ok' && !compact.text && f.c.auditSnapshot().compacted === 1);
+  f = fixture('rotation'); seed(f.file, limit); const result = f.c.audit(event()); check('rotation occurs before append would exceed file budget and retains previous bytes', result === true && fs.statSync(f.old).size === limit && fs.statSync(f.file).size < 16384);
+  let clock = 100; class AuditClock extends Date { static now() { return clock; } }
+  f = fixture('occupied', { renameSync() { throw Object.assign(Error('occupied token=FAKE_TOKEN'), { code: 'EACCES' }); } }, { Date: AuditClock }); seed(f.file, limit); seed(f.old, 20); const beforeOld = fs.readFileSync(f.old);
+  for (let i = 0; i < 50; i++) assert.strictEqual(f.c.audit(event()), false);
+  let snapshot = f.c.auditSnapshot(); check('failed rotation never appends, overwrites prior archive or queues repeated warning lines', fs.statSync(f.file).size === limit && fs.readFileSync(f.old).equals(beforeOld) && snapshot.dropped === 50 && snapshot.lastError.code === 'EACCES' && f.warnings.length === 1 && !JSON.stringify(snapshot).includes('FAKE_TOKEN'));
+  snapshot.lastError.message = 'mutated'; check('returned failure metadata cannot mutate internal diagnostics', f.c.auditSnapshot().lastError.message !== 'mutated');
+  clock += 60000; f.c.audit(event()); check('persistent failure emits at most one warning per minute', f.warnings.length === 2 && fs.statSync(f.file).size === limit);
+  f = fixture('bad-old'); seed(f.file, limit); fs.mkdirSync(f.old); check('nonregular archive is retained and prevents rotation/append', f.c.audit(event()) === false && fs.statSync(f.file).size === limit && fs.statSync(f.old).isDirectory());
+  f = fixture('already-huge'); seed(f.file, 100 * 1024 * 1024); seed(f.old, 10); check('preexisting oversized log is preserved in place without replacing archive', f.c.audit(event()) === false && fs.statSync(f.file).size === 100 * 1024 * 1024 && fs.statSync(f.old).size === 10);
+  f = fixture('hardlinked'); seed(f.file, 10); const alias = path.join(f.cwd, 'alias.log'); fs.linkSync(f.file, alias); check('hardlinked primary is refused without modifying its alias', f.c.audit(event()) === false && fs.statSync(alias).size === 10);
+  f = fixture('incomplete'); seed(f.file, 0); fs.writeFileSync(f.file, '{partial'); check('incomplete final line is visible and cannot contaminate another record', f.c.audit(event()) === false && fs.readFileSync(f.file, 'utf8') === '{partial' && f.c.auditSnapshot().lastError.message.includes('tail is incomplete'));
+  let writes = 0, open = 0; f = fixture('partial-write', { openSync(...args) { const fd = fs.openSync(...args); open++; return fd; }, closeSync(fd) { fs.closeSync(fd); open--; }, writeSync(fd, bytes, offset, length, position) { if (writes++ === 0) return fs.writeSync(fd, bytes, offset, 5, position); throw Object.assign(Error('disk full'), { code: 'ENOSPC' }); } });
+  check('partial append failure closes handle and prevents subsequent record concatenation', f.c.audit(event()) === false && fs.statSync(f.file).size === 5 && f.c.audit(event()) === false && writes === 2 && open === 0 && f.c.auditSnapshot().dropped === 2);
+  f = fixture('disabled', {}, { AUDIT_ENABLED: false }); check('disabled audit creates no log and reports disabled status', f.c.audit(event()) === false && !fs.existsSync(f.file) && f.c.auditSnapshot().enabled === false && f.c.auditSnapshot().dropped === 0);
+  const real = S.freshCwd('actual'), log = path.join(real, '.7coder', 'audit.jsonl'), old = path.join(real, '.7coder', 'audit.old.jsonl'); seed(log, limit); fs.mkdirSync(old); fs.writeFileSync(path.join(real, 'readme.txt'), 'PRIVATE_AUDIT_FIXTURE'); let calls = 0;
+  server = http.createServer((req, res) => { let raw = ''; req.on('data', d => raw += d); req.on('end', () => { const body = JSON.parse(raw), hasTool = body.messages.some(m => m.role === 'tool');
+    const delta = hasTool ? { content: 'AUDIT_CORE_OK' } : { tool_calls: [{ index: 0, id: 'audit-read-' + (++calls), type: 'function', function: { name: 'read_file', arguments: '{"path":"readme.txt"}' } }] };
+    res.setHeader('Content-Type', 'text/event-stream'); res.end('data: ' + JSON.stringify({ choices: [{ delta }], usage: { prompt_tokens: 1, completion_tokens: 1 } }) + '\n\ndata: [DONE]\n\n'); }); }); server.on('connection', s => { sockets.add(s); s.once('close', () => sockets.delete(s)); }); await new Promise(r => server.listen(0, '127.0.0.1', r));
+  H = create({ suite: 'audit-agent', endpoint: 'http://127.0.0.1:' + server.address().port, key: '', model: 'fixture', permissionMode: 'bypass' }); await H.start(real);
+  const first = await H.chat([{ role: 'user', content: 'Read fixture while archive unavailable' }], 5000); let info = JSON.parse((await H.api('/api/info')).body);
+  check('actual Agent continues core while info exposes audit failure and file remains bounded', first.content === 'AUDIT_CORE_OK' && info.audit.enabled && info.audit.dropped > 0 && info.audit.lastError && fs.statSync(log).size === limit && fs.statSync(old).isDirectory());
+  fs.rmdirSync(old); const recovered = await H.chat([{ role: 'user', content: 'Read after archive repair' }], 5000); info = JSON.parse((await H.api('/api/info')).body);
+  check('repair permits next append/rotation, clears current error and preserves cumulative loss count', recovered.content === 'AUDIT_CORE_OK' && info.audit.lastError === null && info.audit.written > 0 && info.audit.dropped > 0 && info.audit.lastSuccess && fs.statSync(old).size === limit && fs.statSync(log).size <= limit && S.readLog(log).some(e => e.callId === 'audit-read-2' && e.status === 'ok'));
+  check('audit failure and repair leave no active task/tool', info.runtime.activeTasks === 0 && info.runtime.activeTools === 0);
+  console.log('AUDIT/BUDGET ' + checks + '/' + checks + ' passed; SKIP 0');
+} finally { clearTimeout(deadline); if (H) { await H.stop(); H.S.cleanup(); } for (const s of sockets) s.destroy(); if (server) await new Promise(r => server.close(r)); S.cleanup(); }
+})().catch(e => { console.error(e.stack); process.exitCode = 1; });

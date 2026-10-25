@@ -701,14 +701,61 @@ function sanitizeAuditLine(text) {
 }
 
 function audit(entry) {
-  if (!AUDIT_ENABLED) return;
+  if (!AUDIT_ENABLED) return false;
+  const stats = audit.stats || (audit.stats = { written: 0, dropped: 0, compacted: 0, currentBytes: null, lastSuccess: null, lastError: null });
+  let fd;
   try {
     const safeAuditPath = internalStatePath('.7coder', 'audit.jsonl');
     if (!auditDirReady) { fs.mkdirSync(path.dirname(safeAuditPath), { recursive: true }); auditDirReady = true; }
-    try { const safeAuditPath = internalStatePath('.7coder', 'audit.jsonl'); if (fs.existsSync(safeAuditPath) && fs.statSync(safeAuditPath).size > 5 * 1024 * 1024) fs.renameSync(safeAuditPath, safeAuditPath.replace(/\.jsonl$/, '.old.jsonl')); } catch (e) {}
     if (entry.args) entry.args = sanitizeAuditArgs(entry.args);
-    fs.appendFileSync(safeAuditPath, JSON.stringify(entry) + '\n');
-  } catch (e) {}
+    let json;
+    try { json = serializeModelRequest(entry, null, 16 * 1024 - 1); }
+    catch (e) {
+      if (e.code !== 'MODEL_REQUEST_REJECTED') throw e;
+      const compact = { ts: new Date().toISOString(), metadataOmitted: 'audit record exceeded byte/structure budget or was not plain JSON' };
+      for (const key of ['type', 'tool', 'callId', 'status', 'model', 'mode']) if (entry[key] != null) compact[key] = runtimeText(entry[key], 100);
+      for (const key of ['prompt', 'completion', 'total', 'durationMs']) if (Number.isFinite(entry[key])) compact[key] = entry[key];
+      json = JSON.stringify(compact); stats.compacted = Math.min(Number.MAX_SAFE_INTEGER, stats.compacted + 1);
+    }
+    const bytes = Buffer.from(json + '\n', 'utf8'), limit = 5 * 1024 * 1024;
+    const regular = file => {
+      try { const st = fs.lstatSync(file); if (!st.isFile() || st.nlink > 1) throw new Error('Audit log must be an unaliased regular file: ' + file); return st; }
+      catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    };
+    const before = regular(safeAuditPath);
+    stats.currentBytes = before ? before.size : 0;
+    if (before && before.size > limit) throw new Error('Existing audit log exceeds 5 MiB; move or repair it before retrying');
+    if (before && before.size + bytes.length > limit) {
+      const old = internalStatePath('.7coder', 'audit.old.jsonl'); regular(old);
+      fs.renameSync(safeAuditPath, old); // failed rotation must never authorize append
+    }
+    fd = fs.openSync(safeAuditPath, 'a+');
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.nlink > 1 || stat.size + bytes.length > limit) throw new Error('Audit append refused: file changed or exceeds 5 MiB');
+    stats.currentBytes = stat.size;
+    if (stat.size) {
+      const last = Buffer.alloc(1);
+      if (fs.readSync(fd, last, 0, 1, stat.size - 1) !== 1 || last[0] !== 10) throw new Error('Audit tail is incomplete; repair or move the log before retrying');
+    }
+    let written = 0;
+    while (written < bytes.length) { const n = fs.writeSync(fd, bytes, written, bytes.length - written, null); if (!n) throw new Error('Audit write made no progress'); written += n; }
+    fs.closeSync(fd); fd = undefined;
+    stats.currentBytes += bytes.length; stats.written = Math.min(Number.MAX_SAFE_INTEGER, stats.written + 1);
+    stats.lastSuccess = new Date().toISOString(); stats.lastError = null;
+    return true;
+  } catch (e) {
+    stats.dropped = Math.min(Number.MAX_SAFE_INTEGER, stats.dropped + 1);
+    stats.lastError = { ts: new Date().toISOString(), code: runtimeText(e.code, 40), message: runtimeText(e.message) };
+    const now = Date.now();
+    if (audit.warnAt === undefined || now < audit.warnAt || now - audit.warnAt >= 60000) { audit.warnAt = now; console.warn('[AUDIT] Log unavailable: ' + stats.lastError.code + ' ' + stats.lastError.message); }
+    return false;
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch (e) {} } }
+}
+function auditSnapshot() {
+  const out = Object.assign({ enabled: AUDIT_ENABLED, fileLimit: 5 * 1024 * 1024, recordLimit: 16 * 1024 }, audit.stats ||
+    { written: 0, dropped: 0, compacted: 0, currentBytes: null, lastSuccess: null, lastError: null });
+  if (out.lastError) out.lastError = Object.assign({}, out.lastError);
+  return out;
 }
 
 // Bounded operating diagnostics: no request payload, model config or history.
@@ -6728,6 +6775,7 @@ function startHttpServer() {
       keyRequired: !!HTTP_API_KEY, models: modelList(),
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
       runtime: runtimeSnapshot(),
+      audit: auditSnapshot(),
       mcp: mcpDiagnosticsSnapshot(),
       startup: { phase: serverStartupState.phase, error: serverStartupState.error },
       capabilities: { persistentShell: !ENABLE_HTTP_SERVER },

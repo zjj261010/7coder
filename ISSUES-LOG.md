@@ -1623,3 +1623,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - loose文件检测用有界目录枚举至多1000条/额外probe/名字64KiB/5秒或原期限；观察到真实.test.js保持Node版本门，未找到且scan incomplete则明确error/零启动，不能把部分目录当nothing-to-detect。不是升级Node，不运行本机其它新版test runner，不自动安装npm/框架。
 - 新test-detection-budget Node13首次单次 **15/15**：100MiB私有manifest零data-read/close/零执行、显式绕过、6类bad shape/encoding零fallback、精确1MiB BOM/npm优先、逻辑大目录1001读停止且incomplete、找到test的Node13拒绝/modern captured argv、预取消零IO；真实Agent超大manifest自动error与同请求显式echo成功、两个call ID/status准确，poison loose文件未运行，源未变、活动归零。
 - 原test-runtime **11/11**、tool-prerequisites **12/12**本批首次单次，提取器显式加载新reader/目录依赖；真实空PATH绝对Node、中文/空格脚本和私有npm shim路径执行保持，没有调用registry或真实项目测试。三项均无失败复跑，Node13语法/diff、README/npm/test-all同步。未重跑已通过的目录/命令/其它专项或完整A–J/UI/test-all、Win7/真实npm矩阵/24–72h/打包。Native IO硬期限及剩余目录/会话/日志采集仍开放；按授权提交、未推送，之后重新读取额度。
+
+### 2026-10-25 —— T22-26审计日志轮转失败止损与可诊断性
+
+- 测试自动识别批已提交`832638b`；完成后五小时used44%/remaining56%，评估能完整覆盖本项writer/诊断/定向验证/提交，继续。
+- **已确认错误路径／Medium长期风险**：原audit在轮转rename失败的空catch之后仍append，旧日志占用时反复突破原5MiB目标、关键故障完全不可见。现先按本行UTF8长度判断5MiB边界，轮转失败不授权append；原已超大文件在原地报错保留，不用它替换旧archive。两固定路径仅regular、单hardlink文件，拒绝链接/目录；写前再次fstat预算检查，fd finally关闭。
+- 每行含LF≤16KiB，以JSON escaped byte/structure预检再序列化，超限/非plain变为显式metadataOmitted紧凑记录，保留可用type/tool/callId/status/mode/model与usage数值，普通args脱敏/身份/status保持。短write继续同一行，零进度/error明确失败；写前检查尾LF，partial损坏保留且拒绝拼接下一条，需要现场显式修复/移动。
+- audit错误不阻断业务，但累计dropped、written、compaction attempts、最后观测字节数/成功/当前错误进入/api/info.audit；错误字段有界并脱敏，stderr警告最多每分钟一次（回拨重新发一次）。修复后下次正常写入清当前lastError，累计loss保留。snapshot拷贝error，外部不能修改内部诊断。日志不是可靠业务事务，不fsync每行，不承诺断电无损或外部writer之间原子size准入。
+- 新audit-budget Node13首次单次 **16/16**：普通身份/status/脱敏、精确16KiB与超限compact、预边界轮转保留5MiB原件、50次轮转EACCES零追加/旧档不变/一分钟限警、snapshot隔离、非regular/100MiB既有log/hardlink拒绝、半行与ENOSPC短写/后续拒绝/close、禁用零文件；真实Agent旧archive目录冲突时核心完成且info暴露loss，修复后同Agent旋转恢复并记精确call ID/status、活动归零。首跑后仅补compact mode/usage字段与observed size赋值，静态核对，不为这些赋值重复新专项。
+- 旧B仅audit-log本批首次单次 **5/5**，含usage/tool event contract、ok/error/blocked、args脱敏；无失败复跑。Node13语法/diff、README/npm/test-all同步。未跑完整A–J/UI/test-all、Win7真实占用/ACL/磁盘写满/24–72h/打包；ENOSPC/rename故障为所属私有夹具注入，不冒充实机故障。background/截图/BTW/TODO/历史/证据/temp等其它磁盘保留及audit自动提交提示的整读仍开放。按授权提交、未推送，之后检查额度再定下一项。
