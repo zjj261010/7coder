@@ -4,6 +4,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { spawnSync } = require('child_process');
 const { loadContext } = require('./download-commit');
 const S = require('./_shared').create({ suite: 'backup-ownership' });
 const source = fs.readFileSync(S.IDX, 'utf8');
@@ -79,11 +80,11 @@ async function main() {
       ctx.backupExistingFile(f.file);
       fs.writeFileSync(f.file, 'g9\n');
       const after = recordDirs(f.cwd);
-      // Grouping excludes the just-published seq 8, so per-source retention
-      // keeps the newest five of seq 2..7 (dropping seq 2) plus seq 8 itself.
+      // Quotas count every owned record including the just-published seq 8:
+      // the source keeps exactly its five newest owned records (3..7,8).
       check('foreign record preserved while owned retention still applies',
-        fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')) && after.length === 7 &&
-        after.filter(n => n !== oldest).length === 6 &&
+        fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')) && after.length === 6 &&
+        after.filter(n => n !== oldest).length === 5 &&
         ctx.restoreLatestBackupDetailed('target.txt').status === 'restored' && same(f.file, 'g8\n'));
     }
     // 4. Unknown-version record directories are kept and ignored.
@@ -91,16 +92,20 @@ async function main() {
       const f = fixture('unknown-version');
       const ctx = ctxAt(f.cwd);
       fs.writeFileSync(f.file, 'a\n'); ctx.backupExistingFile(f.file);
+      fs.writeFileSync(f.file, 'b\n'); ctx.backupExistingFile(f.file);
       const odd = path.join(v1Dir(f.cwd), '0000000000000009-' + 'ab'.repeat(16));
       fs.mkdirSync(odd);
       fs.writeFileSync(path.join(odd, 'manifest.json'), JSON.stringify(Object.assign(readManifest(f.cwd, recordDirs(f.cwd)[0]), { version: 2, snapshotId: 'ab'.repeat(16), sequence: 9 })));
       fs.writeFileSync(path.join(odd, 'data.bak'), 'x');
-      fs.writeFileSync(f.file, 'b\n');
-      ctx.backupExistingFile(f.file);
       const oddOutcome = ctx.restoreLatestBackupDetailed('target.txt');
       check('unknown-version record is neither claimed nor deleted',
         fs.existsSync(odd) && recordDirs(f.cwd).filter(n => n !== path.basename(odd)).length === 2 &&
         oddOutcome.status === 'unknown' && same(f.file, 'b\n'));
+      fs.writeFileSync(f.file, 'c\n');
+      ctx.backupExistingFile(f.file);
+      const owned = recordDirs(f.cwd).filter(n => n !== path.basename(odd));
+      check('allocation stays above the damaged foreign-version sequence',
+        owned.length === 3 && owned.every((n, i) => i === 0 || parseInt(n.slice(0, 16), 10) > parseInt(owned[i - 1].slice(0, 16), 10)));
     }
     // 5. Duplicate sequence refuses allocation and preserves everything.
     {
@@ -204,10 +209,10 @@ async function main() {
       }
       fs.writeFileSync(a, 'a3\n'); ctx.backupExistingFile(a, null, { globalKeep: 3 });
       const dirs = recordDirs(f.cwd);
-      // Victims are the 3 oldest sequences (1,2,3); the just-published seq 7
-      // is protected, so 4..7 remain.
+      // The global cap counts every record including the just-published seq 7:
+      // exactly the three newest sequences remain.
       check('global cap evicts the oldest sequences across sources',
-        dirs.length === 4 && dirs[0].startsWith('0000000000000004-') && dirs[3].startsWith('0000000000000007-') && stageResidue(f.cwd).length === 0);
+        dirs.length === 3 && dirs[0].startsWith('0000000000000005-') && dirs[2].startsWith('0000000000000007-') && stageResidue(f.cwd).length === 0);
     }
     // 12. Active restore pins protect records from retention.
     {
@@ -219,12 +224,12 @@ async function main() {
       fs.writeFileSync(f.file, 'p7\n');
       ctx.backupExistingFile(f.file);
       check('pinned record survives retention even beyond the per-source cap',
-        recordDirs(f.cwd).length === 7 && fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')));
+        recordDirs(f.cwd).length === 6 && fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')));
       ctx.activeBackupRestorePins.delete(path.join(v1Dir(f.cwd), oldest));
       fs.writeFileSync(f.file, 'p8\n');
       ctx.backupExistingFile(f.file);
       check('released pin becomes eligible again',
-        recordDirs(f.cwd).length === 6 && recordDirs(f.cwd)[0].startsWith('0000000000000003-'));
+        recordDirs(f.cwd).length === 5 && recordDirs(f.cwd)[0].startsWith('0000000000000004-'));
     }
     // 13. Deletion failure keeps .deleting evidence instead of faking success.
     {
@@ -238,12 +243,13 @@ async function main() {
       for (let i = 1; i <= 7; i++) { fs.writeFileSync(f.file, 'd' + i + '\n'); ctx.backupExistingFile(f.file); }
       const residue = stageResidue(f.cwd);
       const kept = recordDirs(f.cwd);
-      // The 7th publish evicts seq 1; its manifest unlink is denied, so the
-      // renamed record must remain as .deleting evidence, never as a record.
+      // The 7th publish plans to evict seq 1 and 2; both manifest unlinks are
+      // denied, so both renamed records remain as .deleting evidence, never
+      // as records, and the byte/count targets are reported as unmet.
       check('failed member deletion leaves .deleting evidence and a full report',
-        residue.length === 1 && residue[0].indexOf('.deleting-') === 0 &&
-        fs.existsSync(path.join(v1Dir(f.cwd), residue[0], 'manifest.json')) &&
-        !fs.existsSync(path.join(v1Dir(f.cwd), residue[0], 'data.bak')) && kept.length === 6);
+        residue.length === 2 && residue.every(n => n.indexOf('.deleting-') === 0 &&
+          fs.existsSync(path.join(v1Dir(f.cwd), n, 'manifest.json')) &&
+          !fs.existsSync(path.join(v1Dir(f.cwd), n, 'data.bak'))) && kept.length === 5);
       // The evidence directory is never selected by undo.
       fs.writeFileSync(f.file, 'd8\n');
       check('deleting evidence is never an undo candidate',
@@ -351,6 +357,172 @@ async function main() {
       check('successful later transactions leave foreign residue untouched',
         same(path.join(stage, 'data.bak'), 'ABANDONED') && fs.existsSync(path.join(deleting, 'manifest.json')) &&
         recordDirs(f.cwd).length === 1 && ctx.restoreLatestBackupDetailed('other.txt').status === 'restored');
+    }
+    // 20. Quotas count the just-published record (recheck R3).
+    {
+      const f = fixture('quota-counts-new');
+      const ctx = ctxAt(f.cwd);
+      for (let i = 1; i <= 8; i++) { fs.writeFileSync(f.file, 'q' + i + '\n'); ctx.backupExistingFile(f.file); }
+      const dirs = recordDirs(f.cwd);
+      check('single source keeps exactly 5 owned records with no pins',
+        dirs.length === 5 && dirs[0].startsWith('0000000000000004-') && dirs[4].startsWith('0000000000000008-'));
+    }
+    // 21. Count and byte rules share one survivor set (recheck R2).
+    {
+      const f = fixture('survivor-matrix');
+      const ctx = ctxAt(f.cwd);
+      for (let i = 1; i <= 5; i++) { fs.writeFileSync(path.join(f.cwd, 's' + i + '.txt'), 'aaa'); ctx.backupExistingFile(path.join(f.cwd, 's' + i + '.txt')); }
+      fs.writeFileSync(path.join(f.cwd, 's6.txt'), 'aaa');
+      ctx.backupExistingFile(path.join(f.cwd, 's6.txt'), null, { globalKeep: 2, retainTarget: 9 });
+      const both = recordDirs(f.cwd).map(n => parseInt(n.slice(0, 16), 10));
+      check('combined count+byte budget keeps exactly the newest two sequences',
+        both.length === 2 && both[0] === 5 && both[1] === 6);
+      const g = fixture('survivor-bytes-only');
+      const ctx2 = ctxAt(g.cwd);
+      for (let i = 1; i <= 5; i++) { fs.writeFileSync(path.join(g.cwd, 't' + i + '.txt'), 'aaa'); ctx2.backupExistingFile(path.join(g.cwd, 't' + i + '.txt')); }
+      fs.writeFileSync(path.join(g.cwd, 't6.txt'), 'aaa');
+      ctx2.backupExistingFile(path.join(g.cwd, 't6.txt'), null, { retainTarget: 9 });
+      const bytes = recordDirs(g.cwd).map(n => parseInt(n.slice(0, 16), 10));
+      check('byte-only budget evicts oldest sequences down to the target',
+        bytes.length === 3 && bytes[0] === 4 && bytes[2] === 6);
+    }
+    // 22. Extra member: reject BEFORE any destructive step (recheck R1C).
+    {
+      const f = fixture('extra-member');
+      const ctx = ctxAt(f.cwd);
+      for (let i = 1; i <= 6; i++) { fs.writeFileSync(f.file, 'x' + i + '\n'); ctx.backupExistingFile(f.file); }
+      const oldest = recordDirs(f.cwd)[0];
+      fs.writeFileSync(path.join(v1Dir(f.cwd), oldest, 'extra.txt'), 'USER-DATA');
+      fs.writeFileSync(f.file, 'x7\n');
+      ctx.backupExistingFile(f.file);
+      const kept = recordDirs(f.cwd);
+      check('record with unknown extra members is preserved intact and unrenamed',
+        kept.length === 6 && kept.indexOf(oldest) >= 0 &&
+        fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')) &&
+        fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'manifest.json')) &&
+        same(path.join(v1Dir(f.cwd), oldest, 'extra.txt'), 'USER-DATA') && stageResidue(f.cwd).length === 0);
+    }
+    // 23. storeId swapped after discovery: the record is no longer ours (recheck R1B).
+    {
+      const f = fixture('storeid-swap');
+      const ctx = ctxAt(f.cwd);
+      for (let i = 1; i <= 6; i++) { fs.writeFileSync(f.file, 'y' + i + '\n'); ctx.backupExistingFile(f.file); }
+      const oldest = recordDirs(f.cwd)[0];
+      const manifestPath = path.join(v1Dir(f.cwd), oldest, 'manifest.json');
+      let swapped = false;
+      const hooked = ctxAt(f.cwd, {
+        lstatSync(p) {
+          if (!swapped && path.resolve(String(p)) === path.resolve(path.join(v1Dir(f.cwd), oldest))) {
+            swapped = true;
+            const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+            manifest.storeId = crypto.randomBytes(16).toString('hex');
+            fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+          }
+          return fs.lstatSync(p);
+        }
+      });
+      fs.writeFileSync(f.file, 'y7\n');
+      hooked.backupExistingFile(f.file);
+      check('record whose storeId changed after discovery is kept, not deleted',
+        swapped && fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')) &&
+        JSON.parse(fs.readFileSync(manifestPath, 'utf8')).storeId !== JSON.parse(fs.readFileSync(storePath(f.cwd), 'utf8')).storeId &&
+        recordDirs(f.cwd).filter(n => n !== oldest).length === 5 && stageResidue(f.cwd).length === 0);
+    }
+    // 24. Directory swapped for a junction between discovery and deletion (recheck R1A).
+    if (process.platform === 'win32') {
+      const f = fixture('junction-swap');
+      const ctx = ctxAt(f.cwd);
+      for (let i = 1; i <= 6; i++) { fs.writeFileSync(f.file, 'j' + i + '\n'); ctx.backupExistingFile(f.file); }
+      const oldest = recordDirs(f.cwd)[0];
+      const victimDir = path.join(v1Dir(f.cwd), oldest);
+      const outsideWs = S.freshCwd('junction-outside');
+      const outsideDir = path.join(outsideWs, 'stolen');
+      fs.mkdirSync(outsideDir);
+      fs.copyFileSync(path.join(victimDir, 'manifest.json'), path.join(outsideDir, 'manifest.json'));
+      fs.copyFileSync(path.join(victimDir, 'data.bak'), path.join(outsideDir, 'data.bak'));
+      const saveDir = path.join(f.cwd, 'saved-record');
+      let swapped = false;
+      const hooked = ctxAt(f.cwd, {
+        realpathSync(p) {
+          if (!swapped && path.resolve(String(p)) === path.resolve(victimDir)) {
+            swapped = true;
+            fs.renameSync(victimDir, saveDir);
+            const mk = spawnSync('cmd', ['/c', 'mklink', '/J', victimDir, outsideDir]);
+            if (mk.status !== 0) throw Object.assign(Error('mklink failed'), { code: 'ELINK' });
+          }
+          return fs.realpathSync(p);
+        }
+      });
+      fs.writeFileSync(f.file, 'j7\n');
+      hooked.backupExistingFile(f.file);
+      check('junction-swapped record is never renamed or deleted through; outside files intact',
+        swapped && fs.realpathSync(victimDir) === outsideDir &&
+        fs.existsSync(path.join(outsideDir, 'data.bak')) && fs.existsSync(path.join(outsideDir, 'manifest.json')) &&
+        fs.existsSync(path.join(saveDir, 'data.bak')) && stageResidue(f.cwd).length === 0);
+    } else {
+      console.log('INFO  junction-swap repro is Windows-only');
+    }
+    // 25. Corrupt sequences still constrain allocation after a counter rollback (recheck R4A).
+    {
+      const f = fixture('corrupt-seq-rollback');
+      const ctx = ctxAt(f.cwd);
+      fs.writeFileSync(f.file, 'a\n'); ctx.backupExistingFile(f.file);
+      fs.writeFileSync(f.file, 'b\n'); ctx.backupExistingFile(f.file);
+      const dirs = recordDirs(f.cwd);
+      fs.writeFileSync(path.join(v1Dir(f.cwd), dirs[1], 'manifest.json'), 'CORRUPT-MANIFEST');
+      fs.unlinkSync(storePath(f.cwd)); // previous store.json (lastSequence=1) is restored by the reliable protocol
+      const other = path.join(f.cwd, 'other.txt');
+      fs.writeFileSync(other, 'o1\n');
+      ctx.backupExistingFile(other);
+      const seqs = recordDirs(f.cwd).map(n => parseInt(n.slice(0, 16), 10)).sort((a, b) => a - b);
+      check('allocation stays above damaged records after counter rollback',
+        seqs.length === 3 && seqs[0] === 1 && seqs[1] === 2 && seqs[2] === 3);
+    }
+    // 26. Same-sequence damaged record makes the newest ambiguous (recheck R4B).
+    {
+      const f = fixture('same-seq-ambiguity', 'one\n');
+      const ctx = ctxAt(f.cwd);
+      ctx.backupExistingFile(f.file);
+      const clone = '0000000000000001-' + 'dd'.repeat(16);
+      fs.mkdirSync(path.join(v1Dir(f.cwd), clone));
+      fs.writeFileSync(path.join(v1Dir(f.cwd), clone, 'manifest.json'), 'CORRUPT');
+      fs.writeFileSync(path.join(v1Dir(f.cwd), clone, 'data.bak'), 'x');
+      fs.writeFileSync(f.file, 'now\n');
+      const outcome = ctx.restoreLatestBackupDetailed('target.txt');
+      check('damaged record sharing the newest sequence reports unknown',
+        outcome.status === 'unknown' && same(f.file, 'now\n'));
+    }
+    // 27. Store identity scan budget (recheck R5).
+    {
+      const f = fixture('occupied-budget');
+      fs.mkdirSync(v1Dir(f.cwd), { recursive: true });
+      for (let i = 0; i < 4200; i++) fs.writeFileSync(path.join(v1Dir(f.cwd), 'junk-' + i), '');
+      let refused = '';
+      try { ctxAt(f.cwd).backupExistingFile(f.file); } catch (e) { refused = e.message; }
+      check('unprovable v1 directory fails closed within the scan budget',
+        /not provably empty/.test(refused) && recordDirs(f.cwd).length === 0 && same(f.file, 'v0\n'));
+    }
+    // 28. Cancellation inside the prune digest keeps the candidate (recheck R5).
+    {
+      const f = fixture('cleanup-cancel');
+      ctxAt(f.cwd).backupExistingFile(f.file);
+      const victimData = path.join(v1Dir(f.cwd), recordDirs(f.cwd)[0], 'data.bak');
+      const token = function () { return !!token.reason; };
+      token.reason = '';
+      token.cancel = reason => { token.reason = reason || 'Execution cancelled.'; };
+      const ctx = ctxAt(f.cwd, {
+        openSync(file, flags) {
+          const fd = fs.openSync(file, flags);
+          if (path.resolve(String(file)) === path.resolve(victimData)) token.cancel('halt cleanup digest');
+          return fd;
+        }
+      });
+      // The per-source cap first evicts seq 1 at the 6th publish; the digest
+      // of that victim is where the cancellation lands.
+      for (let i = 2; i <= 6; i++) { fs.writeFileSync(f.file, 'c' + i + '\n'); ctx.backupExistingFile(f.file, token); }
+      check('cancellation during the prune digest preserves the candidate',
+        token.reason === 'halt cleanup digest' && fs.existsSync(victimData) &&
+        recordDirs(f.cwd).length === 6 && stageResidue(f.cwd).length === 0);
     }
     console.log('BACKUP/OWNERSHIP: ' + checks + '/' + checks);
   } finally {

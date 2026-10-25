@@ -269,6 +269,61 @@ async function main() {
           recordDirs(f.cwd).length === 1 && recovery.status === 'restored');
       }
     }
+    // 16. Hard-linked legacy payloads are excluded; older regular wins (recheck R7).
+    {
+      const f = fixture('legacy-hardlink', 'current\n');
+      const root = path.join(f.cwd, '.7coder', 'backups');
+      fs.mkdirSync(root, { recursive: true });
+      legacyStamp(path.join(root, 'target.txt.2026-01-01T00-00-00-000Z.bak'), new Date('2026-01-01'));
+      const newest = path.join(root, 'target.txt.2026-06-01T00-00-00-000Z.bak');
+      fs.writeFileSync(newest, 'HARD-NEW');
+      fs.linkSync(newest, path.join(root, 'alias.bak')); // nlink = 2 on both names
+      const outcome = ctxAt(f.cwd).restoreLatestBackupDetailed('target.txt');
+      check('hard-linked newest legacy candidate is excluded for the older regular one',
+        outcome.status === 'restored' && outcome.format === 'legacy' && same(f.file, 'legacy-old') &&
+        Array.isArray(outcome.warnings) && outcome.warnings.some(w => /no creation-time digest/.test(w)));
+    }
+    // 17. Only hard-linked legacy candidates: report why nothing restorable.
+    {
+      const f = fixture('legacy-only-hardlink', 'current\n');
+      const root = path.join(f.cwd, '.7coder', 'backups');
+      fs.mkdirSync(root, { recursive: true });
+      const only = path.join(root, 'target.txt.2026-06-01T00-00-00-000Z.bak');
+      fs.writeFileSync(only, 'HARD-ONLY');
+      fs.linkSync(only, path.join(root, 'alias.bak'));
+      const outcome = ctxAt(f.cwd).restoreLatestBackupDetailed('target.txt');
+      check('legacy-only hard-linked candidates report why nothing is restorable',
+        outcome.status === 'not-found' && /hard-linked/.test(outcome.message) && same(f.file, 'current\n'));
+    }
+    // 18. Managed-state restore warns that running state was not reloaded.
+    {
+      const f = fixture('managed-warn');
+      const todos = path.join(f.cwd, '.7coder', 'todos.json');
+      fs.mkdirSync(path.dirname(todos), { recursive: true });
+      fs.writeFileSync(todos, '{"items":[]}');
+      ctxAt(f.cwd).backupExistingFile(todos);
+      fs.writeFileSync(todos, '{"items":[]}   ');
+      const outcome = ctxAt(f.cwd).restoreLatestBackupDetailed('.7coder/todos.json');
+      check('managed-state restore carries the reload warning',
+        outcome.status === 'restored' && Array.isArray(outcome.warnings) && outcome.warnings.some(w => /reload/.test(w)) && same(todos, '{"items":[]}'));
+    }
+    // 19. Restore staging exceeding its operation budget never commits (recheck R5).
+    {
+      const f = fixture('restore-budget', 'one\n');
+      ctxAt(f.cwd).backupExistingFile(f.file);
+      fs.writeFileSync(f.file, 'two\n');
+      let clock = Date.now();
+      const ctx = ctxAt(f.cwd, {
+        writeSync(fd, buffer, off, len) {
+          const wrote = fs.writeSync(fd, buffer, off, len);
+          clock += 301000; // past BACKUP_IO_BUDGET_MS for the next phase check
+          return wrote;
+        }
+      }, { Date: class extends Date { static now() { return clock; } } });
+      const outcome = ctx.restoreLatestBackupDetailed('target.txt');
+      check('restore that outlives its operation budget fails without touching the target',
+        outcome.status === 'failed' && /budget/.test(outcome.message) && same(f.file, 'two\n') && restoreResidue(f.cwd).length === 0);
+    }
     console.log('BACKUP/RESTORE: ' + checks + '/' + checks);
   } finally {
     clearTimeout(deadline);
