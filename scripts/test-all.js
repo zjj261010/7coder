@@ -18,6 +18,8 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'stream-context.js', args: [path.join(ROOT, 'test', 'stream-context.js')] },
     { name: 'repl-approval.js', args: [path.join(ROOT, 'test', 'repl-approval.js')] },
     { name: 'download-commit.js', args: [path.join(ROOT, 'test', 'download-commit.js')] },
+    { name: 'backup-ownership.js', args: [path.join(ROOT, 'test', 'backup-ownership.js')] },
+    { name: 'backup-restore.js', args: [path.join(ROOT, 'test', 'backup-restore.js')] },
     { name: 'text-encoding.js', args: [path.join(ROOT, 'test', 'text-encoding.js')] },
     { name: 'text-budget.js', args: [path.join(ROOT, 'test', 'text-budget.js')] },
     { name: 'model-routing.js', args: [path.join(ROOT, 'test', 'model-routing.js')] },

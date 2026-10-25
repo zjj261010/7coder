@@ -105,16 +105,18 @@ const args = { write_file: { content: 'count=2\n' }, append_file: { content: '\n
 
     for (const op of ['write_file', 'append_file', 'edit_file']) {
       const denied = fixture('backup-denied-' + op, 'count=1\r\n中文\r\n');
-      const result = text(await context(denied.cwd, { copyFileSync(from, to) {
-        fs.writeFileSync(to, 'partial'); throw Object.assign(Error('disk full'), { code: 'ENOSPC' });
+      // T22-26 owned store: payload copies go through chunked writeSync on the
+      // staging descriptor, not copyFileSync on a name.
+      const result = text(await context(denied.cwd, { writeSync(fd, buffer, off, len) {
+        throw Object.assign(Error('disk full'), { code: 'ENOSPC' });
       } }).invoke(op, Object.assign({ path: 'source.txt' }, args[op])));
       check(op + ': partial backup failure blocks write and publishes no backup', /error: Cannot preserve previous file/.test(result) && same(denied.file, 'count=1\r\n中文\r\n') && backupFiles(denied.cwd).length === 0);
     }
-    for (const kind of ['flush', 'publish', 'timestamp']) {
+    for (const kind of ['flush', 'publish', 'manifest']) {
       const denied = fixture('backup-' + kind, 'count=1\n');
       const overrides = kind === 'flush' ? { fsyncSync() { throw Error('backup flush failed'); } } :
         kind === 'publish' ? { renameSync() { throw Error('backup publication failed'); } } :
-          { utimesSync() { throw Error('backup recovery metadata failed'); } };
+          { openSync(file, flags) { if (String(file).includes('.stage-') && String(file).includes('.7coder-tmp-')) throw Error('backup manifest write denied'); return fs.openSync(file, flags); } };
       const result = text(await context(denied.cwd, overrides).invoke('edit_file', { path: 'source.txt', old_string: 'count=1', new_string: 'count=2' }));
       check('backup ' + kind + ' failure blocks edit', /Edit error: Cannot preserve previous file/.test(result) && same(denied.file, 'count=1\n'));
     }
@@ -124,14 +126,16 @@ const args = { write_file: { content: 'count=2\n' }, append_file: { content: '\n
     fs.writeFileSync(skew.file, 'generation=2\n');
     const second = skewCtx.backupExistingFile(skew.file);
     fs.writeFileSync(skew.file, 'generation=3\n');
-    check('rollback clock/tied times cannot make /undo select an older generation', fs.statSync(second).mtimeMs > fs.statSync(first).mtimeMs && skewCtx.restoreLatestBackup('source.txt') && same(skew.file, 'generation=2\n'));
+    // T22-26 ordering is by monotonic sequence, not mtime: a tampered/rolled-
+    // back clock on the older record cannot make /undo pick generation 1.
+    check('rollback clock/tied times cannot make /undo select an older generation', first !== second && skewCtx.restoreLatestBackup('source.txt') && same(skew.file, 'generation=2\n'));
 
     const notebook = fixture('notebook', '\uFEFF{\r\n  "cells": [],\r\n  "metadata": {"keep": true}\r\n}');
     const nbResult = text(await context(notebook.cwd).invoke('notebook_edit_tool', { path: 'source.txt', edits: { cells: [{ cell_type: 'markdown', source: ['中文'] }] } }));
     const nbBytes = fs.readFileSync(notebook.file, 'utf8');
     check('notebook preserves UTF8 BOM/CRLF and unrelated metadata', nbResult === 'Notebook edited successfully' && nbBytes.startsWith('\uFEFF') && !/(^|[^\r])\n/.test(nbBytes) && JSON.parse(nbBytes.slice(1)).metadata.keep && backupFiles(notebook.cwd).length === 1);
     const nbDenied = fixture('notebook-denied', '{"cells":[],"metadata":{}}');
-    const nbError = text(await context(nbDenied.cwd, { copyFileSync() { throw Error('backup denied'); } }).invoke('notebook_edit_tool', { path: 'source.txt', edits: { cells: ['new'] } }));
+    const nbError = text(await context(nbDenied.cwd, { writeSync() { throw Error('backup denied'); } }).invoke('notebook_edit_tool', { path: 'source.txt', edits: { cells: ['new'] } }));
     check('notebook cannot continue after backup failure', nbError.startsWith('Notebook error: Cannot preserve previous file') && same(nbDenied.file, '{"cells":[],"metadata":{}}'));
     const partial = fixture('partial-write', 'count=1\n');
     const partialCtx = context(partial.cwd, { writeFileSync(file, data, encoding) {

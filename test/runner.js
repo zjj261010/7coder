@@ -403,9 +403,9 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m.port, args: ['--prompt', 'p'], env: { PERMISSION_MODE: 'bypass' }, cwd });
     const bakCount = fs.readdirSync(backupsDir).filter(f => f.endsWith('.bak')).length;
-    // DS-14 policy: per-file retention is 5, global cap is 200. The 103 pad
-    // .bak files don't belong to any timestamped group, so per-file pruning
-    // must NOT evict them; the total just has to stay under the global cap.
+    // T22-26 semantics: the pad .bak files are unattributed legacy history, so
+    // owned-store retention never deletes them; the owned protocol counts its
+    // v1 records separately and creates no flat files here.
     record('net: pad backups survive per-file prune, total under global cap 200', bakCount >= 103 && bakCount <= 200, 'count=' + bakCount);
     stopMock(m);
   }
@@ -528,11 +528,21 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m.port, args: ['--prompt', 'cap'], env: { PERMISSION_MODE: 'bypass' }, cwd });
     const bdir = path.join(cwd, '.7coder', 'backups');
-    const baks = fs.existsSync(bdir) ? fs.readdirSync(bdir).filter(f => f.endsWith('.bak')) : [];
-    const aBaks = baks.filter(f => /^a\.txt\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/.test(f));
-    const bBaks = baks.filter(f => /^b\.txt\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/.test(f));
-    record('backup-cap: a.txt keeps exactly 5 backups after 7 writes (per-file cap)', aBaks.length === 5, 'a=' + aBaks.length + ' all=' + baks.length);
-    record('backup-cap: b.txt backup not evicted by a.txt churn', bBaks.length >= 1, 'b=' + bBaks.length);
+    // T22-26 owned store: new snapshots publish as v1/<seq>-<id> records; the
+    // flat .bak layout is legacy-only and never counted or pruned with them.
+    const v1dir = path.join(bdir, 'v1');
+    const owned = {};
+    for (const name of fs.existsSync(v1dir) ? fs.readdirSync(v1dir) : []) {
+      if (!/^\d{16}-[0-9a-f]{32}$/.test(name)) continue;
+      try {
+        const manifest = JSON.parse(fs.readFileSync(path.join(v1dir, name, 'manifest.json'), 'utf8'));
+        owned[manifest.sourceKey] = (owned[manifest.sourceKey] || 0) + 1;
+      } catch (e) {}
+    }
+    const flatBaks = fs.existsSync(bdir) ? fs.readdirSync(bdir).filter(f => f.endsWith('.bak')) : [];
+    record('backup-cap: a.txt keeps exactly 5 owned backups after 7 writes (per-source cap)', (owned['a.txt'] || 0) === 5, 'a=' + (owned['a.txt'] || 0) + ' records=' + Object.keys(owned).map(k => k + ':' + owned[k]).join(','));
+    record('backup-cap: b.txt backup not evicted by a.txt churn', (owned['b.txt'] || 0) >= 1, 'b=' + (owned['b.txt'] || 0));
+    record('backup-cap: no flat legacy file is created by the owned protocol', flatBaks.length === 0, 'flat=' + flatBaks.length);
     stopMock(m);
   }
 });

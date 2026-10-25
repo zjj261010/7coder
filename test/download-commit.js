@@ -16,8 +16,9 @@ function cut(source, from, to) {
 function loadContext(source, cwd, overrides, extra) {
   // OPT-13: the extracted branches return structured ToolResults now - give
   // the sandbox the constructor (plain object; the suites assert on .text).
-  const ctx = Object.assign({ fs: Object.assign({}, fs, overrides), path, process, console,
-    crypto, pipeline, Transform, axios, vm, launchDir: cwd, setTimeout, clearTimeout, setInterval, clearInterval,
+  // Buffer is explicit: the owned-backup protocol allocates chunk buffers.
+  const ctx = Object.assign({ fs: Object.assign({}, fs, overrides), path, process, console, Buffer,
+    crypto, pipeline, Transform, axios, vm, launchDir: cwd, appDir: cwd, setTimeout, clearTimeout, setInterval, clearInterval,
     EXECUTION_TIMEOUT_MS: 5000, MAX_TOOL_RESULT_CHARS: 30000,
     makeToolResult: (status, text) => ({ status, text }) }, extra || {});
   vm.createContext(ctx);
@@ -65,7 +66,7 @@ async function main() {
     const ctx = loadContext(source, f.cwd, overrides, opts && opts.extra);
     const result = await ctx.download({ path: 'target.bin', url: base + (opts && opts.route || '/blob') });
     check(name + ': error preserves original bytes without unlinking destination', /^Download error:/.test(result.text) && same(f.dest, old) && !destUnlinked);
-    if (!(opts && opts.residue)) check(name + ': no owned part/staging residue', !files(f.cwd).some(file => file.includes('.part-') || file.endsWith('.bak.tmp')));
+    if (!(opts && opts.residue)) check(name + ': no owned part/staging residue', !files(f.cwd).some(file => file.includes('.part-') || file.endsWith('.bak.tmp') || file.includes('.stage-')));
     check(name + ': every published backup is complete', backups(f.cwd).every(file => same(file, old)));
     return Object.assign(f, { result, ctx });
   }
@@ -115,7 +116,7 @@ async function main() {
     const result = await happyCtx.download({ path: 'target.bin', url: base + '/blob' });
     check('existing destination replaced byte-for-byte only after writer close', result.text.startsWith('[OK]') && same(happy.dest, fresh) && committedAfterClose);
     check('previous binary version is a complete published backup', backups(happy.cwd).length === 1 && same(backups(happy.cwd)[0], old) && result.text.includes('Previous version:'));
-    check('success leaves no part or backup staging files', !files(happy.cwd).some(f => f.includes('.part-') || f.endsWith('.bak.tmp')));
+    check('success leaves no part or backup staging files', !files(happy.cwd).some(f => f.includes('.part-') || f.endsWith('.bak.tmp') || f.includes('.stage-')));
     check('fresh recovery context restores previous version', loadContext(source, happy.cwd).restoreLatestBackup('target.bin') && same(happy.dest, old));
     const noOld = S.freshCwd('new');
     const noOldResult = await loadContext(source, noOld).download({ path: 'nested/new.bin', url: base + '/blob' });
@@ -123,14 +124,16 @@ async function main() {
 
     const denied = await fail('commit EPERM', f => ({ renameSync(from, to) { if (to === f.dest) throw ioError('commit denied'); return fs.renameSync(from, to); } }));
     check('commit failure retains a complete rollback copy', backups(denied.cwd).length === 1);
-    await fail('backup rename EPERM', () => ({ renameSync(from, to) { if (to.endsWith('.bak')) throw ioError('backup publication denied'); return fs.renameSync(from, to); } }));
-    await fail('partial backup ENOSPC', () => ({ copyFileSync(from, to) { fs.writeFileSync(to, 'partial'); throw ioError('backup disk full', 'ENOSPC'); } }));
+    // T22-26 owned store: the backup publish point is now the single rename of
+    // the staging directory to its final <16-digit sequence>-<32hex> record.
+    await fail('backup publish EPERM', () => ({ renameSync(from, to) { if (/^\d{16}-[0-9a-f]{32}$/.test(path.basename(to))) throw ioError('backup publication denied'); return fs.renameSync(from, to); } }));
+    await fail('partial backup ENOSPC', () => ({ writeSync(fd, buffer, off, len) { throw ioError('backup disk full', 'ENOSPC'); } }));
     for (const kind of ['temp fsync', 'backup fsync', 'temp close']) {
       await fail(kind, () => {
         const names = new Map();
         return {
           openSync(file, flags) { const fd = fs.openSync(file, flags); names.set(fd, String(file)); return fd; },
-          fsyncSync(fd) { const file = names.get(fd) || ''; if (kind === 'temp fsync' && file.includes('.part-') || kind === 'backup fsync' && file.endsWith('.bak.tmp')) throw ioError(kind, 'EIO'); return fs.fsyncSync(fd); },
+          fsyncSync(fd) { const file = names.get(fd) || ''; if (kind === 'temp fsync' && file.includes('.part-') || kind === 'backup fsync' && file.includes('.stage-')) throw ioError(kind, 'EIO'); return fs.fsyncSync(fd); },
           closeSync(fd) { const file = names.get(fd) || ''; names.delete(fd); fs.closeSync(fd); if (kind === 'temp close' && file.includes('.part-')) throw ioError('close reported failure', 'EIO'); }
         };
       });
@@ -156,12 +159,18 @@ async function main() {
 
     const pruning = fixture('retention');
     const backupDir = path.join(pruning.cwd, '.7coder', 'backups'); fs.mkdirSync(backupDir, { recursive: true });
+    const legacyFiles = [];
     for (let i = 1; i <= 6; i++) {
       const file = path.join(backupDir, 'target.bin.2099-01-0' + i + 'T00-00-00-000Z.bak');
+      legacyFiles.push(file);
       fs.writeFileSync(file, 'older backup'); fs.utimesSync(file, new Date('2099-01-01'), new Date('2099-01-01'));
     }
     const snapshot = loadContext(source, pruning.cwd).backupExistingFile(pruning.dest);
-    check('rollback copy survives clock skew while per-file retention stays bounded', backups(pruning.cwd).length === 5 && same(snapshot, old));
+    // T22-26 semantics: legacy flat backups are read-only history; the new
+    // snapshot publishes as an owned v1 record and never deletes them.
+    check('rollback copy is an owned v1 record and legacy backups are never auto-deleted',
+      typeof snapshot === 'string' && snapshot.endsWith('data.bak') && snapshot.includes(path.join('backups', 'v1') + path.sep) &&
+      same(snapshot, old) && legacyFiles.every(file => fs.existsSync(file) && fs.readFileSync(file, 'utf8') === 'older backup'));
 
     // Abrupt exit at the two sides of the single commit operation. The worker
     // runs original functions in its own Node process and never runs finally.

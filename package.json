@@ -33,6 +33,8 @@
     "test:stream-context": "node test/stream-context.js",
     "test:repl-approval": "node test/repl-approval.js",
     "test:download-commit": "node test/download-commit.js",
+    "test:backup-ownership": "node test/backup-ownership.js",
+    "test:backup-restore": "node test/backup-restore.js",
     "test:text-encoding": "node test/text-encoding.js",
     "test:text-budget": "node test/text-budget.js",
     "test:model-routing": "node test/model-routing.js",

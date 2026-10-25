@@ -111,8 +111,10 @@ function networkContext(name) {
     check('cancellation at writer close prevents backup and destination replacement', closed.status === 'cancelled' && retained(atClose) && !files(atClose.cwd).some(file => file.endsWith('.bak')));
 
     let backupToken;
+    // T22-26 owned store: cancellation fires at the real publish point - the
+    // single rename of .stage-<hex> to its final <16-digit sequence>-<32hex> dir.
     const atBackup = downloadFixture('cancel-after-backup', { renameSync(from, to) {
-      fs.renameSync(from, to); if (to.endsWith('.bak')) backupToken.cancel('cancel after complete backup');
+      fs.renameSync(from, to); if (/^\d{16}-[0-9a-f]{32}$/.test(path.basename(to))) backupToken.cancel('cancel after complete backup');
     } });
     backupToken = control(atBackup.ctx);
     const backed = await atBackup.ctx.download({ path: 'target.bin', url: base + '/blob' }, backupToken);
@@ -121,7 +123,7 @@ function networkContext(name) {
 
     let clock = Date.now();
     const overrun = downloadFixture('deadline-in-sync-backup', { renameSync(from, to) {
-      fs.renameSync(from, to); if (to.endsWith('.bak')) clock += 6000;
+      fs.renameSync(from, to); if (/^\d{16}-[0-9a-f]{32}$/.test(path.basename(to))) clock += 6000;
     } }, { Date: class extends Date { static now() { return clock; } } });
     const overrunToken = control(overrun.ctx);
     const expired = await overrun.ctx.download({ path: 'target.bin', url: base + '/blob' }, overrunToken);
