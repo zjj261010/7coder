@@ -3695,7 +3695,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const original = readUtf8ForWrite(fullPath, true);
       const content = preserveTextBom(original, normalizeUtf8Input(args.content || '', original.newline));
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      backupExistingFile(fullPath);
+      checkExecution(cancelled); // re-check straddling the pre-write backup
+      backupExistingFile(fullPath, cancelled);
+      checkExecution(cancelled);
       if (stateParser) writeStateFile(fullPath, content, stateParser);
       else fs.writeFileSync(fullPath, content, 'utf8');
       if (args.path && args.path.endsWith('7CODER.md')) return makeToolResult('ok', '[OK] 7CODER.md updated with findings');
@@ -3711,7 +3713,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const content = normalizeUtf8Input(args.content || '', original.newline);
       if (Buffer.byteLength(original.text, 'utf8') + Buffer.byteLength(content, 'utf8') > textFileByteLimit()) throw fileByteLimitError('Appended text', textFileByteLimit());
       fs.mkdirSync(path.dirname(fullPath), { recursive: true });
-      backupExistingFile(fullPath);
+      checkExecution(cancelled); // re-check straddling the pre-write backup
+      backupExistingFile(fullPath, cancelled);
+      checkExecution(cancelled);
       if (stateParser) writeStateFile(fullPath, original.text + content, stateParser);
       else fs.appendFileSync(fullPath, content, 'utf8');
       return makeToolResult('ok', `Appended: ${args.path}`);
@@ -3731,7 +3735,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       const replacement = replaceTextBounded(content, oldStr, newStr, args.replace_all);
       const count = replacement.count;
       const next = preserveTextBom(original, replacement.text);
-      backupExistingFile(fullPath);
+      checkExecution(cancelled); // re-check straddling the pre-write backup
+      backupExistingFile(fullPath, cancelled);
+      checkExecution(cancelled);
       if (stateParser) writeStateFile(fullPath, next, stateParser);
       else fs.writeFileSync(fullPath, next, 'utf8');
       return makeToolResult('ok', `[OK] Edited ${path.relative(launchDir, fullPath)} (${args.replace_all ? count : 1} replacement(s))`);
@@ -3925,7 +3931,8 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         if (writerError) throw writerError;
         checkExecution(cancelled);
         flushDownloadFile(temp);
-        const previous = backupExistingFile(dest);
+        checkExecution(cancelled); // re-check straddling the pre-commit backup
+        const previous = backupExistingFile(dest, cancelled);
         checkExecution(cancelled); // backup/flush can outlast the shared deadline
         fs.renameSync(temp, dest);
         temp = null; // ownership transferred - the catch path must not delete it
@@ -4023,7 +4030,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       if (args.edits.cells) notebook.cells = args.edits.cells;
       if (args.edits.metadata) notebook.metadata = { ...notebook.metadata, ...args.edits.metadata };
       const content = preserveTextBom(original, normalizeUtf8Input(stringifyNotebookBounded(notebook), original.newline));
-      backupExistingFile(nbPath);
+      checkExecution(cancelled); // re-check straddling the pre-write backup
+      backupExistingFile(nbPath, cancelled);
+      checkExecution(cancelled);
       fs.writeFileSync(nbPath, content, 'utf8');
       return makeToolResult('ok', 'Notebook edited successfully');
     } catch (e) { return makeToolResult('error', `Notebook error: ${e.message}`); }
@@ -6259,124 +6268,604 @@ function flushDownloadFile(file) {
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
 
-function backupExistingFile(fullPath) {
+// ---- Owned backup store v1 (T22-26 retention + atomic recovery) ----
+// Layout under .7coder/backups:
+//   .../<sourceRel>.<stamp>.bak   legacy flat snapshots - read-only discovery
+//   v1/store.json                 identity + reliable lastSequence counter
+//   v1/<16-digit sequence>-<32hex snapshotId>/{data.bak,manifest.json}
+//   v1/.stage-<32hex>/            this transaction's uncommitted staging
+//   v1/.deleting-<name>-<hex>/    mid-deletion evidence; never undo candidates
+// Only records whose manifest, payload and storeId are all verified count as
+// "owned": they alone are eligible for retention cleanup and default /undo.
+// Legacy, loose, foreign, corrupt, staging and deleting entries are preserved.
+const BACKUP_STORE_VERSION = 1;
+const BACKUP_STORE_KIND = '7coder-backup-store-v1';
+const BACKUP_MANIFEST_KIND = '7coder-backup-manifest-v1';
+const BACKUP_SINGLE_MAX_BYTES = 1024 * 1024 * 1024;     // one snapshot payload
+const BACKUP_RETAIN_TARGET_BYTES = 1024 * 1024 * 1024;  // best-effort owned total
+const BACKUP_HARD_ADMIT_BYTES = 2 * 1024 * 1024 * 1024; // owned total + this snapshot
+const BACKUP_PER_SOURCE_KEEP = 5;
+const BACKUP_GLOBAL_KEEP = 200;
+const BACKUP_MANIFEST_MAX_BYTES = 4 * 1024;
+const BACKUP_STORE_MAX_BYTES = 4 * 1024;
+const BACKUP_DISCOVERY_MAX_ENTRIES = 4096;
+const BACKUP_DISCOVERY_MAX_CANDIDATES = 1024;
+const BACKUP_DISCOVERY_MAX_META_BYTES = 4 * 1024 * 1024;
+const BACKUP_DISCOVERY_DEADLINE_MS = 5000;
+const BACKUP_CHUNK_BYTES = 64 * 1024;
+const BACKUP_MAX_SEQUENCE = 9999999999999999; // fits the 16-digit directory name
+const backupRecordDirRe = /^(\d{16})-([0-9a-f]{32})$/;
+const backupLegacyNameRe = /^(.+)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/;
+const backupHex32Re = /^[0-9a-f]{32}$/;
+const backupHex64Re = /^[0-9a-f]{64}$/;
+// var (not const): the declaration must stay reachable on the sandbox global
+// so test contexts can inspect/seed the active-pin set.
+var activeBackupRestorePins = new Set();
+
+function backupV1StatePath(child) {
+  return internalStatePath(path.join('.7coder', 'backups', 'v1'), child);
+}
+// Windows sources are matched case-insensitively but the original display case
+// is kept in sourceRel; paths are stored with forward slashes.
+function normalizeBackupSourceKey(sourceRel) {
+  const normalized = String(sourceRel).split(path.sep).join('/');
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+}
+function backupRetentionLimits(limits) {
+  const l = limits || {};
+  const positive = (v, d) => Number.isSafeInteger(v) && v > 0 ? v : d;
+  return {
+    singleMax: positive(l.singleMax, BACKUP_SINGLE_MAX_BYTES),
+    hardAdmit: positive(l.hardAdmit, BACKUP_HARD_ADMIT_BYTES),
+    retainTarget: positive(l.retainTarget, BACKUP_RETAIN_TARGET_BYTES),
+    perSource: positive(l.perSource, BACKUP_PER_SOURCE_KEEP),
+    globalKeep: positive(l.globalKeep, BACKUP_GLOBAL_KEEP)
+  };
+}
+function parseBackupStoreState(text) {
+  const j = parseStateJson(text);
+  if (!j || typeof j !== 'object' || Array.isArray(j) ||
+      j.kind !== BACKUP_STORE_KIND || j.version !== BACKUP_STORE_VERSION ||
+      typeof j.storeId !== 'string' || !backupHex32Re.test(j.storeId) ||
+      !Number.isSafeInteger(j.lastSequence) || j.lastSequence < 0 || j.lastSequence > BACKUP_MAX_SEQUENCE) {
+    throw new Error('invalid backup store');
+  }
+  return j;
+}
+function validateBackupManifest(j, dirName, dirSequence, dirSnapshotId) {
+  if (!j || typeof j !== 'object' || Array.isArray(j)) throw new Error('not an object');
+  if (j.kind !== BACKUP_MANIFEST_KIND) throw new Error('unknown kind');
+  if (j.version !== BACKUP_STORE_VERSION) throw new Error('unknown version ' + String(j.version));
+  if (typeof j.storeId !== 'string' || !backupHex32Re.test(j.storeId)) throw new Error('invalid storeId');
+  if (typeof j.snapshotId !== 'string' || j.snapshotId !== dirSnapshotId) throw new Error('snapshotId does not match directory');
+  if (!Number.isSafeInteger(j.sequence) || j.sequence < 1 || j.sequence > BACKUP_MAX_SEQUENCE || j.sequence !== dirSequence) throw new Error('sequence does not match directory');
+  if (typeof j.createdAt !== 'string' || !j.createdAt) throw new Error('invalid createdAt');
+  if (typeof j.sourceRel !== 'string' || !j.sourceRel || j.sourceRel.indexOf('\0') >= 0) throw new Error('invalid sourceRel');
+  if (typeof j.sourceKey !== 'string' || j.sourceKey !== normalizeBackupSourceKey(j.sourceRel)) throw new Error('sourceKey does not match sourceRel');
+  if (!Number.isSafeInteger(j.bytes) || j.bytes < 0 || j.bytes > BACKUP_SINGLE_MAX_BYTES) throw new Error('invalid byte count');
+  if (typeof j.sha256 !== 'string' || !backupHex64Re.test(j.sha256)) throw new Error('invalid digest');
+  return j;
+}
+// Store identity: a random storeId created once with the first v1 backup and
+// moved with the workspace. If store.json is unreadable while v1 records
+// exist, refuse to invent a new identity that would silently claim them.
+function loadBackupStore() {
+  const storePath = backupV1StatePath('store.json');
+  const current = readStateRecord(storePath, parseBackupStoreState, false, BACKUP_STORE_MAX_BYTES);
+  if (current) return current.value;
+  const v1Dir = path.dirname(storePath);
+  let handle = null, occupied = false;
   try {
-    if (!fs.statSync(fullPath).isFile()) throw new Error('destination is not a regular file');
-  } catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    handle = fs.opendirSync(v1Dir);
+    // Only published record directories claim the identity: leftover staging
+    // or deleting residue alone must not permanently block store creation.
+    let entry;
+    while ((entry = handle.readSync()) !== null) {
+      if (backupRecordDirRe.test(entry.name)) { occupied = true; break; }
+    }
+  } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+  } finally { if (handle) { try { handle.closeSync(); } catch (e2) {} } }
+  if (occupied) {
+    const err = new Error('backup store identity is missing while v1 records exist; refusing to claim them - inspect or remove ' + v1Dir + ' manually');
+    err.code = 'EBACKUPIDENTITY';
+    throw err;
+  }
+  const created = { kind: BACKUP_STORE_KIND, version: BACKUP_STORE_VERSION, storeId: crypto.randomBytes(16).toString('hex'), lastSequence: 0 };
+  fs.mkdirSync(v1Dir, { recursive: true });
+  writeStateFile(storePath, JSON.stringify(created), parseBackupStoreState);
+  return created;
+}
+// Bounded flat scan of v1: every opened handle is closed in finally, visited
+// entries / candidates / manifest bytes / wall clock are all budgeted, and any
+// exceeded budget is reported as an incomplete index instead of a shorter one.
+function discoverBackupV1(storeId) {
+  const out = { incomplete: [], records: [], corrupt: [], foreign: [], staging: [], deleting: [], unknown: [], visited: 0, metaBytes: 0, ownBytes: 0 };
+  const v1Dir = internalStatePath(path.join('.7coder', 'backups', 'v1'));
+  let handle = null;
+  try { handle = fs.opendirSync(v1Dir); }
+  catch (e) { if (e.code === 'ENOENT') return out; throw e; }
+  const deadline = Date.now() + BACKUP_DISCOVERY_DEADLINE_MS;
+  try {
+    while (true) {
+      const entry = handle.readSync();
+      if (!entry) break;
+      out.visited++;
+      if (out.visited > BACKUP_DISCOVERY_MAX_ENTRIES) { out.incomplete.push('entry limit ' + BACKUP_DISCOVERY_MAX_ENTRIES); break; }
+      if (Date.now() >= deadline) { out.incomplete.push('discovery deadline exceeded'); break; }
+      const name = entry.name;
+      if (name.indexOf('.stage-') === 0) { out.staging.push(name); continue; }
+      if (name.indexOf('.deleting-') === 0) { out.deleting.push(name); continue; }
+      const m = name.match(backupRecordDirRe);
+      if (!m) { out.unknown.push(name); continue; }
+      if (out.records.length + out.corrupt.length + out.foreign.length >= BACKUP_DISCOVERY_MAX_CANDIDATES) { out.incomplete.push('candidate limit ' + BACKUP_DISCOVERY_MAX_CANDIDATES); break; }
+      if (out.metaBytes + BACKUP_MANIFEST_MAX_BYTES > BACKUP_DISCOVERY_MAX_META_BYTES) { out.incomplete.push('metadata byte limit ' + BACKUP_DISCOVERY_MAX_META_BYTES); break; }
+      const seq = parseInt(m[1], 10);
+      let lstat;
+      try { lstat = fs.lstatSync(path.join(v1Dir, name)); }
+      catch (e) { out.corrupt.push({ name, seq, sourceKey: null, reason: 'unreadable record directory (' + e.code + ')' }); continue; }
+      if (lstat.isSymbolicLink()) { out.corrupt.push({ name, seq, sourceKey: null, reason: 'record directory is a link' }); continue; }
+      if (!lstat.isDirectory()) { out.unknown.push(name); continue; }
+      let manifest;
+      try {
+        const bytes = readFileBytesBounded(path.join(v1Dir, name, 'manifest.json'), BACKUP_MANIFEST_MAX_BYTES, 'Backup manifest');
+        out.metaBytes += bytes.length;
+        manifest = validateBackupManifest(JSON.parse(decodeUtf8Text(bytes)), name, seq, m[2]);
+      }
+      catch (e) { out.corrupt.push({ name, seq, sourceKey: null, reason: 'manifest unreadable or invalid: ' + e.message }); continue; }
+      if (manifest.storeId !== storeId) { out.foreign.push(name); continue; }
+      const payloadPath = path.join(v1Dir, name, 'data.bak');
+      let st;
+      try { st = fs.lstatSync(payloadPath); }
+      catch (e) { out.corrupt.push({ name, seq, sourceKey: manifest.sourceKey, reason: 'payload unreadable (' + e.code + ')' }); continue; }
+      if (st.isSymbolicLink() || !st.isFile()) { out.corrupt.push({ name, seq, sourceKey: manifest.sourceKey, reason: 'payload is not a regular file' }); continue; }
+      if (st.nlink > 1) { out.corrupt.push({ name, seq, sourceKey: manifest.sourceKey, reason: 'payload is shared by a hard link' }); continue; }
+      if (st.size !== manifest.bytes) { out.corrupt.push({ name, seq, sourceKey: manifest.sourceKey, reason: 'payload size mismatch (' + st.size + ' != ' + manifest.bytes + ')' }); continue; }
+      out.records.push({
+        dir: path.join(v1Dir, name), name, seq, bytes: st.size, manifest,
+        payloadStat: { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs }
+      });
+      out.ownBytes += st.size;
+    }
+  } finally { try { handle.closeSync(); } catch (e) {} }
+  return out;
+}
+// Legacy candidates live in the source's own backup subdirectory, so undo only
+// scans that one directory; v1/ is never confused with legacy files. Loose
+// .bak names (no timestamp) are counted but are never restore candidates.
+function discoverLegacyBackupCandidates(safeRel) {
+  const out = { candidates: [], loose: 0, incomplete: '' };
+  let dirPath;
+  try {
+    const parentRel = path.dirname(safeRel);
+    dirPath = internalStatePath(path.join('.7coder', 'backups'), parentRel === '.' ? undefined : parentRel);
+  } catch (e) { out.incomplete = 'backup root guard: ' + e.message; return out; }
+  let scan;
+  try { scan = readDirectoryEntriesBounded(dirPath, { maxEntries: BACKUP_DISCOVERY_MAX_ENTRIES, maxBytes: BACKUP_DISCOVERY_MAX_META_BYTES, deadlineAt: Date.now() + BACKUP_DISCOVERY_DEADLINE_MS }); }
+  catch (e) {
+    if (e.code === 'ENOENT') return out;
+    out.incomplete = 'legacy directory unreadable (' + e.code + ')';
+    return out;
+  }
+  out.incomplete = scan.incomplete || '';
+  const prefix = path.basename(safeRel);
+  for (const entry of scan.entries) {
+    const m = entry.name.match(backupLegacyNameRe);
+    if (!m) { if (entry.name.endsWith('.bak')) out.loose++; continue; }
+    // Greedy prefix + exact match keeps "b.txt" from claiming "b.txt.old".
+    if (m[1] !== prefix) continue;
+    const full = path.join(dirPath, entry.name);
+    let st;
+    try { st = fs.lstatSync(full); }
+    catch (e) { out.incomplete = out.incomplete || 'unreadable legacy entry (' + e.code + ')'; continue; }
+    if (!st.isFile()) continue; // links/directories are never restore candidates
+    out.candidates.push({ full, name: entry.name, size: st.size, mtimeMs: st.mtimeMs,
+      stat: { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs } });
+  }
+  return out;
+}
+// Streaming sha256 with the same read-time identity discipline as
+// readFileBytesBounded; payloads are never held in memory as a whole.
+function digestBackupFile(file, expectedBytes, label) {
+  const fd = fs.openSync(file, 'r');
+  try {
+    const before = fs.fstatSync(fd);
+    if (!before.isFile()) throw new Error(label + ' must be a regular file');
+    if (before.size !== expectedBytes) throw new Error(label + ' size mismatch (' + before.size + ' != ' + expectedBytes + ')');
+    const hash = crypto.createHash('sha256');
+    let total = 0;
+    while (total < expectedBytes) {
+      const want = Math.min(BACKUP_CHUNK_BYTES, expectedBytes - total);
+      const chunk = Buffer.alloc(want);
+      const count = fs.readSync(fd, chunk, 0, want, total);
+      if (!count) throw new Error(label + ' ended early at ' + total + ' of ' + expectedBytes + ' bytes');
+      hash.update(count === want ? chunk : chunk.slice(0, count));
+      total += count;
+    }
+    const after = fs.fstatSync(fd), named = fs.statSync(file);
+    const same = st => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => st[k] === before[k]);
+    if (!same(after) || !same(named)) throw new Error(label + ' changed during read; retry before using it');
+    return { sha256: hash.digest('hex'), bytes: total };
+  } finally { fs.closeSync(fd); }
+}
+// Chunked copy through two held descriptors (never name-then-reopen), hashing
+// while writing and rejecting zero-progress loops, short reads and any change
+// to the source identity between the initial stat, the copy and its end.
+function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled) {
+  const srcFd = fs.openSync(sourcePath, 'r');
+  let payloadFd = null, payloadClosed = false;
+  try {
+    const before = fs.fstatSync(srcFd);
+    if (!before.isFile()) throw new Error('source must be a regular file');
+    if (['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(k => before[k] !== sourceStat[k])) throw new Error('source changed before the copy started');
+    payloadFd = fs.openSync(payloadPath, 'wx');
+    const hash = crypto.createHash('sha256');
+    const buffer = Buffer.alloc(BACKUP_CHUNK_BYTES);
+    let total = 0, idleWrites = 0;
+    while (total < before.size) {
+      checkExecution(cancelled);
+      const want = Math.min(BACKUP_CHUNK_BYTES, before.size - total);
+      const got = fs.readSync(srcFd, buffer, 0, want, total);
+      if (!got) throw new Error('source ended early at ' + total + ' of ' + before.size + ' bytes');
+      let off = 0;
+      while (off < got) {
+        const wrote = fs.writeSync(payloadFd, buffer, off, got - off);
+        if (!(wrote > 0)) { if (++idleWrites > 16) throw new Error('backup payload write made no progress'); continue; }
+        idleWrites = 0;
+        // Slice to the bytes actually written: the last chunk is shorter than
+        // the 64KiB buffer, and hashing the allocation would corrupt the digest.
+        hash.update(buffer.slice(off, off + wrote));
+        off += wrote; total += wrote;
+      }
+    }
+    fs.fsyncSync(payloadFd);
+    fs.closeSync(payloadFd);
+    payloadClosed = true;
+    const after = fs.fstatSync(srcFd), named = fs.statSync(sourcePath);
+    const same = st => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => st[k] === before[k]);
+    if (!same(after) || !same(named)) throw new Error('source changed during the copy');
+    return { sha256: hash.digest('hex'), bytes: total };
+  } finally {
+    if (payloadFd !== null && !payloadClosed) { try { fs.closeSync(payloadFd); } catch (e) {} }
+    try { fs.closeSync(srcFd); } catch (e) {}
+  }
+}
+function createOwnedBackupStageDir(v1Dir) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const candidate = path.join(v1Dir, '.stage-' + crypto.randomBytes(16).toString('hex'));
+    try { fs.mkdirSync(candidate); return candidate; }
+    catch (e) { if (e.code !== 'EEXIST') throw e; }
+  }
+  throw new Error('cannot create an exclusive staging directory');
+}
+// Only this transaction's exclusively created staging directory is reclaimed,
+// and only its two known members are unlinked - never a wide rm -rf.
+function recycleOwnedBackupStaging(dir) {
+  const residue = [];
+  for (const name of ['data.bak', 'manifest.json']) {
+    try { fs.unlinkSync(path.join(dir, name)); }
+    catch (e) { if (e.code !== 'ENOENT') residue.push(name + ': ' + e.code); }
+  }
+  try { fs.rmdirSync(dir); }
+  catch (e) { residue.push('directory: ' + e.code); }
+  if (residue.length) console.warn('[BACKUP] staging residue retained at ' + dir + ' (' + residue.join(', ') + ') - safe to remove manually once no 7coder runs');
+}
+// Backup transaction: discovered -> sequence-reserved -> staging-owned ->
+// payload-complete -> manifest-complete -> published -> cleanup-attempted.
+// Any failure before the publish rename leaves the original file untouched;
+// the caller must treat a throw as "do not modify the target".
+function backupExistingFile(fullPath, cancelled, limits) {
   const rel = path.relative(launchDir, fullPath);
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-').replace(/Z$/, '-' + crypto.randomBytes(6).readUIntBE(0, 6) + 'Z');
-  const backup = internalStatePath('.7coder/backups', rel + '.' + stamp + '.bak');
-  const staging = backup + '.tmp';
-  let owned = false;
+  const cap = backupRetentionLimits(limits);
   try {
-    fs.mkdirSync(path.dirname(backup), { recursive: true });
-    // Exclusive creation prevents a collision from overwriting another copy.
-    const fd = fs.openSync(staging, 'wx');
-    owned = true;
-    fs.closeSync(fd);
-    fs.copyFileSync(fullPath, staging);
-    flushDownloadFile(staging);
-    fs.renameSync(staging, backup);
-    // /undo orders by mtime. Consecutive writes in the same millisecond (or
-    // after a clock rollback) must still make this snapshot the newest one.
-    let latest = 0;
-    for (const entry of fs.readdirSync(path.dirname(backup))) {
-      if (entry === path.basename(backup)) continue;
-      const match = entry.match(/^(.*)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/);
-      if (!match || match[1] !== path.basename(fullPath)) continue;
-      const stat = fs.lstatSync(path.join(path.dirname(backup), entry));
-      if (stat.isFile()) latest = Math.max(latest, stat.mtimeMs);
+    checkExecution(cancelled);
+    let sourceStat;
+    try { sourceStat = fs.statSync(fullPath); }
+    catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+    if (!sourceStat.isFile()) throw new Error('destination is not a regular file');
+    if (isInsideDir(realPathSafe(backupsDir), realPathSafe(fullPath))) throw new Error('the backup store never backs itself up');
+    if (sourceStat.size > cap.singleMax) throw new Error('previous file exceeds the ' + cap.singleMax + '-byte single-snapshot budget; shrink or move it before overwriting');
+    checkExecution(cancelled);
+    const store = loadBackupStore();
+    const index = discoverBackupV1(store.storeId);
+    if (index.incomplete.length) throw new Error('backup index incomplete (' + index.incomplete.join('; ') + '); not allocating a new snapshot');
+    const seenSequence = Object.create(null);
+    let publishedMax = store.lastSequence;
+    for (const r of index.records) {
+      if (seenSequence[r.seq]) throw new Error('duplicate sequence ' + r.seq + ' among published records');
+      seenSequence[r.seq] = true;
+      if (r.seq > publishedMax) publishedMax = r.seq;
     }
-    let now = new Date(Math.max(Date.now(), latest + 1));
-    fs.utimesSync(backup, now, now);
-    // Coarse timestamp filesystems may round a 1ms increment back down.
-    if (fs.statSync(backup).mtimeMs <= latest) {
-      now = new Date(latest + 2000);
-      fs.utimesSync(backup, now, now);
-      if (fs.statSync(backup).mtimeMs <= latest) throw new Error('cannot order backup recovery timestamps');
+    const sequence = publishedMax + 1;
+    if (sequence > BACKUP_MAX_SEQUENCE) throw new Error('backup sequence space exhausted');
+    if (index.ownBytes + sourceStat.size > cap.hardAdmit) throw new Error('owned published backups (' + index.ownBytes + ' bytes) plus this snapshot (' + sourceStat.size + ' bytes) exceed the ' + cap.hardAdmit + '-byte hard budget; clean .7coder/backups/v1 manually');
+    // Reliable reservation precedes any payload: a crash here leaves a gap,
+    // never a reused sequence, and a rolled-back counter cannot undercut it.
+    writeStateFile(backupV1StatePath('store.json'), JSON.stringify(Object.assign({}, store, { lastSequence: sequence })), parseBackupStoreState);
+    checkExecution(cancelled);
+    const v1Dir = internalStatePath(path.join('.7coder', 'backups', 'v1'));
+    let stagingDir = null, owned = false;
+    try {
+      stagingDir = createOwnedBackupStageDir(v1Dir);
+      owned = true;
+      const staged = copyBackupPayload(fullPath, sourceStat, path.join(stagingDir, 'data.bak'), cancelled);
+      // Independent read-back: the digest and byte count must survive a reopen.
+      const verify = digestBackupFile(path.join(stagingDir, 'data.bak'), staged.bytes, 'Staged backup');
+      if (verify.sha256 !== staged.sha256 || verify.bytes !== staged.bytes) throw new Error('staged payload failed its read-back digest check');
+      const snapshotId = crypto.randomBytes(16).toString('hex');
+      const manifest = {
+        kind: BACKUP_MANIFEST_KIND, version: BACKUP_STORE_VERSION, storeId: store.storeId,
+        snapshotId, sequence, createdAt: new Date().toISOString(),
+        sourceRel: rel.split(path.sep).join('/'), sourceKey: normalizeBackupSourceKey(rel),
+        bytes: staged.bytes, sha256: staged.sha256
+      };
+      const manifestPath = path.join(stagingDir, 'manifest.json');
+      replaceStateBytes(manifestPath, Buffer.from(JSON.stringify(manifest), 'utf8'), manifestPath);
+      const finalDir = path.join(v1Dir, String(sequence).padStart(16, '0') + '-' + snapshotId);
+      let exists = true;
+      try { fs.statSync(finalDir); } catch (e) { exists = false; }
+      if (exists) throw new Error('backup record already exists: ' + path.basename(finalDir));
+      // The publish point: one rename of the fully verified directory.
+      fs.renameSync(stagingDir, finalDir);
+      owned = false;
+      try {
+        const payload = fs.statSync(path.join(finalDir, 'data.bak'));
+        const manifestStat = fs.statSync(path.join(finalDir, 'manifest.json'));
+        if (payload.size !== staged.bytes || !manifestStat.isFile()) throw new Error('published record is unreadable');
+      } catch (e) { throw new Error('post-publish verification failed: ' + e.message); }
+      pruneOwnedBackups(finalDir, cancelled, cap);
+      return path.join(finalDir, 'data.bak');
+    } finally {
+      if (owned && stagingDir) recycleOwnedBackupStaging(stagingDir);
     }
-    pruneBackups(backup);
-    return backup;
   } catch (e) {
-    let residue = '';
-    if (owned) {
-      try { fs.unlinkSync(staging); }
-      catch (e2) { if (e2.code !== 'ENOENT') residue = `; backup staging retained at ${staging}: ${e2.message}`; }
-    }
-    throw new Error(`Cannot preserve previous file ${rel}: ${e.message}${residue}`);
+    throw new Error('Cannot preserve previous file ' + rel + ': ' + e.message);
   }
 }
-
-// Two-level backup retention: keep the newest 5 backups PER source file (so
-// heavy editing of one file can no longer evict another file's history), then
-// a global cap of 200 files across the whole backup dir (oldest removed first).
-// Files not named <prefix>.<timestamp>.bak are exempt from the per-file tier
-// but still count toward the global cap.
-function pruneBackups(preservePath) {
+// Ownership-first retention. Only this store's fully verified published
+// records are grouped (null-prototype map); per-source and global count caps
+// and the byte target are enforced by sequence; the just-published record and
+// active restore pins are protected; every deletion re-verifies manifest and
+// payload digest, renames the record out of the undo index first, and leaves
+// .deleting-* evidence instead of pretending success. Incomplete discovery,
+// foreign/unknown/corrupt/legacy entries and deleting/staging residue are
+// never deleted, so owned caps cannot be met by deleting what we do not own.
+function pruneOwnedBackups(protectDir, cancelled, cap) {
+  cap = cap || backupRetentionLimits(null);
   try {
-    // Treat the current transaction's rollback copy as newest even if the
-    // machine clock moved backwards. Other callers keep ordinary age order.
-    const oldestFirst = (a, b) => {
-      if (a.full === preservePath && b.full !== preservePath) return 1;
-      if (b.full === preservePath && a.full !== preservePath) return -1;
-      return a.mt - b.mt;
-    };
-    // Greedy (.+) so the prefix runs up to the LAST timestamp: relative paths
-    // may themselves contain dots (e.g. "lib.v2/util.2026-...T...Z.bak").
-    const stampRe = /^(.+)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/;
-    const rels = recursiveReaddir('.7coder/backups').filter(r => r.endsWith('.bak'));
-    const groups = {};
-    const loose = [];
-    for (const r of rels) {
-      const full = path.join(launchDir, r);
-      let mt;
-      try { mt = fs.statSync(full).mtimeMs; } catch (e) { continue; }
-      const m = path.relative(backupsDir, full).match(stampRe);
-      if (m) {
-        if (!groups[m[1]]) groups[m[1]] = [];
-        groups[m[1]].push({ full, mt });
-      } else {
-        loose.push({ full, mt });
+    const store = loadBackupStore();
+    const index = discoverBackupV1(store.storeId);
+    if (index.incomplete.length) {
+      console.warn('[BACKUP] cleanup deferred: index incomplete (' + index.incomplete.join('; ') + ')');
+      return;
+    }
+    const groups = Object.create(null);
+    for (const r of index.records) {
+      if (r.dir === protectDir || activeBackupRestorePins.has(r.dir)) continue;
+      const key = r.manifest.sourceKey;
+      (groups[key] = groups[key] || []).push(r);
+    }
+    const byNewest = (a, b) => b.seq - a.seq;
+    let victims = [];
+    const counted = [];
+    for (const key of Object.keys(groups)) {
+      const list = groups[key].sort(byNewest);
+      victims = victims.concat(list.slice(cap.perSource));
+      for (let i = 0; i < Math.min(list.length, cap.perSource); i++) counted.push(list[i]);
+    }
+    counted.sort(byNewest);
+    victims = victims.concat(counted.slice(cap.globalKeep));
+    let total = index.ownBytes;
+    if (total > cap.retainTarget) {
+      for (const r of counted.slice(0, cap.globalKeep).sort((a, b) => a.seq - b.seq)) {
+        if (total <= cap.retainTarget) break;
+        victims.push(r); total -= r.bytes;
       }
     }
-    const kept = [];
-    for (const pfx in groups) {
-      const list = groups[pfx].sort(oldestFirst);
-      for (let i = 0; i < list.length - 5; i++) {
-        if (list[i].full !== preservePath) { try { fs.unlinkSync(list[i].full); } catch (e) {} }
-      }
-      for (let i = Math.max(0, list.length - 5); i < list.length; i++) kept.push(list[i]);
+    const seen = Object.create(null);
+    const ordered = [];
+    for (const v of victims) { if (seen[v.dir]) continue; seen[v.dir] = true; ordered.push(v); }
+    if (!ordered.length) return;
+    ordered.sort((a, b) => a.seq - b.seq); // oldest first
+    const deadline = Date.now() + BACKUP_DISCOVERY_DEADLINE_MS;
+    let removed = 0;
+    const failures = [];
+    for (const v of ordered) {
+      if (Date.now() >= deadline) { failures.push('cleanup time budget reached; stopped with candidates remaining'); break; }
+      try {
+        if (v.dir === protectDir || activeBackupRestorePins.has(v.dir)) continue;
+        const bytes = readFileBytesBounded(path.join(v.dir, 'manifest.json'), BACKUP_MANIFEST_MAX_BYTES, 'Backup manifest');
+        const manifest = validateBackupManifest(JSON.parse(decodeUtf8Text(bytes)), v.name, v.seq, v.manifest.snapshotId);
+        if (manifest.sha256 !== v.manifest.sha256 || manifest.bytes !== v.manifest.bytes || manifest.sourceKey !== v.manifest.sourceKey) throw new Error('manifest changed since discovery');
+        const digest = digestBackupFile(path.join(v.dir, 'data.bak'), v.bytes, 'Prune check');
+        if (digest.sha256 !== v.manifest.sha256) throw new Error('payload digest changed since discovery');
+        const deletingDir = path.join(path.dirname(v.dir), '.deleting-' + v.name + '-' + crypto.randomBytes(4).toString('hex'));
+        fs.renameSync(v.dir, deletingDir);
+        try {
+          fs.unlinkSync(path.join(deletingDir, 'data.bak'));
+          fs.unlinkSync(path.join(deletingDir, 'manifest.json'));
+          try { fs.rmdirSync(deletingDir); }
+          catch (e2) { throw new Error('extra members or busy directory (' + e2.code + ')'); }
+        } catch (e2) { failures.push(deletingDir + ': ' + e2.message); continue; }
+        removed++;
+      } catch (e) { failures.push(v.dir + ': ' + e.message); }
     }
-    const all = kept.concat(loose).sort(oldestFirst);
-    for (let i = 0; i < all.length - 200; i++) {
-      if (all[i].full !== preservePath) { try { fs.unlinkSync(all[i].full); } catch (e) {} }
-    }
-  } catch (e) {}
+    if (failures.length) console.warn('[BACKUP] cleanup incomplete, evidence kept (' + failures.length + ' failure(s), ' + removed + ' removed): ' + failures.slice(0, 4).join('; '));
+  } catch (e) {
+    console.warn('[BACKUP] cleanup deferred after publishing (' + e.message + ') - the new snapshot is intact');
+  }
 }
-
-// Restore the newest backup of a workspace-relative file. Used by the /undo command.
+function backupRestoreConflict(stage, message) {
+  const e = new Error(message);
+  e.restoreConflict = stage;
+  return e;
+}
+// Prepare + verify + single-rename commit for /undo. The existing target is
+// never unlinked or truncated: staging is written in the target's parent,
+// re-read, (for managed state) parsed, and both target and selected backup are
+// re-verified immediately before the one rename that replaces the target.
+function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, info) {
+  const result = { format: info.format, snapshotId: info.snapshotId === undefined ? null : info.snapshotId, sequence: info.sequence === undefined ? null : info.sequence };
+  const parent = path.dirname(target);
+  try {
+    if (!isInsideDir(getLaunchDirReal(), realPathSafe(parent))) throw new Error('target parent resolves outside the workspace');
+  } catch (e) { return Object.assign(result, { status: 'failed', stage: 'prepare', message: e.message }); }
+  let targetBefore = null;
+  try {
+    const st = fs.lstatSync(target);
+    if (!st.isFile()) return Object.assign(result, { status: 'failed', stage: 'prepare', message: 'existing target is not a regular file' });
+    targetBefore = { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+  } catch (e) {
+    if (e.code !== 'ENOENT') return Object.assign(result, { status: 'failed', stage: 'prepare', message: e.message });
+  }
+  const pin = info.recordDir || null;
+  if (pin) activeBackupRestorePins.add(pin);
+  const tempPath = path.join(parent, '.7coder-restore-' + process.pid + '-' + crypto.randomBytes(8).toString('hex'));
+  let tempOwned = false;
+  let outcome = null;
+  try {
+    const srcFd = fs.openSync(sourcePath, 'r');
+    let tempFd = null, tempClosed = false;
+    try {
+      const before = fs.fstatSync(srcFd);
+      if (!before.isFile()) throw new Error('selected backup is not a regular file');
+      if (before.size !== expectedBytes) throw new Error('selected backup changed size before restore (' + before.size + ' != ' + expectedBytes + ')');
+      tempFd = fs.openSync(tempPath, 'wx');
+      tempOwned = true;
+      const buffer = Buffer.alloc(BACKUP_CHUNK_BYTES);
+      let total = 0, idleWrites = 0;
+      while (total < expectedBytes) {
+        const want = Math.min(BACKUP_CHUNK_BYTES, expectedBytes - total);
+        const got = fs.readSync(srcFd, buffer, 0, want, total);
+        if (!got) throw new Error('selected backup ended early at ' + total + ' of ' + expectedBytes + ' bytes');
+        let off = 0;
+        while (off < got) {
+          const wrote = fs.writeSync(tempFd, buffer, off, got - off);
+          if (!(wrote > 0)) { if (++idleWrites > 16) throw new Error('restore staging write made no progress'); continue; }
+          idleWrites = 0; off += wrote; total += wrote;
+        }
+      }
+      fs.fsyncSync(tempFd);
+      fs.closeSync(tempFd);
+      tempClosed = true;
+      const after = fs.fstatSync(srcFd), named = fs.statSync(sourcePath);
+      const same = st => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => st[k] === before[k]);
+      if (!same(after) || !same(named)) throw new Error('selected backup changed during restore staging');
+    } finally {
+      if (tempFd !== null && !tempClosed) { try { fs.closeSync(tempFd); } catch (e2) {} }
+      try { fs.closeSync(srcFd); } catch (e2) {}
+    }
+    const staged = digestBackupFile(tempPath, expectedBytes, 'Restore staging');
+    if (staged.sha256 !== expectedSha256) throw new Error('restore staging digest mismatch');
+    // Managed state must parse before it may replace a live target; parser
+    // errors never echo file contents (models.json/.env may hold credentials).
+    const parser = managedStateParser(target);
+    if (parser) {
+      let bytes;
+      try { bytes = readStateBytes(tempPath, stateFileByteLimit()); }
+      catch (e) { throw new Error('restored content exceeds the managed-state budget (' + e.code + '); not overwriting the target'); }
+      try { parser(decodeUtf8Text(bytes)); }
+      catch (e) { throw new Error('restored content is not valid managed state (' + e.message + '); not overwriting the target'); }
+    }
+    if (info.payloadStat) {
+      const st = fs.statSync(sourcePath);
+      if (['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(k => st[k] !== info.payloadStat[k])) throw backupRestoreConflict('verify', 'selected backup changed before commit');
+    }
+    if (targetBefore) {
+      let now = null;
+      try { const st = fs.lstatSync(target); if (st.isFile()) now = { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs }; }
+      catch (e) { now = null; }
+      if (!now || ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(k => now[k] !== targetBefore[k])) throw backupRestoreConflict('verify', 'existing target was created, deleted, replaced or edited during restore');
+    } else {
+      let appeared = false;
+      try { appeared = fs.lstatSync(target).isFile(); } catch (e) {}
+      if (appeared) throw backupRestoreConflict('verify', 'a target that was initially absent appeared during restore');
+    }
+    if (!isInsideDir(getLaunchDirReal(), realPathSafe(parent))) throw backupRestoreConflict('verify', 'target path boundary changed before commit');
+    // The only commit point: one same-directory rename over the target.
+    fs.renameSync(tempPath, target);
+    tempOwned = false;
+    outcome = Object.assign(result, { status: 'restored', stage: 'commit', message: 'restored ' + expectedBytes + ' byte(s)', bytes: expectedBytes, warnings: [] });
+  } catch (e) {
+    outcome = Object.assign(result, e.restoreConflict
+      ? { status: 'conflict', stage: e.restoreConflict, message: e.message }
+      : { status: 'failed', stage: 'stage', message: e.message, errno: e.code || null });
+  } finally {
+    if (pin) activeBackupRestorePins.delete(pin);
+    if (tempOwned) {
+      try { fs.unlinkSync(tempPath); }
+      catch (e2) {
+        if (e2.code !== 'ENOENT') outcome.residue = 'restore staging retained at ' + tempPath + ' (' + (e2.code || e2.message) + ')';
+      }
+    }
+  }
+  return outcome;
+}
+// Detailed /undo: v1 protocol history wins; legacy fallback only when the
+// source has no v1 history at all. A damaged newest v1 snapshot fails
+// explicitly; unattributable newer records make the result "unknown" rather
+// than a silently older "success". Result statuses: restored / not-found /
+// failed / conflict / unknown.
+function restoreLatestBackupDetailed(rel) {
+  const base = { requested: String(rel) };
+  let safeRel;
+  try { safeRel = sanitizePath(rel); }
+  catch (e) { return Object.assign(base, { status: 'failed', stage: 'resolve-path', message: e.message }); }
+  if (!safeRel) return Object.assign(base, { status: 'failed', stage: 'resolve-path', message: 'file path required' });
+  base.sourceRel = safeRel.split(path.sep).join('/');
+  const target = path.join(launchDir, safeRel);
+  try {
+    if (isInsideDir(realPathSafe(backupsDir), realPathSafe(target))) return Object.assign(base, { status: 'failed', stage: 'guard', message: 'cannot restore into the backup store itself' });
+  } catch (e) { return Object.assign(base, { status: 'failed', stage: 'guard', message: e.message }); }
+  let store = null;
+  try { store = loadBackupStore(); }
+  catch (e) {
+    if (e.code === 'EBACKUPIDENTITY') return Object.assign(base, { status: 'unknown', stage: 'store', message: e.message });
+    return Object.assign(base, { status: 'failed', stage: 'store', message: e.message });
+  }
+  const index = discoverBackupV1(store.storeId);
+  if (index.incomplete.length) return Object.assign(base, { status: 'unknown', stage: 'index', message: 'backup index incomplete (' + index.incomplete.join('; ') + ')' });
+  const key = normalizeBackupSourceKey(safeRel);
+  let best = null, tie = false;
+  for (const r of index.records) {
+    if (r.manifest.sourceKey !== key) continue;
+    if (!best || r.seq > best.seq) { best = r; tie = false; }
+    else if (r.seq === best.seq) tie = true;
+  }
+  if (best && tie) return Object.assign(base, { status: 'unknown', stage: 'select', message: 'duplicate newest sequence ' + best.seq + ' for this source; inspect .7coder/backups/v1 manually' });
+  if (best) {
+    for (const c of index.corrupt) {
+      if (c.seq === null) continue;
+      if (c.sourceKey === key && c.seq > best.seq) return Object.assign(base, { status: 'failed', stage: 'select', message: 'the newest v1 snapshot (sequence ' + c.seq + ') is damaged: ' + c.reason });
+      if (!c.sourceKey && c.seq > best.seq) return Object.assign(base, { status: 'unknown', stage: 'select', message: 'a newer unattributable record (sequence ' + c.seq + ') exists; cannot prove this is the newest generation' });
+    }
+    return Object.assign(base, commitBackupRestore(target, path.join(best.dir, 'data.bak'), best.manifest.bytes, best.manifest.sha256, {
+      format: 'v1', snapshotId: best.manifest.snapshotId, sequence: best.seq, payloadStat: best.payloadStat, recordDir: best.dir
+    }));
+  }
+  for (const c of index.corrupt) {
+    if (c.seq === null) continue;
+    if (c.sourceKey === key) return Object.assign(base, { status: 'failed', stage: 'select', message: 'the only v1 snapshot for this source is damaged: ' + c.reason });
+    if (c.sourceKey) continue; // verifiably another source's record
+    return Object.assign(base, { status: 'unknown', stage: 'select', message: 'an unattributable v1 record (sequence ' + c.seq + ') may be newer than any legacy file' });
+  }
+  const legacy = discoverLegacyBackupCandidates(safeRel);
+  if (legacy.incomplete) return Object.assign(base, { status: 'unknown', stage: 'legacy-index', message: 'legacy backup scan incomplete (' + legacy.incomplete + ')' });
+  if (!legacy.candidates.length) return Object.assign(base, { status: 'not-found', stage: 'select', message: 'no v1 or legacy backup exists for this file' });
+  let newest = null, tieCount = 0;
+  for (const c of legacy.candidates) {
+    if (!newest || c.mtimeMs > newest.mtimeMs) { newest = c; tieCount = 1; }
+    else if (c.mtimeMs === newest.mtimeMs) tieCount++;
+  }
+  if (tieCount > 1) return Object.assign(base, { status: 'unknown', stage: 'legacy-select', message: tieCount + ' legacy backups share the newest timestamp; inspect ' + path.join('.7coder', 'backups', path.dirname(safeRel) === '.' ? '' : path.dirname(safeRel)) + ' manually' });
+  let digest;
+  try { digest = digestBackupFile(newest.full, newest.size, 'Legacy backup'); }
+  catch (e) { return Object.assign(base, { status: 'failed', stage: 'legacy-verify', message: e.message }); }
+  return Object.assign(base, commitBackupRestore(target, newest.full, newest.size, digest.sha256, { format: 'legacy', payloadStat: newest.stat }));
+}
+// Boolean wrapper kept for older internal callers and tests.
 function restoreLatestBackup(rel) {
-  try {
-    const safeRel = sanitizePath(rel);
-    const rels = recursiveReaddir('.7coder/backups').filter(r => {
-      // recursiveReaddir returns launchDir-relative paths; normalize to backup-dir-relative
-      const relInBackup = path.relative(backupsDir, path.join(launchDir, r));
-      const m = relInBackup.match(/^(.*)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/);
-      return m && m[1] === safeRel;
-    });
-    if (!rels.length) return false;
-    let newest = null;
-    let newestMtime = 0;
-    for (const r of rels) {
-      const full = path.join(launchDir, r);
-      const mt = fs.statSync(full).mtimeMs;
-      if (mt > newestMtime) { newestMtime = mt; newest = full; }
-    }
-    fs.copyFileSync(newest, path.join(launchDir, safeRel));
-    return true;
-  } catch (e) {
-    return false;
-  }
+  return restoreLatestBackupDetailed(rel).status === 'restored';
 }
 
 // Small unified-ish diff for approval previews: trims the common prefix/suffix,
@@ -7610,10 +8099,18 @@ async function main() {
         const rel = trimmed.slice(5).trim();
         if (!rel) {
           console.log('Usage: /undo <file path>');
-        } else if (restoreLatestBackup(rel)) {
-          console.log(`[OK] Restored ${rel} from the newest backup.`);
         } else {
-          console.log(`No backup found for ${rel}.`);
+          // Detailed restore outcome: never collapse read failures, damaged
+          // snapshots, conflicts or unknown states into "No backup found".
+          const outcome = restoreLatestBackupDetailed(rel);
+          if (outcome.status === 'restored') {
+            console.log(`[OK] Restored ${rel} from the newest backup (${outcome.format}${outcome.sequence ? ', sequence ' + outcome.sequence : ''}).`);
+          } else if (outcome.status === 'not-found') {
+            console.log(`No backup found for ${rel}.`);
+          } else {
+            console.log(`[UNDO ${outcome.status.toUpperCase()}] at ${outcome.stage || 'unknown stage'}: ${outcome.message || 'no details'}${outcome.residue ? ' ; ' + outcome.residue : ''}`);
+            console.log('The current file was NOT modified. Inspect .7coder/backups before retrying.');
+          }
         }
         safePrompt();
         return;
