@@ -1701,3 +1701,9 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 旧套件按新契约适配后单次通过：download-commit **41/41**（注入点迁移到记录目录 rename/writeSync，legacy 6份全保留＋owned 单独计数）、text-encoding **46/46**（utimes 注入改 manifest 拒绝、时钟回拨断言改 sequence 证明）、tool-cancellation **20/20**（取消/超时 hook 迁到新发布点，`.bak` 后缀 hook 不再假绿）、runner(A) **87/88**、runner-b `RUN_ONLY=state-path-guards` **5/5**（junction 备份根仍 fail-closed）。A 的唯一失败 `ctx: 60KB read truncated to ~30k with marker`（len=29903 无截断标记）经 `git stash` 在基线复现，属存量问题，与本批无关、未越界修复。
 - 未运行：完整 A–J/UI/test-all、其余已通过专项复跑（tool-cancellation 因确认3条备份断言额外完整重跑1次，均绿）、真实 Win7/断电/磁盘满/杀毒/网络盘/双实例并发（workspace lease 单写者假设保留：store 预留无跨进程 CAS，expectedCurrent 未传）、Web 会话分页、`.deleting/stage` 残留的自动回收（首版保留人工处理）、native 同步 IO 不可硬中断。全局200与"所有源至少一份"的矛盾已在 README 说明。恢复仍为同步 helper（REPL 互斥保持），未做 Promise 化。
 - 本批提交后未推送、未重打包；真实断电/占用/ACL 与 24→72h 门槛保持开放，T22-26 维持 🔶（本批为备份归属/保留/原子恢复子范围完成）。
+
+### 2026-10-25 —— runner(A)读窗口截断断言对齐（T22-33口径小项）
+
+- 备份闭环批确认的存量失败 `ctx: 60KB read truncated to ~30k with marker`（len=29903、无标记）：10-25读窗口批次已把 read_file 改为窗口自限（MAX_TOOL_RESULT_CHARS-256）并自带 `[read incomplete: ...]` 后缀，输出29903字符低于30k消息级截断线，`tool result truncated` 中截标记按设计不再触发；该批仅复跑 readfmt 4/4、未复跑 context 场景，断言静默过时，非产品缺陷。
+- 断言改为当前两级预算契约：长度>29600且<30000、包含窗口 incomplete 标记、且不含消息级中截标记——窗口必须为自身标记留出256字符余量，第二级截断不得吞掉窗口标记。消息级截断仍由同套件 a22（run_command 100KB）断言覆盖且通过，无覆盖损失。
+- 本批仅改 test/runner.js 一处断言，未动产品代码；`RUN_ONLY=context` 单次 **6/6**。未重跑完整 A（其余87项当日早间在同源码下通过，本批只改此断言行）；未跑其它专项。按授权提交、未推送。

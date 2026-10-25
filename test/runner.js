@@ -261,7 +261,14 @@ scenarios.push({
     await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
     let log = readLog(m.log);
     const t2 = tr(log, 't2');
-    record('ctx: 60KB read truncated to ~30k with marker', t2 && Math.abs(t2.c.length - 30056) < 200 && t2.c.includes('tool result truncated'), 'len=' + (t2 ? t2.c.length : 'none'));
+    // Two-level budget contract since the read-window batch: read_file self-
+    // bounds at MAX_TOOL_RESULT_CHARS-256 and appends its own incomplete
+    // marker, so the window stays under the 30k message cap and the separate
+    // 'tool result truncated' middle-cut (covered by the a22 run_command
+    // check above) must NOT fire for reads.
+    record('ctx: 60KB read self-bounds under 30k with an explicit window marker',
+      t2 && t2.c.length > 29600 && t2.c.length < 30000 && t2.c.includes('[read incomplete: output budget exhausted') && !t2.c.includes('tool result truncated'),
+      'len=' + (t2 ? t2.c.length : 'none'));
     stopMock(m);
 
     // compression + pairing
