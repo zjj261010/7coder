@@ -227,6 +227,19 @@ a Windows-only warning instead of being injected.
   and before publication/restore commit, including empty files (5 minutes
   for create/restore, 5 seconds for cleanup passes; a single synchronous OS
   call still cannot be interrupted in JavaScript).
+- Transaction cleanup records the parent directory's real path/identity and
+  the exclusive temporary descriptor's file identity at creation. State
+  replacement, download parts and restore staging re-check those identities
+  before commit and cleanup. A replaced file, shared hard link, changed parent
+  or missing ownership proof is retained with a diagnostic, rather than
+  unlinking whatever currently occupies the old pathname. Install config
+  retains its existing explicit allowed root. Backup staging tracks ownership
+  separately for its directory, payload and manifest; the manifest is created
+  with `wx` and flushed through its own descriptor. A foreign manifest or
+  unexpected directory member blocks publication/reclamation without being
+  overwritten or deleted. Cleanup remains best effort: evidence may require
+  manual inspection, and these path checks cannot eliminate an external
+  writer's final-check-to-IO race.
 - `/undo <file>` restores the newest backup of a file. New-format history
   wins; legacy flat backups are a fallback only when the source has no v1
   record, and hard-linked legacy payloads are excluded under the same rule as

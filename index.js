@@ -1602,11 +1602,62 @@ function readOptionalJsonConfig(file, label) {
   try { return parseStateJson(decodeUtf8Text(bytes)); }
   catch (e) { throw new Error(label + ' ' + file + ': ' + e.message); }
 }
+function stateFileAllowedRoot(owner) {
+  owner = path.resolve(owner);
+  const installConfig = [path.join(appDir, '.env'), path.join(appDir, 'models.json')].includes(owner);
+  return installConfig ? realPathSafe(appDir) : getLaunchDirReal();
+}
+function tempOwnershipError(message) { return Object.assign(new Error(message), { code: 'ETEMPOWNERSHIP' }); }
+function captureTempParent(file, allowedRoot = getLaunchDirReal()) {
+  const directory = path.dirname(path.resolve(file)), real = fs.realpathSync(directory), stat = fs.statSync(directory);
+  if (!stat.isDirectory() || !isInsideDir(allowedRoot, real)) throw tempOwnershipError('temporary parent is outside its allowed root');
+  const parent = { directory, real, dev: stat.dev, ino: stat.ino, allowedRoot };
+  verifyTempParent(parent); return parent;
+}
+function verifyTempParent(parent) {
+  try {
+    if (!parent) throw new Error('parent ownership was not captured');
+    const real = fs.realpathSync(parent.directory), stat = fs.statSync(parent.directory);
+    if (!isInsideDir(parent.allowedRoot, real) || path.relative(parent.real, real) !== '' ||
+        !stat.isDirectory() || stat.dev !== parent.dev || stat.ino !== parent.ino) throw new Error('parent identity or boundary changed');
+  } catch (e) { throw tempOwnershipError('temporary parent cannot be verified: ' + (e.code || e.message)); }
+}
+function captureOwnedTempFile(file, fd, parent) {
+  const stat = fs.fstatSync(fd);
+  const owned = { path: file, parent, dev: stat.dev, ino: stat.ino };
+  if (!stat.isFile() || stat.nlink !== 1) throw tempOwnershipError('created temporary descriptor is not an exclusive regular file');
+  verifyOwnedTempFile(owned); return owned;
+}
+function verifyOwnedTempFile(owned) {
+  if (!owned) throw tempOwnershipError('temporary file creation identity was not captured');
+  verifyTempParent(owned.parent);
+  const stat = fs.lstatSync(owned.path);
+  if (path.dirname(owned.path) !== owned.parent.directory || !stat.isFile() || stat.isSymbolicLink() ||
+      stat.nlink !== 1 || stat.dev !== owned.dev || stat.ino !== owned.ino) throw tempOwnershipError('temporary file no longer matches its created descriptor');
+  verifyTempParent(owned.parent);
+}
+function removeOwnedTempFile(owned) {
+  try { verifyOwnedTempFile(owned); }
+  catch (e) { if (e.code === 'ENOENT') return; throw e; }
+  fs.unlinkSync(owned.path);
+}
+function captureOwnedTempDirectory(dir, parent) {
+  verifyTempParent(parent);
+  const stat = fs.lstatSync(dir), owned = { path: dir, parent, dev: stat.dev, ino: stat.ino };
+  verifyOwnedTempDirectory(owned); return owned;
+}
+function verifyOwnedTempDirectory(owned) {
+  if (!owned) throw tempOwnershipError('temporary directory creation identity was not captured');
+  verifyTempParent(owned.parent);
+  const stat = fs.lstatSync(owned.path);
+  if (path.dirname(owned.path) !== owned.parent.directory || !stat.isDirectory() || stat.isSymbolicLink() ||
+      stat.dev !== owned.dev || stat.ino !== owned.ino || path.relative(owned.parent.real, path.dirname(fs.realpathSync(owned.path))) !== '') throw tempOwnershipError('temporary directory identity changed');
+  verifyTempParent(owned.parent);
+}
 function guardStateFile(file, owner = file) {
   file = path.resolve(file); owner = path.resolve(owner);
   if (path.dirname(file) !== path.dirname(owner)) throw new Error('Security: state companion escaped its parent');
-  const installConfig = [path.join(appDir, '.env'), path.join(appDir, 'models.json')].includes(owner);
-  const allowedRoot = installConfig ? realPathSafe(appDir) : getLaunchDirReal();
+  const allowedRoot = stateFileAllowedRoot(owner);
   if (!isInsideDir(allowedRoot, realPathSafe(owner)) ||
       !isInsideDir(realPathSafe(path.dirname(owner)), realPathSafe(file))) {
     throw new Error('Security: state file resolves outside its allowed root');
@@ -1619,21 +1670,25 @@ function guardStateFile(file, owner = file) {
 function replaceStateBytes(file, bytes, owner = file) {
   file = guardStateFile(file, owner);
   fs.mkdirSync(path.dirname(file), { recursive: true });
+  const parent = captureTempParent(file, stateFileAllowedRoot(owner));
   const staging = file + '.7coder-tmp-' + process.pid + '-' + crypto.randomBytes(12).toString('hex');
-  let fd = null, owned = false;
+  let fd = null, owned = false, creation = null;
   try {
     guardStateFile(staging, owner);
+    verifyTempParent(parent);
     fd = fs.openSync(staging, 'wx', 0o600); owned = true;
+    creation = captureOwnedTempFile(staging, fd, parent);
     fs.writeFileSync(fd, bytes);
     fs.fsyncSync(fd);
     fs.closeSync(fd); fd = null;
     guardStateFile(file, owner);
+    verifyOwnedTempFile(creation);
     fs.renameSync(staging, file);
     owned = false;
   } finally {
     if (fd !== null) { try { fs.closeSync(fd); } catch (e) { console.warn('[STATE] close failed for ' + staging + ': ' + e.code); } }
     if (owned) {
-      try { fs.unlinkSync(staging); }
+      try { removeOwnedTempFile(creation); }
       catch (e) { if (e.code !== 'ENOENT') console.warn('[STATE] incomplete staging retained: ' + staging + ' (' + e.code + ')'); }
     }
   }
@@ -3892,6 +3947,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // rename OVER the destination in one operation. Never unlink dest first.
     let temp = null;
     let tempOwned = false;
+    let tempCreation = null;
     let writer = null;
     let writerClosed = null;
     let response = null;
@@ -3902,6 +3958,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       if (!args.url || !/^https?:\/\//i.test(args.url)) return makeToolResult('error', 'Download error: url must start with http:// or https://');
       const dest = path.join(launchDir, destRel);
       fs.mkdirSync(path.dirname(dest), { recursive: true });
+      const tempParent = captureTempParent(dest);
       const MAX_BYTES = 500 * 1024 * 1024;
       return await executionHttp({ method: 'get', url: args.url, responseType: 'stream', timeout: 60000 }, cancelled, async res => {
         response = res;
@@ -3910,9 +3967,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         // Node 13 _destroy waits for 'open' when fd is null, even after open
         // failed. Acquire exclusively first, so every created writer owns a
         // real fd and its close can be awaited without that permanent wait.
+        verifyTempParent(tempParent);
         const tempFd = fs.openSync(temp, 'wx');
         tempOwned = true;
-        try { writer = fs.createWriteStream(temp, { fd: tempFd, autoClose: true, emitClose: true }); }
+        try {
+          tempCreation = captureOwnedTempFile(temp, tempFd, tempParent);
+          writer = fs.createWriteStream(temp, { fd: tempFd, autoClose: true, emitClose: true });
+        }
         catch (e) { fs.closeSync(tempFd); throw e; }
         writerClosed = new Promise(resolve => writer.once('close', resolve));
         let writerError = null;
@@ -3930,10 +3991,12 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         await writerClosed;
         if (writerError) throw writerError;
         checkExecution(cancelled);
+        verifyOwnedTempFile(tempCreation);
         flushDownloadFile(temp);
         checkExecution(cancelled); // re-check straddling the pre-commit backup
         const previous = backupExistingFile(dest, cancelled);
         checkExecution(cancelled); // backup/flush can outlast the shared deadline
+        verifyOwnedTempFile(tempCreation);
         fs.renameSync(temp, dest);
         temp = null; // ownership transferred - the catch path must not delete it
         return makeToolResult('ok', `[OK] Downloaded ${args.url} to ${destRel} (${received} bytes)` +
@@ -3947,7 +4010,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       }
       let residue = '';
       if (temp && tempOwned) {
-        try { fs.unlinkSync(temp); }
+        try { removeOwnedTempFile(tempCreation); }
         catch (e2) { if (e2.code !== 'ENOENT') residue = `; temporary file retained at ${temp}: ${e2.message}`; }
       }
       if (cancelled && cancelled()) return makeToolResult('cancelled', `[aborted: download cancelled]${residue}`);
@@ -6515,7 +6578,7 @@ function digestBackupFile(file, expectedBytes, label, context) {
 // Chunked copy through two held descriptors (never name-then-reopen), hashing
 // while writing and rejecting zero-progress loops, short reads and any change
 // to the source identity between the initial stat, the copy and its end.
-function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled, deadlineAt) {
+function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled, deadlineAt, ownership) {
   const context = { cancelled, deadlineAt };
   checkBackupOperation(context, 'Backup copy');
   const srcFd = fs.openSync(sourcePath, 'r');
@@ -6525,6 +6588,7 @@ function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled, deadl
     if (!before.isFile()) throw new Error('source must be a regular file');
     if (['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(k => before[k] !== sourceStat[k])) throw new Error('source changed before the copy started');
     payloadFd = fs.openSync(payloadPath, 'wx');
+    if (ownership) ownership.payload = captureOwnedTempFile(payloadPath, payloadFd, ownership.memberParent);
     const hash = crypto.createHash('sha256');
     const buffer = Buffer.alloc(BACKUP_CHUNK_BYTES);
     let total = 0, idleWrites = 0;
@@ -6568,15 +6632,28 @@ function createOwnedBackupStageDir(v1Dir) {
 }
 // Only this transaction's exclusively created staging directory is reclaimed,
 // and only its two known members are unlinked - never a wide rm -rf.
-function recycleOwnedBackupStaging(dir) {
-  const residue = [];
-  for (const name of ['data.bak', 'manifest.json']) {
-    try { fs.unlinkSync(path.join(dir, name)); }
-    catch (e) { if (e.code !== 'ENOENT') residue.push(name + ': ' + e.code); }
+function recycleOwnedBackupStaging(dir, ownership, root) {
+  try {
+    verifyBackupRoot(root);
+    verifyOwnedTempDirectory(ownership.directory);
+    const handle = fs.opendirSync(dir), members = [];
+    try {
+      // A staging transaction has at most two owned members; unknown members
+      // or identities stop reclamation before either known member is removed.
+      for (let i = 0; i < 3; i++) {
+        const entry = handle.readSync(); if (!entry) break;
+        const token = entry.name === 'data.bak' ? ownership.payload : entry.name === 'manifest.json' ? ownership.manifest : null;
+        if (i === 2 || !token) throw tempOwnershipError('staging contains an unowned member');
+        verifyOwnedTempFile(token); members.push(token);
+      }
+    } finally { handle.closeSync(); }
+    for (const member of members) {
+      verifyBackupRoot(root); verifyOwnedTempDirectory(ownership.directory); removeOwnedTempFile(member);
+    }
+    verifyBackupRoot(root); verifyOwnedTempDirectory(ownership.directory); fs.rmdirSync(dir);
+  } catch (e) {
+    console.warn('[BACKUP] staging residue retained at ' + dir + ' (' + (e.code || e.message) + ') - inspect ownership before manual cleanup');
   }
-  try { fs.rmdirSync(dir); }
-  catch (e) { residue.push('directory: ' + e.code); }
-  if (residue.length) console.warn('[BACKUP] staging residue retained at ' + dir + ' (' + residue.join(', ') + ') - safe to remove manually once no 7coder runs');
 }
 // Backup transaction: discovered -> sequence-reserved -> staging-owned ->
 // payload-complete -> manifest-complete -> published -> cleanup-attempted.
@@ -6623,11 +6700,18 @@ function backupExistingFile(fullPath, cancelled, limits) {
     const v1Dir = internalStatePath(path.join('.7coder', 'backups', 'v1'));
     const opDeadline = Date.now() + BACKUP_IO_BUDGET_MS;
     let stagingDir = null, owned = false;
+    const ownership = { directory: null, memberParent: null, payload: null, manifest: null };
     try {
+      verifyBackupRoot(index.root);
+      const stageParent = captureTempParent(path.join(v1Dir, '.stage-placeholder'));
       stagingDir = createOwnedBackupStageDir(v1Dir);
       owned = true;
-      const staged = copyBackupPayload(fullPath, sourceStat, path.join(stagingDir, 'data.bak'), cancelled, opDeadline);
+      ownership.directory = captureOwnedTempDirectory(stagingDir, stageParent);
+      ownership.memberParent = captureTempParent(path.join(stagingDir, 'data.bak'));
+      verifyOwnedTempDirectory(ownership.directory);
+      const staged = copyBackupPayload(fullPath, sourceStat, path.join(stagingDir, 'data.bak'), cancelled, opDeadline, ownership);
       // Independent read-back: the digest and byte count must survive a reopen.
+      verifyOwnedTempFile(ownership.payload);
       const verify = digestBackupFile(path.join(stagingDir, 'data.bak'), staged.bytes, 'Staged backup', { cancelled, deadlineAt: opDeadline });
       if (verify.sha256 !== staged.sha256 || verify.bytes !== staged.bytes) throw new Error('staged payload failed its read-back digest check');
       const snapshotId = crypto.randomBytes(16).toString('hex');
@@ -6639,12 +6723,20 @@ function backupExistingFile(fullPath, cancelled, limits) {
       };
       const manifestPath = path.join(stagingDir, 'manifest.json');
       checkBackupOperation({ cancelled, deadlineAt: opDeadline }, 'Backup publication');
-      replaceStateBytes(manifestPath, Buffer.from(JSON.stringify(manifest), 'utf8'), manifestPath);
+      verifyOwnedTempDirectory(ownership.directory); verifyTempParent(ownership.memberParent);
+      const manifestFd = fs.openSync(manifestPath, 'wx', 0o600);
+      try {
+        ownership.manifest = captureOwnedTempFile(manifestPath, manifestFd, ownership.memberParent);
+        fs.writeFileSync(manifestFd, Buffer.from(JSON.stringify(manifest), 'utf8'));
+        fs.fsyncSync(manifestFd);
+      } finally { fs.closeSync(manifestFd); }
       const finalDir = path.join(v1Dir, String(sequence).padStart(16, '0') + '-' + snapshotId);
       let exists = true;
       try { fs.statSync(finalDir); } catch (e) { exists = false; }
       if (exists) throw new Error('backup record already exists: ' + path.basename(finalDir));
       checkBackupOperation({ cancelled, deadlineAt: opDeadline }, 'Backup publication');
+      verifyBackupRoot(index.root); verifyOwnedTempDirectory(ownership.directory);
+      verifyOwnedTempFile(ownership.payload); verifyOwnedTempFile(ownership.manifest);
       // The publish point: one rename of the fully verified directory.
       fs.renameSync(stagingDir, finalDir);
       owned = false;
@@ -6656,7 +6748,7 @@ function backupExistingFile(fullPath, cancelled, limits) {
       pruneOwnedBackups(finalDir, cancelled, cap);
       return path.join(finalDir, 'data.bak');
     } finally {
-      if (owned && stagingDir) recycleOwnedBackupStaging(stagingDir);
+      if (owned && stagingDir) recycleOwnedBackupStaging(stagingDir, ownership, index.root);
     }
   } catch (e) {
     throw new Error('Cannot preserve previous file ' + rel + ': ' + e.message);
@@ -6838,8 +6930,10 @@ function backupRestoreConflict(stage, message) {
 function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, info, context) {
   const result = { format: info.format, snapshotId: info.snapshotId === undefined ? null : info.snapshotId, sequence: info.sequence === undefined ? null : info.sequence };
   const parent = path.dirname(target);
+  let tempParent;
   try {
     if (!isInsideDir(getLaunchDirReal(), realPathSafe(parent))) throw new Error('target parent resolves outside the workspace');
+    tempParent = captureTempParent(target);
   } catch (e) { return Object.assign(result, { status: 'failed', stage: 'prepare', message: e.message }); }
   let targetBefore = null;
   try {
@@ -6852,7 +6946,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
   const pin = info.recordDir || null;
   if (pin) activeBackupRestorePins.add(pin);
   const tempPath = path.join(parent, '.7coder-restore-' + process.pid + '-' + crypto.randomBytes(8).toString('hex'));
-  let tempOwned = false;
+  let tempOwned = false, tempCreation = null;
   let outcome = null;
   try {
     checkBackupOperation(context, 'Restore');
@@ -6862,8 +6956,10 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
       const before = fs.fstatSync(srcFd);
       if (!before.isFile()) throw new Error('selected backup is not a regular file');
       if (before.size !== expectedBytes) throw new Error('selected backup changed size before restore (' + before.size + ' != ' + expectedBytes + ')');
+      verifyTempParent(tempParent);
       tempFd = fs.openSync(tempPath, 'wx');
       tempOwned = true;
+      tempCreation = captureOwnedTempFile(tempPath, tempFd, tempParent);
       const buffer = Buffer.alloc(BACKUP_CHUNK_BYTES);
       let total = 0, idleWrites = 0;
       while (total < expectedBytes) {
@@ -6890,6 +6986,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
       if (tempFd !== null && !tempClosed) { try { fs.closeSync(tempFd); } catch (e2) {} }
       try { fs.closeSync(srcFd); } catch (e2) {}
     }
+    verifyOwnedTempFile(tempCreation);
     const staged = digestBackupFile(tempPath, expectedBytes, 'Restore staging', context);
     if (staged.sha256 !== expectedSha256) throw new Error('restore staging digest mismatch');
     // Managed state must parse before it may replace a live target; parser
@@ -6919,6 +7016,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
     if (!isInsideDir(getLaunchDirReal(), realPathSafe(parent))) throw backupRestoreConflict('verify', 'target path boundary changed before commit');
     // A restore that outlived its operation budget must not commit (recheck R5).
     checkBackupOperation(context, 'Restore before commit');
+    verifyOwnedTempFile(tempCreation);
     // The only commit point: one same-directory rename over the target.
     fs.renameSync(tempPath, target);
     tempOwned = false;
@@ -6930,7 +7028,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
   } finally {
     if (pin) activeBackupRestorePins.delete(pin);
     if (tempOwned) {
-      try { fs.unlinkSync(tempPath); }
+      try { removeOwnedTempFile(tempCreation); }
       catch (e2) {
         if (e2.code !== 'ENOENT') outcome.residue = 'restore staging retained at ' + tempPath + ' (' + (e2.code || e2.message) + ')';
       }

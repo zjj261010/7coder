@@ -116,7 +116,7 @@ const args = { write_file: { content: 'count=2\n' }, append_file: { content: '\n
       const denied = fixture('backup-' + kind, 'count=1\n');
       const overrides = kind === 'flush' ? { fsyncSync() { throw Error('backup flush failed'); } } :
         kind === 'publish' ? { renameSync() { throw Error('backup publication failed'); } } :
-          { openSync(file, flags) { if (String(file).includes('.stage-') && String(file).includes('.7coder-tmp-')) throw Error('backup manifest write denied'); return fs.openSync(file, flags); } };
+          { openSync(file, flags) { if (String(file).includes('.stage-') && path.basename(file) === 'manifest.json' && flags === 'wx') throw Error('backup manifest write denied'); return fs.openSync(file, flags); } };
       const result = text(await context(denied.cwd, overrides).invoke('edit_file', { path: 'source.txt', old_string: 'count=1', new_string: 'count=2' }));
       check('backup ' + kind + ' failure blocks edit', /Edit error: Cannot preserve previous file/.test(result) && same(denied.file, 'count=1\n'));
     }

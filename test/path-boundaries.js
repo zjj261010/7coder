@@ -5,7 +5,7 @@ const { loadContext } = require('./download-commit');
 const S = require('./_shared').create({ suite: 'path-boundaries' });
 const source = fs.readFileSync(S.IDX, 'utf8');
 let checks = 0;
-function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
+function check(label, ok, detail) { assert.ok(ok, label + (detail ? ' :: ' + detail : '')); checks++; console.log('PASS ' + label); }
 function cut(from, to) {
   const start = source.indexOf(from), end = source.indexOf(to, start);
   assert.ok(start >= 0 && end > start, from); return source.slice(start, end);
@@ -38,13 +38,14 @@ function virtualRoot(root, name) {
   vm.runInContext(cut('const PROTECTED_FILES =', 'function loadPermRules()') +
     cut('function permRuleArgText(', '// Quotes a token') +
     cut('async function safeExecuteToolInner(', '// ====================== APPROVAL') +
-    'async function executeToolRaw(name,args) {\n' + cut("  if (name === 'write_file') {", "  if (name === 'append_file') {") + '\n}' +
+    'async function executeToolRaw(name,args,conversation,approvalBridge,cancelled=null) {\n' + cut("  if (name === 'write_file') {", "  if (name === 'append_file') {") + '\n}' +
     'this.rules=permRules;', ctx);
   return { ctx, actual, mapped, root };
 }
 const text = result => typeof result === 'string' ? result : result.text;
 (async () => {
   try {
+    if (process.env.PATH_BOUNDARY_SCOPE !== 'roots') {
     const ctx = vm.createContext({ path: path.win32, process: { platform: 'win32' } });
     vm.runInContext(cut('function isInsideDir(', '// Resolves symlinks/junctions'), ctx);
     const cases = [
@@ -60,17 +61,18 @@ const text = result => typeof result === 'string' ? result : result.text;
     const posix = vm.createContext({ path: path.posix, process: { platform: 'linux' } });
     vm.runInContext(cut('function isInsideDir(', '// Resolves symlinks/junctions'), posix);
     check('POSIX root works while case sensitivity and sibling rejection remain', posix.isInsideDir('/', '/tmp/file') && !posix.isInsideDir('/Work', '/work/file') && !posix.isInsideDir('/work', '/workspace'));
+    }
 
     for (const [root, name] of [['Z:\\', 'virtual-drive'], ['\\\\server\\share\\', 'virtual-unc']]) {
       const f = virtualRoot(root, name), c = f.ctx, wp = path.win32;
       const state = c.internalStatePath('.7coder', 'todos.json');
       c.writeStateFile(state, JSON.stringify({ items: [] }), c.parseTodoState);
       c.writeStateFile(state, JSON.stringify({ items: [{ id: 't1', title: 'root test', status: 'pending' }] }), c.parseTodoState);
-      check(name + ': real backing state IO and previous-version writes work at a root workspace', c.readStateRecord(state, c.parseTodoState).value.items[0].title === 'root test' && fs.existsSync(f.mapped(state + '.7coder-prev')));
+      if (!(process.env.PATH_BOUNDARY_SCOPE === 'roots' && name === 'virtual-drive')) check(name + ': real backing state IO and previous-version writes work at a root workspace', c.readStateRecord(state, c.parseTodoState).value.items[0].title === 'root test' && fs.existsSync(f.mapped(state + '.7coder-prev')));
       const call = (file, value = 'MEMORY_OK') => c.safeExecuteToolInner({ function: { name: 'write_file', arguments: JSON.stringify({ path: file, content: value }) } }, [], null, null, {});
       const note = '.7coder\\memory\\notes.md';
       const written = await call(note);
-      check(name + ': backslash memory note auto-writes in default mode without approval', written.status === 'ok' && fs.readFileSync(f.mapped(wp.join(root, note)), 'utf8') === 'MEMORY_OK');
+      check(name + ': backslash memory note auto-writes in default mode without approval', written.status === 'ok' && fs.readFileSync(f.mapped(wp.join(root, note)), 'utf8') === 'MEMORY_OK', JSON.stringify(written));
       check(name + ': ordinary source writes still require approval', text(await call('source.txt')).includes('declined') && !fs.existsSync(f.mapped(wp.join(root, 'source.txt'))));
       c.rules.deny.push(c.compilePermRule('write_file(.7coder/memory/blocked.md)', 'deny'));
       check(name + ': user deny wins over memory auto-safe on backslash input', text(await call('.7coder\\memory\\blocked.md')).includes('BLOCKED by user permission rule'));
