@@ -2772,6 +2772,19 @@ function migrateWorkspaceRootFiles() {
   } catch (e) { console.warn('[WARN] BTW migration stopped; inspect retained source/target/journal: ' + e.message); }
 }
 
+function releaseOwnedDreamLock(owner = triggerDreamIfNeeded.owner) {
+  if (!owner) return false;
+  try {
+    const lockPath = internalStatePath('.7coder', 'dream.lock');
+    if (decodeUtf8Text(readFileBytesBounded(lockPath, 4096, 'Dream lock')) !== owner) return false;
+    fs.unlinkSync(lockPath);
+    return true;
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn('[WARN] dream lock cleanup failed: ' + e.message);
+    return false;
+  }
+}
+
 async function triggerDreamIfNeeded(modelContext, execution) {
   if (triggerDreamIfNeeded.owner || shuttingDown) return false;
   triggerDreamIfNeeded.lastOutcome = 'skipped';
@@ -2810,9 +2823,8 @@ async function triggerDreamIfNeeded(modelContext, execution) {
     return true;
   } finally {
     if (!execution) cancelled.dispose();
+    releaseOwnedDreamLock(owner);
     triggerDreamIfNeeded.owner = null;
-    try { if (decodeUtf8Text(readFileBytesBounded(lockPath, 4096, 'Dream lock')) === owner) fs.unlinkSync(lockPath); }
-    catch (e) { if (e.code !== 'ENOENT') console.warn('[WARN] dream lock cleanup failed: ' + e.message); }
   }
 }
 
@@ -7230,7 +7242,7 @@ async function main() {
 
       if (trimmed.toLowerCase() === '/bye') {
         // Quit for real: stop running background tasks, cron jobs and any
-        // in-flight cron command, drop the dream lock, then exit. Their
+        // in-flight cron command, release only our dream lock, then exit. Their
         // handles would otherwise keep the event loop alive (hang) or leak.
         shuttingDown = true;
         cancelActiveExecutions('Agent exiting.');
@@ -7245,10 +7257,10 @@ async function main() {
         const stopped = await Promise.all(stopping);
         const unknown = stopped.filter(result => !result.closed);
         if (unknown.length) console.warn('[EXIT] ' + unknown.length + ' direct child close(s) unconfirmed; check remaining processes before restart.');
-        // P2-1: the dream lock lives at .7coder/dream.lock now; the legacy
-        // root path is cleaned too so pre-migration stale locks never resurface.
-        try { const lock = internalStatePath('.7coder', 'dream.lock'); if (fs.existsSync(lock)) fs.unlinkSync(lock); } catch (e) {}
-        try { const legacyLock = path.join(launchDir, '7C.dream.lock'); if (fs.existsSync(legacyLock)) fs.unlinkSync(legacyLock); } catch (e) {}
+        // Cancellation normally runs Dream's finally first. If still pending,
+        // remove only the exact active owner bytes; preserve foreign/legacy
+        // evidence for its owner or the normal startup recovery policy.
+        releaseOwnedDreamLock();
         saveSession();
         console.log('Goodbye!');
         rl.close();

@@ -59,7 +59,7 @@
 | A7 | computer_use 鼠标/键盘为模拟 no-op | ✅ user32 mouse_event + SendKeys |
 | A8 | 审批每步都要轻模型调用（贵且慢） | ✅ 确定性风险/解释表，常见工具零额外调用 |
 | A9 | Ralph 循环复用 MAX_RETRIES | ✅ 独立 RALPH_ITERATIONS |
-| A10 | /bye 不清理 cron/dream 锁 | ✅ 退出时停止定时器/删锁/拒绝新任务 |
+| A10 | /bye 不清理 cron/dream 锁 | ✅ 退出时停止定时器/拒绝新任务；2026-10-25纠正删锁范围：只释放逐字匹配的本次Dream owner，保留foreign/legacy锁，见INC-25-07 |
 | A11 | glob/grep 仅匹配文件名 | ✅ 目录感知 globToRegex（`src/**/*.js` 语义） |
 | A12 | 解析器怪癖：空 `--prompt ""` 静默进 REPL；未知 flag 并入任务文本 | ⛔ 用户决策（2026-10-03）：严格解析模式不做——两遍解析的词序重排为既定设计保留；空 prompt fail-fast 部分此前已修（index.js:56 exit 1） |
 | A13 | HTTP content 非字符串字面化为 "[object Object]" | ✅ JSON.stringify 回退 |
@@ -1570,3 +1570,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 通用state writer只新增内部optional expectedCurrent字节比较（在相同内容早退与previous写入前），默认调用保持；迁移用其阻止准备intent后已观察到的目标变化。源link/目录、可识别的源目标hardlink别名在写入前拒绝。源及合并内容仍8MiB预算，先验失败不创建journal。外部进程在最后检查与native写/删之间的竞态不是原子CAS保证。
 - 新btw-migration Node13首次单次 **23/23**：BOM/换行/中文emoji字节及previous、空源/缺目标、完成后noop/相同新源再次导入、两次删源失败不重复、journal删除失败、intent/目标rename失败、两类外部冲突、源缺失冲突、坏journal证据、真实NTFS hardlink、100MiB稀疏源与合并超限；所属子进程分别在intent/目标/源删除/journal删除后exit73，下一进程恢复。目标已写阶段另用实际私有Agent启动恢复并完成一次本地fixture模型请求，源/journal清除且只合并一次。
 - auxiliary-budget因迁移实现实际变化在本批首次单次 **17/17**，覆盖原读取/合并边界与Dream/archive行为；不是为无关变动重复其它已通过专项。两项无失败复跑，Node13语法与diff检查通过，npm/test-all登记。未跑完整A–J/UI/test-all、状态59或其它已通过专项、真实模型、Win7/ACL/网络盘/断电/24–72h或打包。目录断电持久性、两份同时丢失与原生文件分享语义仍属实机门槛；按授权提交、未推送，随后重新检查额度。
+
+### 2026-10-25 —— INC-25-07退出删锁的所有权闭环
+
+- BTW事务批已提交`c78e12f`。完成后五小时used21%/remaining79%，判断能完整覆盖本项实现/验证/提交，继续。
+- **Medium／已确认错误路径**：Dream finally已经检查owner，但REPL /bye仍无条件unlink当前与legacy-root锁。Dream禁用、未持有锁或执行期间锁被替换时，退出会删除不属于本次操作的文件，破坏legacy四小时宽限/保留冲突证据的策略。当前Agent之间有workspace lease，不能据此声称本问题会突破同版本互斥；外部/旧Agent不参与该协议。
+- 新releaseOwnedDreamLock集中执行≤4KiB读取、exact owner bytes比较后unlink；finally使用捕获owner，/bye使用当前活动owner，无owner零读取；缺失幂等、读取/删除故障告警，不碰legacy-root路径。取消后finally未完成仍可按同样检查清本次锁；若骤停留下recognized owner，交由已有启动恢复策略。外部替换恰落在检查与unlink之间仍非OS原子保证。
+- 新dream-lock-exit Node13首次单次 **17/17**：无owner零读、精确/缺失/foreign/捕获owner/occupied/巨锁；真实REPL无活动退出保留两布局文件、第二次启动退出继续保留；真实活动Dream取消关闭上游、owned锁移除/foreign两布局保留，原笔记不变且不记录成功时间。
+- 原auxiliary-lifecycle因finally改动本批首次单次 **10/10**。旧I仅RUN_ONLY=bye-dreamlock **1/1**，修正原先“手工放入的锁也应被删”的假正确断言，保留场景名便于定向调用。三项均无失败复跑，相关Node13语法/diff通过，npm/test-all登记。未重跑BTW23/预算17/完整REPL与A–J/UI/test-all，未做Win7/真实旧Agent并发/进程树/Ctrl+C/注销/24–72h或打包。本项只闭环锁所有权，不关闭T22-07。按授权提交、未推送，完成后重新检查额度。

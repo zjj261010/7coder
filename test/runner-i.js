@@ -419,19 +419,19 @@ scenarios.push({
   }
 });
 
-// --- I9b: /bye removes the dream lock (A10 - previously manual-only) ---
+// --- I9b: /bye preserves a lock it did not acquire ---
 scenarios.push({
   name: 'bye-dreamlock',
   fn: async () => {
     const cwd = freshCwd('i9b');
     const lockPath = path.join(cwd, '.7coder', 'dream.lock'); // P2-1: moved under .7coder/
     fs.mkdirSync(path.join(cwd, '.7coder'), { recursive: true });
-    fs.writeFileSync(lockPath, new Date().toISOString());
+    const foreign = new Date().toISOString(); fs.writeFileSync(lockPath, foreign);
     const r = await runCli({
       port: 1, args: [], cwd, timeoutMs: 15000,
       stdinSteps: [{ t: '/bye\n', d: 1500 }]
     });
-    record('bye-dreamlock: /bye removes the dream lock file', r.code === 0 && r.out.includes('Goodbye') && !fs.existsSync(lockPath), 'exit=' + r.code + ' lockGone=' + !fs.existsSync(lockPath));
+    record('bye-dreamlock: /bye preserves unowned dream lock bytes', r.code === 0 && r.out.includes('Goodbye') && fs.existsSync(lockPath) && fs.readFileSync(lockPath, 'utf8') === foreign, 'exit=' + r.code + ' lockRetained=' + fs.existsSync(lockPath));
   }
 });
 

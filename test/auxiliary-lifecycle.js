@@ -26,7 +26,7 @@ function fixture(name, run, extra) {
     updateLastInteractionTime: () => { updates++; }, processWithTools: run,
     console: { log() {}, warn() {}, error() {} }
   }, extra || {}));
-  vm.runInContext(cut('async function triggerDreamIfNeeded(', '// ====================== VISION HELPER'), ctx);
+  vm.runInContext(cut('function releaseOwnedDreamLock(', '// ====================== VISION HELPER'), ctx);
   contexts.push(ctx);
   return { ctx, cwd, md, lock, updates: () => updates };
 }
