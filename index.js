@@ -2925,6 +2925,16 @@ function screenshotToDataUrl(p, strict = false) {
   }
 }
 
+function readWorkspaceCommand(name) {
+  if (!/^[a-z0-9_-]+$/.test(name)) throw new Error('Invalid workspace command name');
+  let raw;
+  try { raw = decodeUtf8Text(readFileBytesBounded(internalStatePath('.7coder/commands', name + '.md'), 64 * 1024, 'Workspace command')); }
+  catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  const expanded = raw.trim();
+  if (!expanded) throw new Error('Workspace command is empty');
+  return expanded;
+}
+
 // ====================== LIGHT/HEAVY CALLER ======================
 // GAP-8: token usage observability. The upstream reports per-response token
 // usage; sessionUsage aggregates every callOpenAI call made by THIS process
@@ -7433,18 +7443,16 @@ Make it read like a direct continuation of the user's task instructions for the 
         // pre-restricted to [a-z0-9_-] by the regex, so no traversal) expands
         // to the task text: the file body is queued exactly like typed user
         // input and /execute-task-now runs it. Unknown /x keeps the legacy
-        // behavior of being queued as plain text. Files are capped at 64KB.
+        // behavior of being queued as plain text. Existing files must be
+        // complete lossless UTF-8 within 64KiB; never execute a truncated body.
         const slashCmd = /^\/([a-z0-9_-]+)$/.exec(trimmed);
         let expanded = null;
         if (slashCmd) {
-          let raw = '';
-          try { raw = fs.readFileSync(internalStatePath('.7coder/commands', slashCmd[1] + '.md'), 'utf8'); } catch (e) {}
-          if (raw) {
-            if (raw.length > 64 * 1024) {
-              raw = raw.substring(0, 64 * 1024);
-              console.log(`[CMD] ${slashCmd[1]} exceeds 64KB - truncated.`);
-            }
-            expanded = raw.trim();
+          try { expanded = readWorkspaceCommand(slashCmd[1]); }
+          catch (e) {
+            console.error(`[CMD] ${slashCmd[1]} not queued: ${e.message}`);
+            safePrompt();
+            return;
           }
         }
         if (expanded) {

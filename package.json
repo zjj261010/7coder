@@ -86,6 +86,7 @@
     "test:memory-budget": "node test/memory-budget.js",
     "test:btw-migration": "node test/btw-migration.js",
     "test:dream-lock-exit": "node test/dream-lock-exit.js",
+    "test:command-budget": "node test/command-budget.js",
     "test:debug-prerequisites": "node test/debug-prerequisites.js",
     "test:tool-result-evidence": "node test/tool-result-evidence.js",
     "test:git-snapshot-retention": "node test/git-snapshot-retention.js",

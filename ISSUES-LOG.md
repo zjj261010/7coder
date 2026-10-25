@@ -1578,3 +1578,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新releaseOwnedDreamLock集中执行≤4KiB读取、exact owner bytes比较后unlink；finally使用捕获owner，/bye使用当前活动owner，无owner零读取；缺失幂等、读取/删除故障告警，不碰legacy-root路径。取消后finally未完成仍可按同样检查清本次锁；若骤停留下recognized owner，交由已有启动恢复策略。外部替换恰落在检查与unlink之间仍非OS原子保证。
 - 新dream-lock-exit Node13首次单次 **17/17**：无owner零读、精确/缺失/foreign/捕获owner/occupied/巨锁；真实REPL无活动退出保留两布局文件、第二次启动退出继续保留；真实活动Dream取消关闭上游、owned锁移除/foreign两布局保留，原笔记不变且不记录成功时间。
 - 原auxiliary-lifecycle因finally改动本批首次单次 **10/10**。旧I仅RUN_ONLY=bye-dreamlock **1/1**，修正原先“手工放入的锁也应被删”的假正确断言，保留场景名便于定向调用。三项均无失败复跑，相关Node13语法/diff通过，npm/test-all登记。未重跑BTW23/预算17/完整REPL与A–J/UI/test-all，未做Win7/真实旧Agent并发/进程树/Ctrl+C/注销/24–72h或打包。本项只闭环锁所有权，不关闭T22-07。按授权提交、未推送，完成后重新检查额度。
+
+### 2026-10-25 —— T22-15自定义命令完整读取与拒绝边界
+
+- 退出锁批已提交`96bcd4a`；五小时窗口used24%/remaining76%，评估足够完成本项读取修复、定向验收与提交，继续。
+- 原REPL slash命令先readFileSync整文件，再以64K字符substring截断；尾部约束可能丢失却照常排队，坏编码被replacement解码，读错/空文件静默当作/name普通输入。现readWorkspaceCommand先以64KiB字节有界读取，再lossless UTF8与trim；超限/IO/编码/空正文明确not queued，保留原draft，不降级成另一条任务。仅ENOENT保持未知命令literal兼容，name校验/受管路径边界不变。
+- 新command-budget Node13首次单次 **13/13**：BOM/CRLF/中文emoji完整、64KiB边界及UTF8字节判定、100MiB私有稀疏源零data-read/close、不支持编码/NUL/空/读拒绝/path拒绝；实际REPL三种错误均不排队、不将部分指令或slash名送上游，既有SAFE_DRAFT原样保留；同REPL下一合法完整命令含最终guard与未知literal准确到达本地模型，正常退出且源不改。旧B仅slashcmd **2/2**一次通过；未因新增边界重跑其它已通过专项。
+- Node13语法/diff检查通过，README/npm/test-all同步。未跑完整A–J/UI/test-all、Win7/真实模型/网络盘/24–72h或打包；这是每command预算，不关闭累计draft、所有输入context或全进程heap预算。按授权提交、未推送，完成后重新评估额度。
