@@ -1657,3 +1657,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新search-collection Node13首次单次 **12/12**：逻辑无界目录glob13读/grep7读即到visit12/6、零whole-array调用、真实递归match/file cap/匹配异常/枚举中取消全部close；100MiB增长于open前零read、增长于read中≤2MiB+1且fdclose、同大小替换不报stale match、legacy跨行语义/全量列表保持、read EIO可见并close。未在父监督进程跑危险回溯pattern。
 - 旧scan-budget **21/21**、glob-deadline **14/14**、grep-deadline **6/6**因native采集路径改变本批首次单次；夹具故障/计数改到实际open/opendir，grep stat数包含每file一致性复核，不把reader改动后未触发的旧readFileSync hook当有效验证。两个regex专项全部危险输入仍在所属监督子进程；真实Agent坏pattern error/audit精确ID、下一正常搜索/health恢复保持。四专项无失败复跑，Node13语法/diff、README/npm/test-all同步。
 - 未重跑其它已通过专项/完整A–J/UI/test-all、Win7/真实网络盘/百万文件/24–72h/打包；opendir默认内部分批缓存、native read/stat仍非硬可中断。总heap、文件内容变化最后检查后的外部竞态、无opts备份/历史索引与磁盘保留继续开放。按授权提交、未推送，之后检查额度决定下一项。
+
+### 2026-10-25 —— 自动执行停点与下一项预算评估
+
+- 搜索采集批已提交`9c6fd0c`，完成时读取五小时窗口used64%/remaining36%。本轮各批实现、失败原因、仅尾部复测范围和未测项均保留在上方记录；没有把局部专项合计当作一次完整回归，也没有重新打包或推送。
+- **按用户额度规则停止自动执行**：下一项拟完整处理T22-13/15/26的备份归属、索引、保留与原子恢复，须同时审查backupExistingFile、pruneBackups、restoreLatestBackup及文本/下载调用方，明确旧档兼容与未知/损坏/正在使用文件的保留，再验收异常分支。预计需预留约35%～40%的当前五小时窗口（含实现、必要验证、失败排查和提交余量）；剩余36%不能稳妥覆盖这一范围，未启动源码修改。额度估算是工作量判断，不是工具提供的固定token配额。
+- 交接证据：当前backup排序仍readdirSync整数组，pruneBackups仍无opts全量遍历且按名字分组/包含loose .bak全局清理，尚无版本化归属凭据；/undo仍直接copyFileSync覆盖目标、catch返回false，尚无“原件在恢复失败后仍保持”的独立提交协议。这些是下一项需要验证/设计的风险边界，不能据静态位置声称已复现真实Win7数据损失；不得把本轮有界搜索替换扩大到备份内部遍历。
+- 会话历史全量索引/分页与归属保留、其余background/截图/BTW/TODO/证据/temp磁盘预算、native进程树/Job Object、实际Win7/PS2/中文路径及24→72h仍未完成。完整A–J/UI/test-all和新离线包均未执行；真实模型/浏览器/磁盘满/注销关机未由本地fixture替代。
+- 停止前只做日志记录与Git状态核对，不启动新测试或循环验证。所有本轮产品修改已有独立提交；后续从上述备份闭环开始重新评估额度。
