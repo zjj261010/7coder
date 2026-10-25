@@ -628,7 +628,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-30 | Low／确认＋后续High风险修复 | **搜索输入与扫描预算**：10-24单文件grep、实际访问/深度/不匹配预算、失败incomplete及旧sentinel保留；INC-24-04补grep正则期限。10-25 INC-25-04再补glob pattern4096/匹配100ms/opts扫描5s或更早deadline与取消，匹配失败明确error，不改无pattern备份遍历scope。新glob14/14＋扫描21/21本批首次单次；**/零目录/问号/Win分隔符原语义验证。同步IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20；各扫描/期限批记录 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
-| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例见各批。SSE/audit/保存活动callId新10/10＋pilot11；10-25再迁B2–B7至唯一ID/状态，反例10/10＋六场景40/40首跑。本日再补I3/I11严格模型脚本、完整压缩/JSON/字符串与HTTP400恢复判据（反例有效证据17＋修正后12；I3 5、I11首4＋仅失败尾1）；仍待其它旧位置mock按业务期望迁移、跨请求execution ID和真实模型质量验收；不据本地fixture宣称全套/真实端点已验收。 | R1 §10.3；R2 N01/N02/N03；各定向记录 |
+| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例见各批。SSE/audit/保存活动callId新10/10＋pilot11；10-25再迁B2–B7至唯一ID/状态，反例10/10＋六场景40/40首跑。本日再补I3/I11严格模型脚本、完整压缩/JSON/字符串与HTTP400恢复判据（反例有效证据17＋修正后12；I3 5、I11首4＋仅失败尾1）；本日I4另补正常HTTP完成后的摘要门控、完整四请求/有序落盘与队列释放（新反例22＋I4 7首次单次）；仍待其它旧位置mock按业务期望迁移、跨请求execution ID和真实模型质量验收；不据本地fixture宣称全套/真实端点已验收。 | R1 §10.3；R2 N01/N02/N03；各定向记录 |
 
 ### V22：验证与发布门槛（均未执行）
 
@@ -1798,3 +1798,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - **实际验证口径**：新反例首跑29项通过，但其中content组初版错误地把MAX_RETRIES=2视为HTTP400也重试；随包Node13实际I3/I11首跑 **9/10**（I3 **5/5**、I11前 **4项**通过，最后完整log判据失败，实际3次而初版期待4次）。阅读callOpenAI确认400非429直接not retryable；这是夹具预期错误，未改变产品重试行为。前17个I3/giant反例仍有效；content组初版12项不能充当修正后的证据。
 - 集中修正content predicate与canonical反例为三请求；按既有失败自动分析/定向复测授权，仅`I_CONTEXT_ORACLE_SCOPE=content` **12/12**（前17项不重跑），以及`RUN_ONLY=content-fallback I_CONTENT_EVIDENCE_ONLY=1`仅最后失败断言 **1/1**。后者必须重建所属HTTP请求才能取得真实log，但先前已通过的4条断言明确NOT RUN，不计二次通过；I3的5条不重跑。因此当前证据为反例**17＋12**、集成**5＋4＋1**，不能写成修后29/29或10/10整套单次通过。
 - npm/test-all已登记反例入口；相关Node13语法与git diff静态检查通过。未重复刚通过的上下文预算/MCP/其它专项，未跑完整I/A–J/UI/test-all、真实模型/浏览器、Win7、24–72h或打包。其它legacy位置mock、内部/跨请求execution span和真实摘要质量仍开放，T22-33保持部分完成。收尾额度used84%/remaining16%，按授权提交且不推送，不继续启动更大实现项。
+
+### 2026-10-25 —— T22-33 I4正常HTTP结束后的后台摘要证据
+
+- 用户在remaining14%时选择继续此小项。原I4固定等600ms/2500ms启动、等300ms假定摘要已落盘，仅检查关键词/200；普通HTTP结束后的摘要取消与位置脚本错序可能没有精确证据，慢环境又可能误报。原注释“非流式没有取消token”也已过时。本批只改测试/说明与入口，不改产品源码或真实配置。
+- 新test/_i-summary-fixture.js提供动态loopback端口、严格四步协议和两个由测试主动放行的摘要门；没有按时间自动回复的定时器。主回复均超过200字符，实际Agent先完成stream/DONE或JSON响应，再等待摘要请求被fixture挂起；此时核对活动task/tool计数、摘要仍active及文件尚未提前变化。放行后用5秒有界条件等待确切文件与队列settled，替代固定300ms；两HTTP请求本身有8秒期限，诊断请求1秒，Agent就绪/观察close沿用_endpoint，finally关闭所属Agent及fixture sockets。
+- 四请求精确验证stream主调用/首摘要/JSON主调用/次摘要，工具可用性、完整user/task/reply、transport与model共同确认；两角色使用同fixture模型名，不冒充独立模型路由验收。第二任务必须收到第一条已完成工作的完整注入，第二摘要与该实际rawPrompt和完整JSON回复对应。文件只允许指定marker内有两条按顺序各一次的摘要，无关键词外置/重复/乱序成功；active/pending/bytes及runtime计数均归零才算结算。正常响应结束仍允许后台摘要使用剩余deadline，修正过时取消注释。
+- 新i-summary-oracles随包Node13首次单次 **22/22**：完整正例、空/丢/重复请求、主摘要工具权限错位、错模型/transport、丢回复尾部、跨任务摘要/错回复、第二任务缺既有完成摘要、marker外关键词、重复/逆序bullet，以及active/pending/bytes/task/tool任一未释放均拒绝；script第5步显式exhausted。同一predicate用于实际场景与反例，不只测试另一个模型。
+- 仅`RUN_ONLY=cancel-boundary`实际隔离Agent集成首次单次 **7/7**：stream完整且DONE、挂起摘要/原文件不提前写、放行后首摘要精确一次、JSON完整先返回、第二摘要仍等待、完整四调用及有序文件、队列全部计数释放。无失败复跑，未重跑刚通过的I3/I11/上下文/MCP或其它专项。相关Node13语法与git diff静态检查通过，npm/test-all与README同步。
+- 本项不测试主动abort、过期/取消时全部副作用、任意后代退出、真实模型质量、Win7/浏览器或24–72h；原execution-cancel/queue-admission等证据仍保持各自历史范围，未因本项重跑或升级口径。未跑完整I/A–J/UI/test-all、断电或打包；T22-33仍部分完成。收尾额度used89%/remaining11%，按授权提交且不推送，本轮不再启动新实现项。

@@ -9,6 +9,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const IContext = require('./_i-context-fixture');
+const ISummary = require('./_i-summary-fixture');
 const { create: createEndpoint } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
@@ -146,33 +147,40 @@ scenarios.push({
   name: 'cancel-boundary',
   fn: async () => {
     const cwd = freshCwd('i4');
-    // AST-R1: main replies padded past the 200-char summary floor so the
-    // scripted summary steps are consumed and "quick summary" lands in 7CODER.md.
-    const m = startMock([
-      { role: 'assistant', content: 'QUICK-REPLY ' + 'first streamed reply padded past the summary floor. '.repeat(6) },
-      { role: 'assistant', content: 'quick summary' },
-      { role: 'assistant', content: 'QUICK-REPLY-2 ' + 'second plain reply padded past the summary floor. '.repeat(6) },
-      { role: 'assistant', content: 'summary 2' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const srvPort = port + 330;
-    const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
-      cwd, stdio: 'ignore'
-    });
-    await new Promise(r => setTimeout(r, 2500));
+    const fixture = await ISummary.start();
+    const agent = createEndpoint({ suite: 'I-summary-agent', endpoint: fixture.endpoint, key: '', model: ISummary.model, permissionMode: 'bypass' });
+    const mdPath = path.join(cwd, '7CODER.md');
+    const readMd = () => fs.existsSync(mdPath) ? fs.readFileSync(mdPath, 'utf8') : '';
+    async function until(predicate, label) {
+      const end = Date.now() + 5000;
+      while (!await predicate()) { if (Date.now() >= end) throw Error('I4 deadline: ' + label); await new Promise(resolve => setTimeout(resolve, 20)); }
+    }
     try {
-      // normal non-abort streaming must still write the summary
-      const ok = await httpReq(srvPort, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'x' }] });
-      await new Promise(r => setTimeout(r, 300));
-      const md1 = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8');
-      record('cancel: normal streamed run still writes summary', ok.status === 200 && md1.includes('quick summary'), '');
-      // non-stream requests have no cancel token - complete normally
-      const plain = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'y' }] });
-      record('cancel: non-stream path unaffected by cancellation machinery', plain.status === 200 && plain.body.includes('QUICK-REPLY-2'), '');
+      await agent.start(cwd);
+      // Both HTTP paths have cancellation controls. Normal completion must
+      // leave the background summary alive within its remaining deadline.
+      const streamed = await agent.chat([{ role: 'user', content: ISummary.tasks[0] }], 8000);
+      record('cancel: streamed reply is complete with DONE before summary is released', streamed.content === ISummary.replies[0] && streamed.tools.length === 0, streamed.raw);
+      await until(() => fixture.isHeld(0), 'first summary request');
+      const heldStream = JSON.parse((await agent.api('/api/info', null, 1000)).body);
+      record('cancel: normal stream close leaves summary active and core task free', heldStream.load.summaries.active && heldStream.load.summaries.bytes > 0 && heldStream.runtime.activeTasks === 0 && heldStream.runtime.activeTools === 0 && readMd() === '', JSON.stringify(heldStream.load));
+      fixture.release(0);
+      await until(async () => readMd() === ISummary.document(1) && ISummary.settled(JSON.parse((await agent.api('/api/info', null, 1000)).body)), 'first summary durable and idle');
+      record('cancel: released stream summary is written exactly once', readMd() === ISummary.document(1), readMd());
+
+      const plain = await agent.api('/v1/chat/completions', { messages: [{ role: 'user', content: ISummary.tasks[1] }] }, 8000);
+      const reply = JSON.parse(plain.body).choices[0].message;
+      record('cancel: JSON reply is complete before its summary is released', reply.role === 'assistant' && reply.content === ISummary.replies[1] && !reply.tool_calls, plain.body);
+      await until(() => fixture.isHeld(1), 'second summary request');
+      const heldJson = JSON.parse((await agent.api('/api/info', null, 1000)).body);
+      record('cancel: normal JSON close preserves pending summary without premature write', heldJson.load.summaries.active && heldJson.runtime.activeTasks === 0 && heldJson.runtime.activeTools === 0 && readMd() === ISummary.document(1), JSON.stringify(heldJson.load));
+      fixture.release(1);
+      await until(async () => readMd() === ISummary.document(2) && ISummary.settled(JSON.parse((await agent.api('/api/info', null, 1000)).body)), 'both summaries durable and idle');
+      record('cancel: exact four-call main/summary transcript retains both task/reply pairs', ISummary.evidence(fixture.log, readMd()), 'requests=' + fixture.log.length + '\n' + readMd());
+      record('cancel: summary queue releases active job, pending count and retained bytes', ISummary.settled(JSON.parse((await agent.api('/api/info', null, 1000)).body)), 'all counters must be zero');
     } finally {
-      try { srv.kill(); } catch (e) {}
-      stopMock(m);
+      try { await agent.stop(); }
+      finally { agent.S.cleanup(); await fixture.close(); }
     }
   }
 });
