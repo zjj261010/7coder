@@ -1506,7 +1506,7 @@ function readFileBytesBounded(file, maxBytes, label = 'File') {
   } finally { fs.closeSync(fd); }
 }
 function stateFileByteLimit() { return 8 * 1024 * 1024; }
-function readStateBytes(file) { return readFileBytesBounded(file, stateFileByteLimit(), 'State file ' + file); }
+function readStateBytes(file, maxBytes = stateFileByteLimit()) { return readFileBytesBounded(file, Math.min(stateFileByteLimit(), maxBytes), 'State file ' + file); }
 function readOptionalJsonConfig(file, label) {
   let bytes;
   try { bytes = readFileBytesBounded(file, 1024 * 1024, label + ' ' + file); }
@@ -1611,10 +1611,10 @@ function parseSessionState(text) {
   }
   return j;
 }
-function quarantineState(file, bytes, owner = file) {
+function quarantineState(file, bytes, owner = file, maxBytes = stateFileByteLimit()) {
   const evidence = guardStateFile(file + '.7coder-corrupt-' + crypto.createHash('sha256').update(bytes).digest('hex'), owner);
   let existing;
-  try { existing = readStateBytes(evidence); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { existing = readStateBytes(evidence, Math.min(bytes.length, maxBytes)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (existing) {
     if (!existing.equals(bytes)) throw new Error('state corruption evidence collision: ' + evidence);
   } else replaceStateBytes(evidence, bytes, owner);
@@ -1625,21 +1625,21 @@ function sharedInstallState(file) {
   const normalize = p => process.platform === 'win32' ? path.normalize(p).toLowerCase() : p;
   return normalize(fs.realpathSync(appDir)) !== normalize(getLaunchDirReal());
 }
-function readStateRecord(file, parse = parseStateText, readOnly = false) {
+function readStateRecord(file, parse = parseStateText, readOnly = false, maxBytes = stateFileByteLimit()) {
   file = guardStateFile(file);
   let bytes, invalid = false;
-  try { bytes = readStateBytes(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { bytes = readStateBytes(file, maxBytes); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (bytes !== undefined) {
     try { return { bytes, value: parse(decodeUtf8Text(bytes)) }; }
     catch (e) {
       invalid = true;
       if (readOnly) console.warn('[STATE] invalid shared install config retained in place: ' + file);
-      else quarantineState(file, bytes);
+      else quarantineState(file, bytes, file, maxBytes);
     }
   }
   const previous = guardStateFile(file + '.7coder-prev', file);
   let saved;
-  try { saved = readStateBytes(previous); }
+  try { saved = readStateBytes(previous, maxBytes); }
   catch (e) {
     if (e.code !== 'ENOENT') throw e;
     if (!invalid) return null;
@@ -1648,7 +1648,7 @@ function readStateRecord(file, parse = parseStateText, readOnly = false) {
   let value;
   try { value = parse(decodeUtf8Text(saved)); }
   catch (e) {
-    if (!readOnly) quarantineState(previous, saved, file);
+    if (!readOnly) quarantineState(previous, saved, file, maxBytes);
     throw new Error('Previous state is also invalid; repair before retrying: ' + file);
   }
   // Restore without copying the corrupt primary over the valid previous copy.
@@ -3867,13 +3867,20 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       return makeToolResult('ok', `## ${topic}\n${body}`);
     }
     if (action === 'list') {
-      const topics = listMemoryTopics();
-      if (!topics.length) return makeToolResult('ok', 'No memory notes yet. Use action=save with a topic and content.');
-      return makeToolResult('ok', topics.map(t => {
-        const body = readMemoryFile(t) || '';
-        const head = body.split('\n').find(l => l.trim()) || '';
-        return `${t}\t${head.substring(0, 80)}`;
-      }).join('\n'));
+      const index = memoryTopicIndex(), issues = new Set(index.incomplete), rows = [];
+      if (!index.topics.length && !issues.size) return makeToolResult('ok', 'No memory notes yet. Use action=save with a topic and content.');
+      for (const t of index.topics) {
+        try {
+          const guard = memoryPathGuard(t); if (guard) throw new Error(guard);
+          const body = readMemoryFile(t, 64 * 1024) || '';
+          let head = (body.split('\n').find(l => l.trim()) || '').substring(0, 80);
+          const last = head.charCodeAt(head.length - 1);
+          if (last >= 0xD800 && last <= 0xDBFF) head = head.slice(0, -1);
+          rows.push(`${t}\t${head}`);
+        } catch (e) { issues.add('preview unavailable for ' + t); rows.push(t + '\t[preview unavailable]'); }
+      }
+      if (issues.size) rows.push('[memory list incomplete: ' + Array.from(issues).join('; ') + ']');
+      return makeToolResult(issues.size ? 'error' : 'ok', rows.join('\n'));
     }
     if (action === 'delete') {
       const topic = String(args.topic || '').trim();
@@ -5215,7 +5222,10 @@ function textUnitsSlice(s, maxUnits) {
   let n = 0;
   for (let i = 0; i < s.length; i++) {
     n += charUnits(s.charCodeAt(i));
-    if (n > maxUnits) return s.substring(0, i);
+    if (n > maxUnits) {
+      const splitPair = i > 0 && s.charCodeAt(i) >= 0xDC00 && s.charCodeAt(i) <= 0xDFFF && s.charCodeAt(i - 1) >= 0xD800 && s.charCodeAt(i - 1) <= 0xDBFF;
+      return s.substring(0, splitPair ? i - 1 : i);
+    }
   }
   return s;
 }
@@ -5544,49 +5554,87 @@ function memoryPathGuard(topic) {
     return 'Tool error: memory path cannot be resolved safely - refused';
   }
 }
-function listMemoryTopics() {
+function memoryTopicIndex() {
+  const topics = [], incomplete = [];
+  let dir = null, failed = false;
   try {
     const safeDir = internalStatePath('.7coder/memory');
-    if (!fs.existsSync(safeDir)) return [];
-    return fs.readdirSync(safeDir)
-      .filter(f => f.endsWith('.md'))
-      .slice(0, MEMORY_MAX_FILES)
-      .map(f => f.slice(0, -3))
-      .sort();
-  } catch (e) { return []; }
+    if (typeof fs.opendirSync !== 'function') throw new Error('bounded memory index requires bundled Node13.14 fs.opendirSync');
+    dir = fs.opendirSync(safeDir);
+    let complete = false;
+    for (let visited = 0; visited < 400; visited++) {
+      const entry = dir.readSync();
+      if (!entry) { complete = true; break; }
+      if (!entry.isFile() || !entry.name.endsWith('.md')) continue;
+      const topic = entry.name.slice(0, -3);
+      if (!memoryTopicValid(topic)) { incomplete.push('invalid topic filename skipped'); continue; }
+      if (topics.length >= MEMORY_MAX_FILES) { incomplete.push('topic limit ' + MEMORY_MAX_FILES); complete = true; break; }
+      topics.push(topic);
+    }
+    if (!complete) incomplete.push('400 directory-entry scan limit');
+  } catch (e) {
+    if (e.code !== 'ENOENT') { incomplete.push('index unavailable (' + (e.code || e.message) + ')'); failed = true; }
+  } finally {
+    if (dir) { try { dir.closeSync(); } catch (e) { incomplete.push('index close failed (' + (e.code || e.message) + ')'); failed = true; } }
+  }
+  return { topics: topics.sort(), incomplete: Array.from(new Set(incomplete)), failed };
 }
-function readMemoryFile(topic) {
-  const record = readStateRecord(memoryFilePath(topic));
+function listMemoryTopics() {
+  const index = memoryTopicIndex();
+  if (index.failed) throw new Error('Memory index unavailable: ' + index.incomplete.join('; '));
+  if (index.incomplete.length) console.warn('[MEMORY] index incomplete: ' + index.incomplete.join('; '));
+  return index.topics;
+}
+function readMemoryFile(topic, maxBytes = stateFileByteLimit()) {
+  const record = readStateRecord(memoryFilePath(topic), parseStateText, false, maxBytes);
   return record ? record.value : null;
 }
 function saveMemoryFile(topic, content) {
   writeStateFile(memoryFilePath(topic), String(content || ''));
 }
 // keyword-overlap score between the prompt and a note (deterministic recall)
-function memoryScore(promptText, topic, body) {
-  const words = String(promptText).toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/).filter(w => w.length >= 2);
+function memoryKeywords(promptText) {
+  const raw = String(promptText), words = [], seen = new Set();
+  let limited = raw.length > 8192;
+  for (const w of raw.slice(0, 8192).toLowerCase().split(/[^a-z0-9\u4e00-\u9fff]+/)) {
+    if (w.length < 2 || seen.has(w)) continue;
+    if (words.length >= 128) { limited = true; break; }
+    seen.add(w); words.push(w);
+  }
+  return { words, limited };
+}
+function memoryScore(promptText, topic, body, words = memoryKeywords(promptText).words) {
   if (!words.length) return 0;
   const hay = (topic + '\n' + body).toLowerCase();
   let score = 0;
-  const seen = {};
   for (const w of words) {
-    if (seen[w]) continue;
-    seen[w] = true;
     if (hay.indexOf(w) >= 0) score += (w.length >= 4 ? 2 : 1);
   }
   return score;
 }
 function recallMemory(promptText) {
-  const topics = listMemoryTopics();
-  if (!topics.length) return { note: '', topics: [] };
-  const scored = [];
+  const index = memoryTopicIndex(), topics = index.topics, issues = new Set(index.incomplete);
+  const keywords = memoryKeywords(promptText), scored = [], deadlineAt = Date.now() + 5000;
+  const limit = Number.isFinite(MEMORY_RECALL_UNITS) ? Math.max(0, Math.min(16384, MEMORY_RECALL_UNITS)) : 3000;
+  if (topics.length && keywords.limited) issues.add('prompt scoring limited to 8192 characters / 128 unique keywords');
+  if (limit !== MEMORY_RECALL_UNITS) issues.add('recall output budget clamped');
+  let order = 0;
   for (const t of topics) {
-    const body = readMemoryFile(t);
-    if (body === null) continue;
-    const s = memoryScore(promptText, t, body);
-    if (s > 0) scored.push({ topic: t, body: body, score: s });
+    if (!limit || !keywords.words.length) break;
+    if (Date.now() >= deadlineAt) { issues.add('5s recall scan budget'); break; }
+    try {
+      const guard = memoryPathGuard(t); if (guard) throw new Error(guard);
+      const body = readMemoryFile(t, 64 * 1024);
+      if (body === null) continue;
+      if (Date.now() >= deadlineAt) { issues.add('5s recall scan budget'); break; }
+      const s = memoryScore(promptText, t, body, keywords.words);
+      if (s > 0) {
+        scored.push({ topic: t, body, score: s, order: order++ });
+        scored.sort((a, b) => b.score - a.score || a.order - b.order);
+        if (scored.length > 5) scored.pop();
+      }
+    } catch (e) { issues.add('note unavailable for automatic recall: ' + t); }
   }
-  scored.sort((a, b) => b.score - a.score);
   let used = 0;
   const picked = [];
   for (const s of scored) {
@@ -5596,14 +5644,14 @@ function recallMemory(promptText) {
     // overflowing), so one 16k note blew a 100-unit budget. Truncate such a
     // note into what is left of the budget, mark it, and stop - the note on
     // disk stays whole.
-    if (u > MEMORY_RECALL_UNITS) {
-      const room = MEMORY_RECALL_UNITS - used;
+    if (u > limit) {
+      const room = limit - used;
       if (room <= 0) break;
       s.body = textUnitsSlice(s.body, room) + '\n... [note truncated at recall budget]';
       picked.push(s);
       break; // the budget is now fully spent
     }
-    if (used + u > MEMORY_RECALL_UNITS) break;
+    if (used + u > limit) break;
     picked.push(s);
     used += u;
     if (picked.length >= 5) break;
@@ -5614,7 +5662,11 @@ function recallMemory(promptText) {
       picked.map(p => '## ' + p.topic + '\n' + p.body.trim()).join('\n\n');
     console.log('[MEMORY] recalled ' + picked.length + ' note(s): ' + picked.map(p => p.topic).join(', '));
   }
-  return { note: note, topics: topics };
+  if (issues.size) {
+    const warning = '[memory recall incomplete: ' + Array.from(issues).join('; ') + '; use memory_tool read for specific notes]';
+    console.warn('[MEMORY] ' + warning); note += '\n\n' + warning;
+  }
+  return { note, topics, incomplete: issues.size > 0 };
 }
 
 function buildTaskUserContent(rawPrompt) {

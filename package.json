@@ -83,6 +83,7 @@
     "test:glob-deadline": "node test/glob-deadline.js",
     "test:mcp-retention": "node test/mcp-retention.js",
     "test:auxiliary-budget": "node test/auxiliary-budget.js",
+    "test:memory-budget": "node test/memory-budget.js",
     "test:debug-prerequisites": "node test/debug-prerequisites.js",
     "test:tool-result-evidence": "node test/tool-result-evidence.js",
     "test:git-snapshot-retention": "node test/git-snapshot-retention.js",

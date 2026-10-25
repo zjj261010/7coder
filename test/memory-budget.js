@@ -1,0 +1,59 @@
+const assert = require('assert'), fs = require('fs'), path = require('path'), vm = require('vm'), crypto = require('crypto'), http = require('http');
+const { loadContext } = require('./download-commit'), S = require('./_shared').create({ suite: 'memory-budget' });
+const source = fs.readFileSync(S.IDX, 'utf8'), sockets = new Set(); let checks = 0, server, H;
+const deadline = setTimeout(() => { console.error('MEMORY/BUDGET deadline'); if (H) H.S.cleanup(); S.cleanup(); process.exit(1); }, 30000);
+function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
+function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, a); assert.ok(a >= 0 && b > a, from); return source.slice(a, b); }
+function fixture(name, units = 3000) {
+  const cwd = S.freshCwd(name), dir = path.join(cwd, '.7coder', 'memory'); fs.mkdirSync(dir, { recursive: true }); const handles = new Map(), bytes = new Map(), warnings = [];
+  let openDirs = 0, dirReads = 0;
+  const c = loadContext(source, cwd, { openSync(file, flags, mode) { const fd = fs.openSync(file, flags, mode); handles.set(fd, file); return fd; }, closeSync(fd) { fs.closeSync(fd); handles.delete(fd); }, readSync(...args) { const n = fs.readSync(...args), file = handles.get(args[0]); bytes.set(file, (bytes.get(file) || 0) + n); return n; },
+    opendirSync(file) { const d = fs.opendirSync(file); openDirs++; return { readSync() { dirReads++; return d.readSync(); }, closeSync() { try { d.closeSync(); } finally { openDirs--; } } }; } },
+    { Buffer, appDir: path.dirname(S.IDX), process: Object.assign({}, process, { env: Object.assign({}, process.env, { MEMORY_RECALL_CHARS: String(units) }) }), permRules: { protectedExtra: [] }, console: { log() {}, warn: text => warnings.push(text) } });
+  vm.runInContext(cut('function charUnits(', 'function messageSize(') + cut('const MEMORY_DIR =', '// ====================== EDIT SAFETY NET') +
+    'async function tool(name,args){\n' + cut("  if (name === 'memory_tool') {", "  if (name === 'list_mcp_resources_tool') {") + '\n}', c);
+  return { c, cwd, dir, bytes, handles, warnings, openDirs: () => openDirs, dirReads: () => dirReads };
+}
+function sparse(file, size) { const fd = fs.openSync(file, 'w'); try { fs.ftruncateSync(fd, size); } finally { fs.closeSync(fd); } }
+(async () => {
+  try {
+    let f = fixture('ranked'); for (let i = 0; i < 8; i++) fs.writeFileSync(path.join(f.dir, 'n' + i + '.md'), i === 7 ? 'keyword alpha beta gamma' : 'keyword');
+    let keywordCalls = 0; const keywords = f.c.memoryKeywords; f.c.memoryKeywords = text => { keywordCalls++; return keywords(text); };
+    const ranked = f.c.recallMemory('keyword alpha beta gamma');
+    check('automatic recall ranks later relevant notes and keeps at most five bodies', ranked.note.indexOf('## n7') < ranked.note.indexOf('## n0') && (ranked.note.match(/## n\d/g) || []).length === 5 && !ranked.note.includes('## n6') && !ranked.incomplete);
+    check('prompt keywords are computed once for all notes and directory/file handles close', keywordCalls === 1 && f.openDirs() === 0 && f.handles.size === 0);
+    check('coding keywords inherited from Object.prototype are scored normally', f.c.memoryScore('constructor constructor', 'topic', 'constructor') === 2);
+    const many = Array.from({ length: 129 }, (_, i) => 'term' + i).join(' '), limited = f.c.memoryKeywords(many);
+    check('keyword collection stops at 128 unique terms and 8192 prompt characters', limited.words.length === 128 && limited.limited && f.c.memoryKeywords('x'.repeat(9000)).limited);
+    const raw = 'keyword ' + 'user prompt '.repeat(1000) + 'KEEP_FINAL_USER_INSTRUCTION', built = f.c.buildTaskUserContent(raw);
+    check('limited scoring never truncates original user prompt and reports incomplete recall', built.startsWith(raw) && built.includes('KEEP_FINAL_USER_INSTRUCTION') && built.includes('memory recall incomplete'));
+    check('weighted recall slicing never emits half a surrogate pair', f.c.textUnitsSlice('😀', 1) === '' && f.c.textUnitsSlice('A😀B', 2) === 'A' && f.c.textUnitsSlice('中文😀', 5) === '中文');
+    f = fixture('large-and-protected'); const big = path.join(f.dir, 'big.md'), good = path.join(f.dir, 'good.md'), secret = path.join(f.dir, 'protected.md'); sparse(big, 100 * 1024 * 1024); fs.writeFileSync(good, 'keyword GOOD_MEMORY'); fs.writeFileSync(secret, 'keyword PRIVATE_MEMORY_SENTINEL'); f.c.permRules.protectedExtra.push({ argRe: /protected\.md$/i });
+    const partial = f.c.recallMemory('keyword');
+    check('large/protected notes collect zero bytes while usable notes still recall', partial.incomplete && partial.note.includes('GOOD_MEMORY') && !partial.note.includes('PRIVATE_MEMORY_SENTINEL') && !f.bytes.has(big) && !f.bytes.has(secret) && fs.statSync(big).size === 100 * 1024 * 1024);
+    const list = await f.c.tool('memory_tool', { action: 'list' }); check('memory list reports partial error with useful rows rather than full reads or false empty success', list.status === 'error' && list.text.includes('good\tkeyword GOOD_MEMORY') && list.text.includes('preview unavailable') && list.text.includes('memory list incomplete') && !list.text.includes('PRIVATE_MEMORY_SENTINEL'));
+    fs.writeFileSync(big, 'keyword ' + 'x'.repeat(64 * 1024)); const explicit = await f.c.tool('memory_tool', { action: 'read', topic: 'big' });
+    check('explicit note read retains existing larger state limit and exact contents', explicit.status === 'ok' && explicit.text.length > 64 * 1024 && explicit.text.endsWith('xxx'));
+    f = fixture('recover'); const note = path.join(f.dir, 'repair.md'), invalid = Buffer.from([0xD6, 0xD0]); fs.writeFileSync(note, invalid); fs.writeFileSync(note + '.7coder-prev', 'keyword RESTORED_NOTE');
+    const recovered = f.c.recallMemory('keyword'); check('bounded automatic recall preserves normal previous-version recovery and corruption evidence', recovered.note.includes('RESTORED_NOTE') && !recovered.incomplete && fs.readFileSync(note, 'utf8') === 'keyword RESTORED_NOTE' && fs.readFileSync(note + '.7coder-corrupt-' + crypto.createHash('sha256').update(invalid).digest('hex')).equals(invalid));
+    f = fixture('oversize-previous'); const bad = path.join(f.dir, 'bad.md'); fs.writeFileSync(bad, invalid); sparse(bad + '.7coder-prev', 64 * 1024 + 1); fs.writeFileSync(path.join(f.dir, 'good.md'), 'keyword GOOD_REMAINS');
+    const previous = f.c.recallMemory('keyword'); check('oversized previous note cannot bypass recall cap or abort other memories', previous.incomplete && previous.note.includes('GOOD_REMAINS') && !f.bytes.has(bad + '.7coder-prev') && fs.readFileSync(bad).equals(invalid));
+    f = fixture('evidence-limit'); const primary = path.join(f.dir, 'bad.md'), evidence = primary + '.7coder-corrupt-' + crypto.createHash('sha256').update(invalid).digest('hex'); fs.writeFileSync(primary, invalid); sparse(evidence, 100 * 1024 * 1024);
+    check('preexisting giant evidence is rejected by expected source size without a full read', f.c.recallMemory('keyword').incomplete && !f.bytes.has(evidence) && fs.statSync(evidence).size === 100 * 1024 * 1024 && f.handles.size === 0);
+    f = fixture('output-cap', 1000000); fs.writeFileSync(path.join(f.dir, 'big.md'), 'keyword ' + 'a'.repeat(60000)); const capped = f.c.recallMemory('keyword'); check('excess configured output budget is clamped before memory injection', capped.incomplete && capped.note.includes('note truncated at recall budget') && capped.note.length < 18000);
+    f = fixture('index-limit'); let visits = 0, closes = 0; f.c.fs.opendirSync = () => ({ readSync() { visits++; return { name: 'ignored.bin', isFile: () => true }; }, closeSync() { closes++; } });
+    const index = f.c.memoryTopicIndex(); check('directory scan stops at 400 entries and closes without materializing readdir array', visits === 400 && closes === 1 && index.topics.length === 0 && index.incomplete.some(s => s.includes('400 directory-entry')));
+    f.c.fs.opendirSync = () => ({ readSync() { throw Object.assign(Error('fixture read EIO'), { code: 'EIO' }); }, closeSync() { closes++; } }); const badIndex = f.c.recallMemory('keyword');
+    check('directory read failure closes handle and becomes explicit incomplete recall', closes === 2 && badIndex.incomplete && badIndex.note.includes('index unavailable (EIO)'));
+    f.c.fs.opendirSync = () => ({ readSync() { return null; }, closeSync() { throw Object.assign(Error('fixture close EIO'), { code: 'EIO' }); } }); check('directory close failure cannot report complete index', f.c.memoryTopicIndex().failed);
+    f = fixture('topic-limit'); for (let i = 0; i < 21; i++) fs.writeFileSync(path.join(f.dir, 'topic' + i + '.md'), 'keyword'); const topicIndex = f.c.memoryTopicIndex(); check('twenty-topic limit is explicit and closes the real directory', topicIndex.topics.length === 20 && topicIndex.incomplete.some(s => s.includes('topic limit 20')) && f.openDirs() === 0);
+    f = fixture('late-deadline'); fs.writeFileSync(path.join(f.dir, 'a.md'), 'keyword'); fs.writeFileSync(path.join(f.dir, 'b.md'), 'keyword'); let now = 10000, noteReads = 0; class Clock extends Date { static now() { return now; } } f.c.Date = Clock; const read = f.c.readMemoryFile; f.c.readMemoryFile = (...args) => { noteReads++; const text = read(...args); now = 16000; return text; };
+    check('five-second scan budget stops after slow IO before further notes/scoring', f.c.recallMemory('keyword').note.includes('5s recall scan budget') && noteReads === 1);
+    let captured = ''; server = http.createServer((req, res) => { let raw = ''; req.setEncoding('utf8'); req.on('data', d => raw += d); req.on('end', () => { const body = JSON.parse(raw); captured = body.messages.filter(m => m.role === 'user').slice(-1)[0].content; res.setHeader('Content-Type', 'text/event-stream'); res.end('data: ' + JSON.stringify({ choices: [{ delta: { content: 'MEMORY_BUDGET_OK' } }] }) + '\n\ndata: [DONE]\n\n'); }); }); server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); }); await new Promise(r => server.listen(0, '127.0.0.1', r));
+    f = fixture('actual-agent'); sparse(path.join(f.dir, 'big.md'), 100 * 1024 * 1024); fs.writeFileSync(path.join(f.dir, 'good.md'), 'keyword PUBLIC_NOTE'); fs.writeFileSync(path.join(f.dir, 'private.md'), 'keyword PRIVATE_MEMORY_SENTINEL'); fs.writeFileSync(path.join(f.cwd, '.7coder', 'permissions.json'), JSON.stringify({ protected_extra: ['.7coder/memory/private.md'] }));
+    H = require('./_endpoint').create({ suite: 'memory-budget-agent', endpoint: 'http://127.0.0.1:' + server.address().port, key: 'fixture', model: 'fixture', permissionMode: 'bypass' }); await H.start(f.cwd); const reply = await H.chat([{ role: 'user', content: 'keyword original user request' }], 8000);
+    check('actual Agent keeps original prompt and safe recall without protected body or huge note', reply.content === 'MEMORY_BUDGET_OK' && captured.startsWith('keyword original user request') && captured.includes('PUBLIC_NOTE') && captured.includes('memory recall incomplete') && !captured.includes('PRIVATE_MEMORY_SENTINEL') && captured.length < 6000);
+    check('actual recall leaves all source files intact and health available', fs.statSync(path.join(f.dir, 'big.md')).size === 100 * 1024 * 1024 && fs.readFileSync(path.join(f.dir, 'private.md'), 'utf8').includes('PRIVATE_MEMORY_SENTINEL') && JSON.parse((await H.api('/api/info')).body).runtime.activeTasks === 0);
+    console.log('MEMORY/BUDGET ' + checks + '/' + checks + ' passed; SKIP 0');
+  } finally { clearTimeout(deadline); if (H) { await H.stop(); H.S.cleanup(); } S.cleanup(); for (const socket of sockets) socket.destroy(); if (server) await new Promise(r => server.close(r)); }
+})().catch(error => { console.error(error.stack); process.exitCode = 1; });

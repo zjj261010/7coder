@@ -1546,3 +1546,18 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新auxiliary-budget Node13首次单次 **17/17**：100MiB私有稀疏timestamp/lock的禁用零读、预取消零读、两布局缺省/BOM、坏timestamp不回退、巨锁零data-read/4KiB旧owner恢复/巨大foreign替换保留、不可用source failed零模型；旧BTW超限/合并溢出零改动和正常精确合并/previous、两个archive增长阶段均21档案不删/不整读；实际CLI Dream=false时巨metadata原样，普通模型任务仅一次完成、时间戳保存失败有警告。没有真的制造OOM或操作用户文件。
 - 原auxiliary-lifecycle本批首次单次 **10/10**、session-ownership **11/11**：原重入/失败/截止/finally/foreign owner/恢复/legacy宽限、CLI归属与Web隔离/变化删除失败保持。辅助夹具补真实Buffer/appDir依赖，过去catch吞源读取错误时其生命周期断言不能证明源笔记实际进入模型；本批不扩大历史证据。会话变化注入改到实际第二次open，仍验证selection→delete之间变化，不删除旧断言。三个专项均无失败复跑。
 - npm/test-all登记、Node13语法/diff通过；未重复其它已通过专项或完整A–J/UI/test-all，未做Win7/真实磁盘满/网络盘/断电/24/72h或打包。无native IO硬超时，auto memory recall等聚合内存、BTW迁移事务、REPL unowned lock清理与其它整文件日志/指令读取仍开放。按授权提交本批、未推送，收尾后读取额度再决定下一项。
+
+### 2026-10-25 —— T22-15记忆召回/列表的采集与索引预算
+
+- 辅助读取批已提交`5ad1fc8`。完成后工具返回五小时used6%/remaining94%，reset时间与上次报告已变化，按当前余量评估，不用前后百分比推算净消耗；本项范围可覆盖，实现后仍重新评估。
+- 原recallMemory对实际最多20个topic整读状态（当前默认单文件8MiB），保留所有命中body后才按输出units裁剪，且每note重分词完整prompt。现自动召回与memory list preview每note/previous≤64KiB，scored只留最高5份（同分保序）；正常主文件共最多20×64KiB，损坏恢复可额外读previous/evidence，各同限。通用quarantine证据比较还按已知原bytes长度收紧，巨假证据不先整读。显式memory_tool read仍默认8MiB，不静默截整份指令/正文。
+- prompt仅评分前8192字符/128唯一keyword且每次召回计算一次；raw user prompt原样保留，关键词/索引/单note不可用/输出配置clamp都在注入提示中标memory recall incomplete。注入body weighted units保留配置、硬顶16384，note读取/评分IO边界检查5秒；目录只由400 entry/20有效regular topic预算限制，不声称native目录IO有5秒硬时限。
+- 索引用Node13.14实际存在的opendirSync/readSync/closeSync分批枚举，finally关闭，失读/close/上限显式，而非readdirSync全量数组或空成功；invalid topic filename跳过并标记。memory list preview保留可用rows、不完整为error；不会因一个巨/坏note中断整个用户请求。目录/笔记总磁盘、跨请求heap与kernel IO仍留T22-15/26。
+
+| 附带确认问题 | 处理与证据 |
+|---|---|
+| INC-25-05 **Medium／已确认规则遗漏**：原memory_tool read/list期望memoryPathGuard，而自动recallMemory直接readMemoryFile，可能把protected-extra note正文注入模型，造成显式规则与自动上下文不一致；不以公网泄漏作为威胁假设。 | 自动召回和列表逐note同样先guard。新实际Agent夹具中受保护正文未进上游、其它正常note仍可召回，源文件保留。 |
+| Low／已确认：memoryScore用普通对象seen，constructor等继承名被误当已见关键词；weighted slice及80字符列表可切半emoji pair。 | keyword Set正确去重，单次算分；units slice/列表边界不保留半代理对，测试不改变原CJK units权重。 |
+
+- 新memory-budget Node13首次单次 **20/20**：相关晚note仍排首、最多5份/keywords一次/继承关键词/128与8192界限/raw prompt不截断/emoji，巨与protected note零字节但好note保留、list partial error、explicit大于64KiB read，正常previous恢复/evidence及超大previous/假evidence零data-read；配置输出clamp；400目录entry、读/close故障及20topic上限真实/受控句柄关闭、慢note后5秒止步；真实私有HTTP Agent上游保留原prompt/安全note/不完整标记、不含protected正文，巨源原样/health正常。
+- 旧B memory首次单次 **7/7**：原关键词相关性/无关note排除、topic index与default模式CRUD/preview保持。两个专项无失败复跑，npm/test-all登记，Node13语法/diff通过。未跑其余已通过专项/完整A–J/UI/test-all、Win7/实际网络盘、真实模型、24/72h或打包；默认state 8MiB接口只加内部optional读取上限，原状态可靠写协议未重写。按授权提交本批、未推送，随后读五小时额度决定下一项。
