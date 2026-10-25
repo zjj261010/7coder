@@ -93,6 +93,7 @@
     "test:directory-budget": "node test/directory-budget.js",
     "test:test-detection-budget": "node test/test-detection-budget.js",
     "test:audit-budget": "node test/audit-budget.js",
+    "test:audit-commit-budget": "node test/audit-commit-budget.js",
     "test:debug-prerequisites": "node test/debug-prerequisites.js",
     "test:tool-result-evidence": "node test/tool-result-evidence.js",
     "test:git-snapshot-retention": "node test/git-snapshot-retention.js",

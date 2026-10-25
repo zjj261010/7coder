@@ -4718,6 +4718,34 @@ function formatDiagResult(toolLabel, problems, status) {
 // AST-01: git must never go through a shell. Args are ALWAYS an array and
 // user input (paths, commit messages) is passed as single argv entries, so
 // quotes/separators/metacharacters can only ever be literal values.
+function auditCommitMessage(cancelled) {
+  checkExecution(cancelled);
+  let bytes;
+  try { bytes = readFileBytesBounded(internalStatePath('.7coder', 'audit.jsonl'), 5 * 1024 * 1024, 'Audit commit hints'); }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  checkExecution(cancelled);
+  const text = bytes ? decodeUtf8Text(bytes) : '', verbs = Object.create(null), deadlineAt = Date.now() + 200;
+  let offset = 0, lines = 0, incomplete = false;
+  while (offset < text.length) {
+    checkExecution(cancelled);
+    if (lines++ >= 50000 || Date.now() >= deadlineAt) { incomplete = true; break; }
+    const end = text.indexOf('\n', offset);
+    if (end < 0) { incomplete = true; break; } // never infer activity from a torn record
+    const line = text.slice(offset, end); offset = end + 1;
+    if (!line.trim()) continue;
+    if (line.length > 16384 || Buffer.byteLength(line, 'utf8') > 16384) { incomplete = true; continue; }
+    try {
+      const e = JSON.parse(line);
+      if (e && e.type === 'tool') {
+        if (typeof e.tool === 'string' && Object.prototype.hasOwnProperty.call(TOOL_METADATA, e.tool)) verbs[e.tool] = (verbs[e.tool] || 0) + 1;
+        else incomplete = true;
+      }
+    } catch (e) { incomplete = true; }
+  }
+  const top = Object.keys(verbs).sort((a, b) => verbs[b] - verbs[a]).slice(0, 3);
+  return 'chore: session changes (' + (top.length ? 'tools: ' + top.join(', ') : 'no tool activity') + (incomplete ? '; partial audit' : '') + ')';
+}
+
 function git(argsArr, opts) {
   return child_process.execFileSync('git', argsArr, Object.assign({ encoding: "utf8", cwd: launchDir, timeout: 30000 }, opts || {}));
 }
@@ -4775,16 +4803,8 @@ function inGitRepo() {
     if (!message) {
       // Generate from the session audit log (most common tool verbs of this session)
       try {
-        const verbs = {};
-        const safeAuditPath = internalStatePath('.7coder', 'audit.jsonl');
-        if (fs.existsSync(safeAuditPath)) {
-          for (const line of fs.readFileSync(safeAuditPath, "utf8").split("\n")) {
-            try { const e = JSON.parse(line); if (e.type === "tool") verbs[e.tool] = (verbs[e.tool] || 0) + 1; } catch (er) {}
-          }
-        }
-        const top = Object.keys(verbs).sort((a, b) => verbs[b] - verbs[a]).slice(0, 3);
-        message = "chore: session changes (" + (top.length ? "tools: " + top.join(", ") : "no tool activity") + ")";
-      } catch (e) { message = "chore: session changes"; }
+        message = auditCommitMessage(cancelled);
+      } catch (e) { checkExecution(cancelled); console.warn('[GIT] Automatic message hints unavailable: ' + runtimeText(e.message)); message = "chore: session changes"; }
     }
     try {
       // Pre-commit snapshot for recovery: stash create keeps it retrievable without touching the tree

@@ -1632,3 +1632,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - audit错误不阻断业务，但累计dropped、written、compaction attempts、最后观测字节数/成功/当前错误进入/api/info.audit；错误字段有界并脱敏，stderr警告最多每分钟一次（回拨重新发一次）。修复后下次正常写入清当前lastError，累计loss保留。snapshot拷贝error，外部不能修改内部诊断。日志不是可靠业务事务，不fsync每行，不承诺断电无损或外部writer之间原子size准入。
 - 新audit-budget Node13首次单次 **16/16**：普通身份/status/脱敏、精确16KiB与超限compact、预边界轮转保留5MiB原件、50次轮转EACCES零追加/旧档不变/一分钟限警、snapshot隔离、非regular/100MiB既有log/hardlink拒绝、半行与ENOSPC短写/后续拒绝/close、禁用零文件；真实Agent旧archive目录冲突时核心完成且info暴露loss，修复后同Agent旋转恢复并记精确call ID/status、活动归零。首跑后仅补compact mode/usage字段与observed size赋值，静态核对，不为这些赋值重复新专项。
 - 旧B仅audit-log本批首次单次 **5/5**，含usage/tool event contract、ok/error/blocked、args脱敏；无失败复跑。Node13语法/diff、README/npm/test-all同步。未跑完整A–J/UI/test-all、Win7真实占用/ACL/磁盘写满/24–72h/打包；ENOSPC/rename故障为所属私有夹具注入，不冒充实机故障。background/截图/BTW/TODO/历史/证据/temp等其它磁盘保留及audit自动提交提示的整读仍开放。按授权提交、未推送，之后检查额度再定下一项。
+
+### 2026-10-25 —— T22-15自动Git标题的审计读取边界
+
+- 审计writer批已提交`a4b00e3`；五小时used50%/remaining50%，判断本项有界提示读取/私有Git验证/提交可完整执行，继续。
+- auditCommitMessage以5MiB bounded lossless UTF8读取，不对外部放大的audit整读；解析用indexOf逐行、至多50000条/200ms间隔检查，不split全日志。每条≤16KiB且完整LF才parse；只统计TOOL_METADATA own names，未知/继承名不扩展counts映射。坏/大/半条/未扫描部分显式partial audit，频率top3保留；不可读/超限/坏编码降级generic标题并有界warn，源不改。
+- 取消先检查读取、逐条检查及catch复核，避免取消错误被generic fallback吞掉后实际commit。显式message跳过提示读取。未改Git stage/exclude、argv提交、snapshot协议；自动提示仅是当前audit已知片段的统计，不是完整业务工作量证明。
+- 新audit-commit-budget Node13首次单次 **13/13**：缺省/正常top3/constructor及__proto__拒绝、坏/大/半行partial、100MiB源零data-read/close、预取消、受控200ms/50000行上限、坏编码；隔离Git真实提交正常自动标题、不跟踪.7coder，巨log fallback仍commit且原件不变、取消不产生commit、显式标题保持。snapshot helper在本专项刻意stub，输出注明未验收其retention，不把私有Git提交冒充整个Agent端到端。
+- Node13语法/diff、README/npm/test-all同步，无失败复跑；未重复原Git/snapshot、审计16/B5或完整A–J/UI/test-all，未做Win7/真实磁盘/24–72h/打包。Native文件IO仍无硬期限，审计轮转/全局heap及其它读取保留既有范围。按授权提交、未推送，完成后重新看额度。
