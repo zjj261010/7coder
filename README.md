@@ -506,4 +506,47 @@ explicit maintenance; this bounds collection, not total disk use. Directory
 identity and workspace boundaries are checked again before deletion. Native
 IO still cannot be interrupted within one synchronous OS call, and ordinary
 path checks are not an atomic condition against arbitrary external writers.
-This change does not paginate or bound the separate Web history list.
+CLI retention and the Web listing below have separate collection budgets.
+
+The Web history list uses a resumable, read-only in-memory metadata index.
+`GET /api/sessions` returns either `status: "indexing"` (with an empty
+`sessions` array and a continuation `cursor`) or `status: "ready"` (at most
+50 rows). Continue indexing with `GET /api/sessions?cursor=<cursor>` until a
+ready page arrives; an empty indexing response does **not** mean the history
+is empty. Ready pages expose `previousCursor` and `nextCursor`. Each page
+finishes directory discovery before selecting its globally ordered time
+window, so old records remain reachable without treating filesystem order
+as newest-first. Unreadable previews are marked and counted in `uncertain`;
+their unknown timestamps cannot establish the newest session.
+
+Search uses `?q=<text>` (at most 160 UTF-8 bytes) and matches the first user
+message's 80-character preview across the directory, rather than just the
+currently displayed page. A request visits at most 512 entries / 256 KiB of
+names, reads at most 8 MiB of archive bytes, and checks a two-second deadline;
+each preview file remains limited to 2 MiB. One scan retains at most fifty
+candidate rows, the metadata LRU holds 512 records, and eight completed pages
+are cached. There are at most sixteen pending cursors and four open or
+unconfirmed-close directory slots. Idle cursors expire after five minutes
+(checked on requests and by an unreferenced timer at most every thirty
+seconds). Closing the server releases the pager; native close errors remain
+visible in `/api/info.sessionHistory` and consume admission capacity, rather
+than silently allowing unlimited new handles. All history queries retain the
+normal HTTP authentication gate.
+
+Saving or deleting through the Web API invalidates old cursors; HTTP 410
+asks the client to refresh instead of mixing generations. The UI provides
+previous/next/refresh controls, replaces rather than appends page rows, and
+allows at most sixteen automatic indexing requests and fifteen seconds per
+action before offering manual continuation or retry. Late responses cannot
+replace a newer page. Automatic restore loads the remembered filename
+directly even when it is outside the first page; without one, incomplete or
+uncertain indexing never authorizes a guessed newest restore.
+
+The index does not create disk metadata or repair/quarantine history files.
+Each newly requested time window traverses the directory again; beyond the
+metadata cache, this can require repeated body IO. This bounds working
+collection and response size, not total directory size, total lifetime IO,
+hardware latency or the Agent's complete memory usage. Native synchronous
+calls cannot be interrupted, and arbitrary external edits across pages are
+not an atomic snapshot; refresh after such changes. Real Win7/browser and
+long-running filesystem validation remain required.

@@ -7217,6 +7217,150 @@ function loadSession() {
   } catch (e) { console.warn('[WARN] session load failed: ' + e.message); return false; }
 }
 
+// A bounded, resumable metadata index. Every page scans the directory to EOF
+// before claiming global time order, keeping only its nearest fifty rows.
+// No persisted index migration, file repair or full-directory arrays.
+function createSessionHistoryPager(options = {}) {
+  const cap = (value, max) => Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : max;
+  const pageSize = cap(options.pageSize, 50), maxEntries = cap(options.maxEntries, 512);
+  const maxBytes = cap(options.maxReadBytes, 8 * 1024 * 1024), duration = cap(options.timeoutMs, 2000);
+  const ttl = cap(options.ttlMs, 300000), maxJobs = 16, maxOpen = 4;
+  const jobs = new Map(), pages = new Map(), metadata = new Map();
+  let disposed = false, cacheRoot = '', unconfirmedCloses = 0;
+  const error = (status, message) => Object.assign(new Error(message), { httpStatus: status });
+  const compare = (a, b) => b.time - a.time || (a.file < b.file ? 1 : a.file > b.file ? -1 : 0);
+  const key = row => ({ file: row.file, time: row.time });
+  function close(job) {
+    if (job.handle) {
+      try { job.handle.closeSync(); }
+      catch (e) {
+        // Node13 marks Dir closed before reporting a native close error;
+        // retrying that object cannot confirm whether the OS handle closed.
+        if (e.code !== 'ERR_DIR_CLOSED') unconfirmedCloses++;
+        console.warn('[HISTORY] directory close failed: ' + String(e.code || 'unknown') + '; unconfirmed=' + unconfirmedCloses);
+      }
+      job.handle = null;
+    }
+  }
+  function drop(token) { const job = jobs.get(token); if (job) close(job); jobs.delete(token); }
+  function sweep() {
+    const now = Date.now();
+    for (const [token, job] of jobs) if (now - job.usedAt >= ttl) drop(token);
+    for (const [token, page] of pages) if (now - page.usedAt >= ttl) pages.delete(token);
+  }
+  const timer = setInterval(sweep, Math.min(ttl, 30000));
+  if (timer.unref) timer.unref();
+  function mint(query, threshold, direction) {
+    while (jobs.size >= maxJobs) {
+      const victim = Array.from(jobs).find(pair => !pair[1].handle) || jobs.entries().next().value;
+      drop(victim[0]);
+    }
+    let token;
+    do { token = crypto.randomBytes(16).toString('hex'); } while (jobs.has(token) || pages.has(token));
+    jobs.set(token, { query, threshold, direction, usedAt: Date.now(), handle: null, opened: false,
+      pending: null, rows: [], newest: null, oldest: null, scanned: 0, matched: 0, uncertain: 0 });
+    return token;
+  }
+  function open(job) {
+    if (job.opened) return;
+    if (Array.from(jobs.values()).filter(j => j.handle).length + unconfirmedCloses >= maxOpen) throw error(429,
+      unconfirmedCloses ? 'History directory close is unconfirmed; inspect the filesystem and restart the Agent.' : 'Too many history scans; refresh after another scan finishes.');
+    job.directory = internalStatePath('.7coder/sessions');
+    try {
+      const stat = fs.statSync(job.directory), real = fs.realpathSync(job.directory);
+      job.root = { real, dev: stat.dev, ino: stat.ino };
+      verifyCliSessionHistoryRoot(job.directory, job.root);
+      const identity = real + ':' + stat.dev + ':' + stat.ino;
+      if (cacheRoot !== identity) { metadata.clear(); cacheRoot = identity; }
+      job.handle = fs.opendirSync(job.directory);
+    } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    job.opened = true;
+  }
+  function remember(file, signature, row) {
+    metadata.delete(file); metadata.set(file, { signature, row });
+    if (metadata.size > 512) metadata.delete(metadata.keys().next().value);
+  }
+  function rowFor(job, name, budget) {
+    const file = internalStatePath('.7coder/sessions', name), stat = fs.lstatSync(file);
+    const signature = [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs, stat.nlink].join(':');
+    if (!stat.isFile() || stat.nlink !== 1) return { file: name, time: 0, savedAt: '?', turns: 0, preview: '(unreadable)', unreadable: true };
+    const cached = metadata.get(name);
+    if (cached && cached.signature === signature) { metadata.delete(name); metadata.set(name, cached); return cached.row; }
+    if (stat.size <= SESSION_MAX_BYTES && stat.size <= maxBytes && stat.size > budget.maxReadBytes - budget.readBytes) return undefined;
+    let row;
+    try {
+      if (stat.size > maxBytes) throw fileByteLimitError('History preview', maxBytes);
+      const record = parseSessionState(decodeUtf8Text(readCliSessionHistoryArchive(file, budget).bytes));
+      const time = typeof record.savedAt === 'string' ? Date.parse(record.savedAt) : NaN;
+      const first = record.messages.find(m => m.role === 'user');
+      row = { file: name, time: Number.isFinite(time) ? time : 0, savedAt: Number.isFinite(time) ? new Date(time).toISOString() : '?',
+        turns: record.messages.length, preview: first && typeof first.content === 'string' ? first.content.slice(0, 80) : '' };
+    } catch (e) {
+      row = { file: name, time: 0, savedAt: '?', turns: 0, preview: '(unreadable)', unreadable: true };
+      if (e.code === 'ECLIHISTORYBUDGET') return row; // no cached transient timeout
+    }
+    remember(name, signature, row); return row;
+  }
+  function page(request = {}) {
+    if (disposed) throw error(503, 'History index is closed.');
+    sweep();
+    if (request.restart && /^[a-f0-9]{32}$/.test(request.restart)) drop(request.restart);
+    let token = request.cursor;
+    if (token && !/^[a-f0-9]{32}$/.test(token)) throw error(400, 'Invalid history cursor.');
+    const query = request.query || '';
+    if (typeof query !== 'string' || Buffer.byteLength(query, 'utf8') > 160) throw error(400, 'History search is limited to 160 UTF-8 bytes.');
+    if (!token) token = mint(query.toLowerCase(), null, 'older');
+    const cached = pages.get(token);
+    if (cached) { cached.usedAt = Date.now(); return cached.value; }
+    const job = jobs.get(token);
+    if (!job) throw error(410, 'History cursor expired or history changed; refresh the list.');
+    job.usedAt = Date.now();
+    const budget = { readBytes: 0, maxReadBytes: maxBytes, deadlineAt: Date.now() + duration };
+    let visited = 0, nameBytes = 0;
+    try {
+      open(job);
+      if (job.root) verifyCliSessionHistoryRoot(job.directory, job.root);
+      while (job.handle && visited < maxEntries && Date.now() < budget.deadlineAt) {
+        const entry = job.pending || job.handle.readSync(); job.pending = null;
+        if (!entry) { close(job); break; }
+        const size = Buffer.byteLength(entry.name, 'utf8');
+        if (size > 256 * 1024 - nameBytes) { job.pending = entry; break; }
+        nameBytes += size; visited++; job.scanned++;
+        if (!/^[A-Za-z0-9._-]+[.]json$/.test(entry.name) || entry.name.length > 255) continue;
+        verifyCliSessionHistoryRoot(job.directory, job.root);
+        let row;
+        try { row = rowFor(job, entry.name, budget); }
+        catch (e) { if (e.code === 'ENOENT') continue; throw e; }
+        if (row === undefined) { job.pending = entry; break; }
+        if (row && row.unreadable) job.uncertain++;
+        if (!row || !row.preview.toLowerCase().includes(job.query)) continue;
+        job.matched++;
+        if (!job.newest || compare(row, job.newest) < 0) job.newest = key(row);
+        if (!job.oldest || compare(row, job.oldest) > 0) job.oldest = key(row);
+        if (job.threshold && (job.direction === 'older' ? compare(row, job.threshold) <= 0 : compare(row, job.threshold) >= 0)) continue;
+        job.rows.push(row); job.rows.sort(compare);
+        if (job.rows.length > pageSize) { if (job.direction === 'older') job.rows.pop(); else job.rows.shift(); }
+      }
+      if (job.root) verifyCliSessionHistoryRoot(job.directory, job.root);
+      if (job.handle) return { status: 'indexing', sessions: [], cursor: token, scanned: job.scanned,
+        requestVisited: visited, requestReadBytes: budget.readBytes };
+      const rows = job.rows;
+      const previous = rows.length && compare(job.newest, rows[0]) < 0 ? mint(job.query, key(rows[0]), 'newer') : null;
+      const next = rows.length && compare(job.oldest, rows[rows.length - 1]) > 0 ? mint(job.query, key(rows[rows.length - 1]), 'older') : null;
+      const value = { status: 'ready', sessions: rows.map(row => ({ file: row.file, savedAt: row.savedAt, turns: row.turns, preview: row.preview, unreadable: !!row.unreadable })),
+        cursor: token, previousCursor: previous, nextCursor: next, matched: job.matched, scanned: job.scanned, uncertain: job.uncertain,
+        requestVisited: visited, requestReadBytes: budget.readBytes, order: 'savedAt-desc' };
+      drop(token); pages.set(token, { value, usedAt: Date.now() });
+      if (pages.size > 8) pages.delete(pages.keys().next().value);
+      return value;
+    } catch (e) { drop(token); throw e; }
+  }
+  function invalidate(file) { for (const token of jobs.keys()) drop(token); pages.clear(); if (file) metadata.delete(file); }
+  return { page, invalidate, stats: () => ({ openDirectories: Array.from(jobs.values()).filter(j => j.handle).length,
+    unconfirmedCloses, cursors: jobs.size, cachedPages: pages.size, metadataRows: metadata.size }),
+    dispose() { if (disposed) return; disposed = true; clearInterval(timer); invalidate(); metadata.clear(); } };
+}
+
 async function summarizeAction(rawPrompt, assistantResponse, modelContext, cancelled) {
   // AST-R1: replies shorter than 200 chars carry nothing worth a light-model
   // round-trip - skip the call entirely (callers treat null as "no summary").
@@ -7558,6 +7702,7 @@ function readJsonBody(req, res, limitBytes, then, options = {}) {
 }
 
 function startHttpServer() {
+  const sessionHistoryPager = createSessionHistoryPager();
   const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(HTTP_BIND);
   if (!isLoopback && !HTTP_API_KEY) {
     console.warn('[WARN] HTTP_BIND is not loopback and HTTP_API_KEY is not set -');
@@ -7630,6 +7775,7 @@ function startHttpServer() {
       keyRequired: !!HTTP_API_KEY, models: modelList(),
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
       runtime: runtimeSnapshot(),
+      sessionHistory: sessionHistoryPager.stats(),
       audit: auditSnapshot(),
       ui: { available: !!webuiHtml, fileLimit: 2 * 1024 * 1024, error: webuiError },
       mcp: mcpDiagnosticsSnapshot(),
@@ -7659,21 +7805,13 @@ function startHttpServer() {
   }
   function hSessionsList(req, res) {
     try {
-      const sdir = internalStatePath('.7coder/sessions');
-      const list = fs.existsSync(sdir)
-        ? fs.readdirSync(sdir).filter(f => f.endsWith('.json')).sort().reverse().map(f => {
-              try {
-                const j = readStateRecord(internalStatePath('.7coder/sessions', f), parseSessionState).value;
-                const firstUser = (j.messages || []).find(m => m.role === 'user');
-                return { file: f, savedAt: j.savedAt || '?', turns: (j.messages || []).length, preview: firstUser ? String(firstUser.content).substring(0, 80) : '' };
-              } catch (e) { return { file: f, savedAt: '?', turns: 0, preview: '(unreadable)' };
-              }
-            }).sort((a, b) => (Date.parse(b.savedAt) || 0) - (Date.parse(a.savedAt) || 0) || b.file.localeCompare(a.file))
-          : [];
+      if (req.url.length > 1024) throw Object.assign(new Error('History query is too long.'), { httpStatus: 400 });
+      const query = new URL(req.url, 'http://127.0.0.1').searchParams;
+      const page = sessionHistoryPager.page({ cursor: query.get('cursor'), query: query.get('q') || '', restart: query.get('restart') });
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ sessions: list }));
+      res.end(JSON.stringify(page));
     } catch (e) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.writeHead(e.httpStatus || 500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: e.message } }));
     }
   }
@@ -7705,6 +7843,7 @@ function startHttpServer() {
         const f = internalStatePath('.7coder/sessions', wanted);
         if (!fs.existsSync(f) && !fs.existsSync(f + '.7coder-prev')) throw new Error("session not found: " + wanted);
         deleteStateFile(f);
+        sessionHistoryPager.invalidate(wanted);
         audit({ ts: new Date().toISOString(), type: 'session_delete', file: wanted });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, deleted: wanted }));
@@ -7763,6 +7902,7 @@ function startHttpServer() {
           res.writeHead(413, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: { message: 'Session exceeds 2 MiB UTF-8; previous saved state was not overwritten.' } })); return;
         }
         writeStateFile(internalStatePath('.7coder/sessions', name), stored, parseSessionState);
+        sessionHistoryPager.invalidate(name);
         audit({ ts: new Date().toISOString(), type: 'session_save', file: name, turns: clean.length });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, file: name, turns: clean.length }));
@@ -8107,7 +8247,7 @@ function startHttpServer() {
     // former if-chain arms; auth is enforced here in ONE place for every
     // auth:true route, so a new route cannot silently miss the 401 gate
     // (OP2-4 caught three that had).
-    const route = ROUTES.find(r => r.method === req.method && r.url === req.url);
+    const route = ROUTES.find(r => r.method === req.method && (r.url === req.url || (r.url === '/api/sessions' && req.url.startsWith('/api/sessions?'))));
     if (!route) {
       res.writeHead(404, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: { message: 'Not found' } }));
@@ -8121,11 +8261,13 @@ function startHttpServer() {
     route.handler(req, res);
   });
 
+  server.once('close', () => sessionHistoryPager.dispose());
   // P2-6: fail loudly and exit nonzero when the port is taken (or the server
   // otherwise errors) instead of dying with Node's raw stack trace.
   return new Promise((resolve, reject) => {
   let listening = false;
   server.on('error', e => {
+    sessionHistoryPager.dispose();
     recordRuntimeEvent('http-server', 'error', e);
     if (e && e.code === 'EADDRINUSE') {
       console.error(`[ERROR] HTTP port ${HTTP_PORT} is already in use - change HTTP_PORT in .env or stop the process holding that port, then retry.`);

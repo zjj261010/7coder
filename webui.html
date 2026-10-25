@@ -60,6 +60,9 @@ body.dark .brand-mark { color: #231b16; }
 #sessionSearch { min-width: 0; width: 100%; border: 0; outline: 0; color: var(--fg); background: transparent; font-size: 11px; }
 .search-wrap:focus-within { border-color: var(--acc); }
 #histList, #todoList { display: flex; flex-direction: column; gap: 3px; }
+.history-nav { display: flex; gap: 6px; padding: 6px; }
+.history-nav button { flex: 1; padding: 6px 2px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--fg); font-size: 11px; }
+#historyStatus { padding: 2px 8px; font-size: 11px; color: var(--dim); line-height: 1.6; }
 .side-item { display: flex; align-items: center; gap: 7px; min-width: 0; padding: 2px 5px; border-radius: 7px; color: var(--dim); font-size: 12px; }
 .side-item:hover { background: var(--card); color: var(--fg); }
 .side-item.active { background: var(--acc-dim); color: var(--acc); }
@@ -262,6 +265,8 @@ body.dark .primary-btn { color: #231b16; }
     <div class="side-label"><span>最近会话</span><span class="count" id="sessionCount">0</span></div>
     <label class="search-wrap"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg><span class="sr-only">搜索历史会话</span><input id="sessionSearch" placeholder="搜索对话…" autocomplete="off" type="search"></label>
     <div id="histList"><p class="list-empty">正在加载会话…</p></div>
+    <div id="historyStatus" role="status" aria-live="polite"></div>
+    <div class="history-nav"><button id="historyPrevious" disabled>上一页</button><button id="historyNext" disabled>下一页</button><button id="historyRefresh">刷新历史</button></div>
     <div class="side-label"><span>任务进度</span><span class="count" id="todoCount">0</span></div>
     <div id="todoList"><p class="list-empty">正在加载任务…</p></div>
   </div>
@@ -394,6 +399,8 @@ body.dark .primary-btn { color: #231b16; }
   var modeSeenSession = null, modeObservationSeq = 0, modeAppliedObservation = 0;
   var disposeActiveApprovals = function () {};
   var sessions = [], sessionLoading = false, composing = false, sessionActivities = [];
+  var catalogSeq = 0, catalogBusy = false, catalogCtrl = null, catalogPromise = null, catalogSearchTimer = null;
+  var catalogCursor = null, catalogPending = null, catalogNext = null, catalogPrevious = null;
 
   /* ===== Markdown-lite ===== */
   function renderInline(text) {
@@ -707,6 +714,7 @@ body.dark .primary-btn { color: #231b16; }
 
   /* ===== Sidebar: sessions ===== */
   function renderSessions() {
+    syncHistoryControls();
     var list = $('histList'), query = $('sessionSearch').value.trim().toLowerCase();
     list.textContent = '';
     $('sessionCount').textContent = sessions.length;
@@ -727,7 +735,7 @@ body.dark .primary-btn { color: #231b16; }
         fetch('/api/sessions/delete', { method: 'POST', headers: headers(), body: JSON.stringify({ file: se.file }) })
           .then(readJSON).then(function () {
             if (sessFile === se.file) { sessGen++; forgetSessFile(); }
-            sessions = sessions.filter(function (s) { return s.file !== se.file; }); renderSessions();
+            sessions = sessions.filter(function (s) { return s.file !== se.file; }); renderSessions(); refreshSessions();
             toast('会话已删除', 'ok');
           }).catch(function (e) { del.disabled = false; toast('删除失败: ' + e.message, 'err'); });
       });
@@ -735,12 +743,69 @@ body.dark .primary-btn { color: #231b16; }
     });
     syncNavigation();
   }
-  function refreshSessions() {
-    return fetch('/api/sessions', { headers: headers() }).then(readJSON).then(function (j) {
-      sessions = j.sessions || []; renderSessions();
-    }).catch(function () { $('histList').innerHTML = '<p class="list-empty">会话读取失败，请检查服务连接。</p>'; });
+  function syncHistoryControls() {
+    $('historyPrevious').disabled = busy || sessionLoading || catalogBusy || !!catalogPending || !catalogPrevious;
+    $('historyNext').disabled = busy || sessionLoading || catalogBusy || !(catalogPending || catalogNext);
+    $('historyNext').textContent = catalogPending ? '继续检索' : '下一页';
+    $('historyRefresh').disabled = busy || sessionLoading;
   }
-  $('sessionSearch').addEventListener('input', renderSessions);
+  function requestHistoryPage(cursor) {
+    if (cursor && catalogBusy) return catalogPromise;
+    var abandoned = catalogPending || catalogCursor;
+    var generation = ++catalogSeq;
+    if (catalogCtrl) catalogCtrl.abort();
+    var controller = new AbortController(), timedOut = false;
+    catalogCtrl = controller; catalogBusy = true;
+    $('historyStatus').textContent = '正在检索会话历史…'; syncHistoryControls();
+    var query = $('sessionSearch').value.trim();
+    var url = cursor ? '/api/sessions?cursor=' + encodeURIComponent(cursor) : '/api/sessions';
+    if (!cursor && (query || abandoned)) url += '?' + (query ? 'q=' + encodeURIComponent(query) + '&' : '') + (abandoned ? 'restart=' + encodeURIComponent(abandoned) : '');
+    var timer = setTimeout(function () { timedOut = true; controller.abort(); }, 15000);
+    function step(nextUrl, count) {
+      return fetch(nextUrl, { headers: headers(), signal: controller.signal }).then(readJSON).then(function (j) {
+        if (generation !== catalogSeq) return null;
+        if (j.status === 'indexing') {
+          if (!/^[a-f0-9]{32}$/.test(j.cursor || '')) throw new Error('历史检索游标无效');
+          catalogPending = j.cursor;
+          $('historyStatus').textContent = '正在检索历史（已检查 ' + (j.scanned || 0) + ' 项），完成后按时间排序。';
+          // Bound automatic requests as well as each server-side chunk.
+          if (count < 15) return step('/api/sessions?cursor=' + encodeURIComponent(j.cursor), count + 1);
+          $('historyStatus').textContent += ' 可点击“继续检索”。';
+          return j;
+        }
+        if (!Array.isArray(j.sessions) || j.sessions.length > 50) throw new Error('历史分页响应无效');
+        sessions = j.sessions; catalogCursor = j.cursor || null; catalogPending = null;
+        catalogNext = j.nextCursor || null; catalogPrevious = j.previousCursor || null;
+        $('historyStatus').textContent = '本页 ' + sessions.length + ' 条，按保存时间排序。' + (catalogNext ? ' 可继续查看更早会话。' : '') + (j.uncertain ? ' 另有 ' + j.uncertain + ' 条历史预览无法读取，请手动选择会话。' : '');
+        renderSessions(); return j;
+      });
+    }
+    catalogPromise = step(url, 0).catch(function (e) {
+      if (generation !== catalogSeq) return null;
+      catalogCursor = catalogPending || catalogCursor; catalogPending = null; catalogNext = null; catalogPrevious = null;
+      $('historyStatus').textContent = timedOut ? '历史读取超时，请点击“刷新历史”。' : '历史读取失败：' + e.message + '；请刷新历史。';
+      return null; // keep the last displayed page and the active conversation
+    }).then(function (page) {
+      clearTimeout(timer);
+      if (generation === catalogSeq) { catalogBusy = false; catalogCtrl = null; syncHistoryControls(); }
+      return page;
+    });
+    return catalogPromise;
+  }
+  function refreshSessions() {
+    if (catalogSearchTimer) { clearTimeout(catalogSearchTimer); catalogSearchTimer = null; }
+    return requestHistoryPage(null);
+  }
+  $('historyPrevious').addEventListener('click', function () { if (!$('historyPrevious').disabled) requestHistoryPage(catalogPrevious); });
+  $('historyNext').addEventListener('click', function () { if (!$('historyNext').disabled) requestHistoryPage(catalogPending || catalogNext); });
+  $('historyRefresh').addEventListener('click', function () { if (!$('historyRefresh').disabled) refreshSessions(); });
+  $('sessionSearch').addEventListener('input', function () {
+    catalogSeq++; if (catalogCtrl) catalogCtrl.abort(); catalogCtrl = null; catalogBusy = false;
+    catalogCursor = catalogPending || catalogCursor; catalogPending = null;
+    catalogPrevious = null; catalogNext = null; renderSessions();
+    if (catalogSearchTimer) clearTimeout(catalogSearchTimer);
+    catalogSearchTimer = setTimeout(function () { catalogSearchTimer = null; refreshSessions(); }, 300);
+  });
 
   /* ===== Sidebar: tasks (GAP-6) ===== */
   var TODO_COLORS = { pending: 'var(--warn)', doing: 'var(--acc)', done: 'var(--ok)' };
@@ -1039,7 +1104,7 @@ body.dark .primary-btn { color: #231b16; }
   try { keyInput.value = localStorage.getItem('7coder-key') || ''; } catch (e) {}
   keyInput.addEventListener('change', function () {
     try { keyInput.value ? localStorage.setItem('7coder-key', keyInput.value) : localStorage.removeItem('7coder-key'); } catch (e) {}
-    refreshInfo(); refreshSessions(); refreshTodos(); restoreSession();
+    refreshInfo(); refreshSessions(); refreshTodos(); restoreSession(true);
   });
 
   function refreshInfo() {
@@ -1076,14 +1141,16 @@ body.dark .primary-btn { color: #231b16; }
   refreshInfo(); refreshSessions(); refreshTodos();
 
   // Do not let a late startup restore replace a conversation the user has begun.
-  function restoreSession() {
+  function restoreSession(reuseList) {
     var generation = sessGen;
-    fetch('/api/sessions', { headers: headers() }).then(readJSON).then(function (j) {
-      if (generation !== sessGen || busy || sessionLoading || history.length) return;
-      var ss = j.sessions || []; if (!ss.length) return;
-      var target = null; try { target = localStorage.getItem('7coder-sess-file'); } catch (e) {}
-      if (!target || !ss.some(function (s) { return s.file === target; })) target = ss[0].file;
-      if (!target) return;
+    var remembered = null; try { remembered = localStorage.getItem('7coder-sess-file'); } catch (e) {}
+    var select = remembered ? Promise.resolve(remembered) : (reuseList && catalogPromise ? catalogPromise : refreshSessions()).then(function (j) {
+      if (!j || j.status === 'indexing' || j.uncertain) return null;
+      var ss = j.sessions || [], usable = ss.filter(function (s) { return !s.unreadable; });
+      return usable.length ? usable[0].file : null;
+    });
+    return select.then(function (target) {
+      if (!target || generation !== sessGen || busy || sessionLoading || history.length) return;
       return fetch('/api/sessions/load', { method: 'POST', headers: headers(), body: JSON.stringify({ file: target }) }).then(readJSON).then(function (j) {
         if (generation !== sessGen || busy || sessionLoading || history.length || !j.messages || !j.messages.length) return;
         resetSaveState(); history = j.messages.slice(); sessionActivities = Array.isArray(j.activities) ? j.activities : []; rememberSessFile(target); log.textContent = '';
@@ -1092,7 +1159,7 @@ body.dark .primary-btn { color: #231b16; }
       });
     }).catch(function () {});
   }
-  restoreSession();
+  restoreSession(true);
   if (window.addEventListener) window.addEventListener('beforeunload', function (e) {
     if (!saveDirty) return;
     e.preventDefault(); e.returnValue = ''; return '';
