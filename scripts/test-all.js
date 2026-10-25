@@ -64,6 +64,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'tool-batch.js', args: [path.join(ROOT, 'test', 'tool-batch.js')] },
     { name: 'read-window.js', args: [path.join(ROOT, 'test', 'read-window.js')] },
     { name: 'mcp-budget.js', args: [path.join(ROOT, 'test', 'mcp-budget.js')] },
+    { name: 'mcp-aggregate-budget.js', args: [path.join(ROOT, 'test', 'mcp-aggregate-budget.js')] },
     { name: 'model-response-budget.js', args: [path.join(ROOT, 'test', 'model-response-budget.js')] },
     { name: 'vision-budget.js', args: [path.join(ROOT, 'test', 'vision-budget.js')] },
     { name: 'tool-http-budget.js', args: [path.join(ROOT, 'test', 'tool-http-budget.js')] },

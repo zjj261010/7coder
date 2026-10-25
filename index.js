@@ -409,6 +409,7 @@ function resolveCommandOnWindows(command) {
   return false;
 }
 function createMcpStdioClient(name, cfg) {
+  const resources = mcpResourceBudget();
   const child = child_process.spawn(cfg.command, Array.isArray(cfg.args) ? cfg.args : [], {
     cwd: cfg.cwd || launchDir,
     env: Object.assign({}, process.env, cfg.env || {}),
@@ -434,6 +435,7 @@ function createMcpStdioClient(name, cfg) {
     dead: false,
     deadErr: ''
   };
+  const queuedReleases = new Set();
   let buf = '';
   function die(err) {
     if (client.dead) return;
@@ -447,6 +449,7 @@ function createMcpStdioClient(name, cfg) {
     for (const p of client.pending.values()) {
       clearTimeout(p.timer);
       p.detach();
+      p.release();
       p.reject(new Error('MCP server "' + name + '" unavailable: ' + client.deadErr + '; result unknown for sent requests; check side effects before retrying.'));
     }
     client.pending.clear();
@@ -462,13 +465,22 @@ function createMcpStdioClient(name, cfg) {
     const bytes = Buffer.byteLength(line, 'utf8');
     if (bytes > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing frame exceeds 4 MB; request not sent');
     if (client.queuedBytes + bytes > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing queue exceeds 4 MB; request not sent');
+    if (resources.queuedBytes + bytes > resources.queuedBytesLimit) throw new Error('MCP aggregate outgoing queue exceeds 16 MiB; request not sent');
     if (child.stdin.destroyed || child.stdin.writableEnded) {
       die('stdin is closed');
       throw new Error(client.deadErr);
     }
     client.queuedBytes += bytes;
+    resources.queuedBytes += bytes;
     let released = false;
-    const release = () => { if (!released) { released = true; client.queuedBytes = Math.max(0, client.queuedBytes - bytes); } };
+    const release = () => {
+      if (released) return;
+      released = true;
+      queuedReleases.delete(release);
+      client.queuedBytes = Math.max(0, client.queuedBytes - bytes);
+      resources.queuedBytes -= bytes;
+    };
+    queuedReleases.add(release);
     try { child.stdin.write(line, error => { release(); if (error) die('stdin write: ' + error.message); }); }
     catch (e) { release(); die('stdin write: ' + e.message); throw e; }
   }
@@ -503,7 +515,10 @@ function createMcpStdioClient(name, cfg) {
   // emits the spawn error on nextTick. Bind before touching any pipe.
   child.on('error', e => { logDiagnostic('spawn: ' + e.message, true); die(e.message); });
   child.on('exit', code => die('exit code ' + code));
-  child.on('close', code => die('close code ' + code));
+  child.on('close', code => {
+    for (const release of queuedReleases) release();
+    die('close code ' + code);
+  });
   if (!child.stdin || !child.stdout || !child.stderr) {
     die('stdio unavailable during spawn');
     const unavailable = () => Promise.reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
@@ -514,6 +529,13 @@ function createMcpStdioClient(name, cfg) {
     return client;
   }
   child.stdin.on('error', e => die('stdin: ' + e.message));
+  child.stdin.once('close', () => {
+    // Retirement settles requests, but is not evidence that the native pipe
+    // released its queued buffers. Hold the shared charge until completion
+    // callbacks or observed stdin close, even if a replacement client starts.
+    for (const release of queuedReleases) release();
+    die('stdin closed');
+  });
   child.stdout.on('error', e => die('stdout: ' + e.message));
   child.stdout.on('end', () => die('stdout ended'));
   child.stdout.on('close', () => die('stdout closed'));
@@ -536,6 +558,7 @@ function createMcpStdioClient(name, cfg) {
         client.pending.delete(msg.id);
         clearTimeout(p.timer);
         p.detach();
+        p.release();
         if (msg.error) p.reject(new Error(typeof msg.error.message === 'string' ? msg.error.message : JSON.stringify(msg.error)));
         else p.resolve(msg.result);
       } else if (typeof msg.method === 'string' && msg.id !== undefined) {
@@ -564,11 +587,16 @@ function createMcpStdioClient(name, cfg) {
       if (cancelled && cancelled()) return reject(executionCancelledError(cancelled));
       if (client.dead) return reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
       if (client.pending.size >= 32) return reject(new Error('MCP pending request limit (32) reached; request not sent'));
+      if (resources.pending >= resources.pendingLimit) return reject(new Error('MCP aggregate pending request limit (128) reached; request not sent'));
       const id = client.nextId++;
       const timer = setTimeout(() => {
         die('MCP ' + method + ' timed out after ' + timeoutMs + 'ms; session retired, next call starts a new client');
       }, timeoutMs);
-      const entry = { resolve, reject, timer, detach: () => {} };
+      let released = false;
+      const entry = { resolve, reject, timer, detach: () => {}, release: () => {
+        if (!released) { released = true; resources.pending--; }
+      } };
+      resources.pending++;
       client.pending.set(id, entry);
       if (cancelled) entry.detach = watchExecution(cancelled, () => die('execution cancelled; session retired'));
       if (client.dead) return;
@@ -578,6 +606,7 @@ function createMcpStdioClient(name, cfg) {
       } catch (e) {
         clearTimeout(timer);
         entry.detach();
+        entry.release();
         client.pending.delete(id);
         reject(e);
       }
@@ -646,6 +675,14 @@ function createMcpStdioClient(name, cfg) {
     return text;
   };
   return client;
+}
+function mcpResourceBudget() {
+  return createMcpStdioClient.resources || (createMcpStdioClient.resources = {
+    pending: 0, pendingLimit: 128, queuedBytes: 0, queuedBytesLimit: 16 * 1024 * 1024
+  });
+}
+function mcpBudgetSnapshot() {
+  return Object.assign({}, mcpResourceBudget());
 }
 function getMcpClient(serverName, cancelled) {
   checkExecution(cancelled);
@@ -7908,6 +7945,7 @@ function startHttpServer() {
       audit: auditSnapshot(),
       ui: { available: !!webuiHtml, fileLimit: 2 * 1024 * 1024, error: webuiError },
       mcp: mcpDiagnosticsSnapshot(),
+      mcpBudget: mcpBudgetSnapshot(),
       startup: { phase: serverStartupState.phase, error: serverStartupState.error },
       capabilities: { persistentShell: !ENABLE_HTTP_SERVER },
       usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
