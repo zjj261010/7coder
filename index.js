@@ -3015,6 +3015,20 @@ function readWorkspaceCommand(name) {
   return expanded;
 }
 
+function configPathForOpen() {
+  const exists = file => {
+    try { if (!fs.statSync(file).isFile()) throw new Error('Configuration path is not a regular file: ' + file); return true; }
+    catch (e) { if (e.code === 'ENOENT') return false; throw e; }
+  };
+  const workspace = managedWorkspacePath('.env');
+  if (exists(workspace)) return workspace;
+  const installed = guardStateFile(path.join(appDir, '.env'));
+  if (exists(installed)) return installed;
+  const template = decodeUtf8Text(readFileBytesBounded(path.join(appDir, '.env.example'), 1024 * 1024, 'Configuration template'));
+  writeStateFile(workspace, template);
+  return workspace;
+}
+
 function replDraftByteLimit() { return 1024 * 1024; }
 function reserveReplNote(draft, note) {
   const bytes = Buffer.byteLength('\n' + note + '\n', 'utf8');
@@ -6737,9 +6751,17 @@ function startHttpServer() {
     console.warn('[WARN] anyone on the network could use this endpoint to run tools on this machine!');
     console.warn('[WARN] Set HTTP_API_KEY in .env (clients send "Authorization: Bearer <key>") or keep HTTP_BIND=127.0.0.1.');
   }
-  // P2-6: read the built-in UI once; a missing file keeps serving 404s.
-  let webuiHtml = null;
-  try { webuiHtml = fs.readFileSync(path.join(appDir, 'webui.html')); } catch (e) { webuiHtml = null; }
+  // A component failure must not pretend to be a missing file or a ready UI.
+  // API/diagnostics stay usable even when the packaged page needs repair.
+  let webuiHtml = null, webuiError = null;
+  try {
+    webuiHtml = readFileBytesBounded(path.join(appDir, 'webui.html'), 2 * 1024 * 1024, 'Built-in UI');
+    decodeUtf8Text(webuiHtml);
+    if (!webuiHtml.length) throw new Error('Built-in UI file is empty');
+  } catch (e) {
+    webuiHtml = null; webuiError = { code: runtimeText(e.code, 40), message: runtimeText(e.message) };
+    console.warn('[UI] Built-in page unavailable: ' + webuiError.code + ' ' + webuiError.message);
+  }
 
   // ---------- OP5-3: shared helpers + per-route handlers ----------
   // One auth gate for every keyed route (OP2-4 caught three routes that had
@@ -6784,8 +6806,8 @@ function startHttpServer() {
       res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
       res.end(webuiHtml);
     } else {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
-      res.end('webui.html not found next to index.js');
+      res.writeHead(webuiError && webuiError.code === 'ENOENT' ? 404 : 503, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Built-in UI unavailable: ' + (webuiError ? webuiError.message : 'unknown page error'));
     }
   }
   function hInfo(req, res) {
@@ -6796,6 +6818,7 @@ function startHttpServer() {
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
       runtime: runtimeSnapshot(),
       audit: auditSnapshot(),
+      ui: { available: !!webuiHtml, fileLimit: 2 * 1024 * 1024, error: webuiError },
       mcp: mcpDiagnosticsSnapshot(),
       startup: { phase: serverStartupState.phase, error: serverStartupState.error },
       capabilities: { persistentShell: !ENABLE_HTTP_SERVER },
@@ -6951,15 +6974,7 @@ function startHttpServer() {
         if (target === "workspace") {
           openPath = launchDir;
         } else {
-          const wsEnv = path.join(launchDir, ".env");
-          if (fs.existsSync(wsEnv)) openPath = wsEnv;
-          else {
-            const ex = path.join(appDir, ".env");
-            if (!fs.existsSync(ex)) {
-              try { writeStateFile(managedWorkspacePath('.env'), decodeUtf8Text(fs.readFileSync(path.join(appDir, '.env.example')))); openPath = wsEnv; }
-              catch (e2) { openPath = ex; }
-            } else openPath = ex;
-          }
+          openPath = configPathForOpen();
         }
         let cmd, cmdArgs;
         if (process.platform === "win32") { cmd = "cmd.exe"; cmdArgs = ["/c", "start", "", openPath]; }
@@ -7316,7 +7331,8 @@ function startHttpServer() {
     recordRuntimeEvent('http-ready', 'ok');
     console.log(`7coder HTTP OpenAI-compatible endpoint ready at http://${HTTP_BIND}:${HTTP_PORT}`);
     if (HTTP_API_KEY) console.log('[AUTH] API key required (Authorization: Bearer <HTTP_API_KEY>).');
-    console.log('Built-in web UI: open http://127.0.0.1:' + HTTP_PORT + '/ in your browser (Chinese-friendly chat).');
+    if (webuiHtml) console.log('Built-in web UI: open http://127.0.0.1:' + HTTP_PORT + '/ in your browser (Chinese-friendly chat).');
+    else console.warn('[UI] API is ready; built-in page is unavailable. Inspect /api/info.ui and repair the installation before opening the UI.');
     console.log('Streaming (stream: true) and multi-turn client histories are supported.');
     console.log('Note: in default permission mode non-interactive approvals are declined - use PERMISSION_MODE=auto for server-driven tool use.');
     resolve(server);

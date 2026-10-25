@@ -1640,3 +1640,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 取消先检查读取、逐条检查及catch复核，避免取消错误被generic fallback吞掉后实际commit。显式message跳过提示读取。未改Git stage/exclude、argv提交、snapshot协议；自动提示仅是当前audit已知片段的统计，不是完整业务工作量证明。
 - 新audit-commit-budget Node13首次单次 **13/13**：缺省/正常top3/constructor及__proto__拒绝、坏/大/半行partial、100MiB源零data-read/close、预取消、受控200ms/50000行上限、坏编码；隔离Git真实提交正常自动标题、不跟踪.7coder，巨log fallback仍commit且原件不变、取消不产生commit、显式标题保持。snapshot helper在本专项刻意stub，输出注明未验收其retention，不把私有Git提交冒充整个Agent端到端。
 - Node13语法/diff、README/npm/test-all同步，无失败复跑；未重复原Git/snapshot、审计16/B5或完整A–J/UI/test-all，未做Win7/真实磁盘/24–72h/打包。Native文件IO仍无硬期限，审计轮转/全局heap及其它读取保留既有范围。按授权提交、未推送，完成后重新看额度。
+
+### 2026-10-25 —— T22-15安装页面/配置模板读取与组件故障
+
+- 自动Git提示批已提交`9ef045e`；完成后五小时used52%/remaining48%，评估本项可完整实现、定向验收并提交，继续。
+- HTTP启动仅有界读取2MiB UI、lossless UTF8且非空；缺失404，其它IO/编码/超限503，启动warn并仅在可用时打印页面就绪提示。/api/info.ui返回available/fileLimit/有界error；API仍可就绪和执行任务，组件故障不假装missing或整Agent成功。availability只是文件准入，不是HTML/JS语义、浏览器渲染或Win7兼容证明；缓存只随下一启动刷新。
+- configPathForOpen保持workspace .env优先、install .env其次；两者缺失时先在1MiB内完整读/解码template、可靠写workspace .env再选择路径。原hOpen吞template/write错误后选不存在install .env并返回ok，现错误直接400，零editor dispatch，不新建假配置；dry仍零模板读。此项未修桌面spawn异步error或cmd start的全路径约束，不宣称整个/api/open已验收。
+- 新install-resource-budget首跑前 **7项**通过：template精确BOM/CRLF/中文复制及优先级、超大template零data-read/close、不支持编码/写rename失败不降级、巨大页面零内容读与组件错误。随后首个404触发严格_endpoint helper拒绝，夹具误用成功分支，并非产品错误；改assertion检查HTTP错误后按授权仅integration **7/7**，首7不重跑。实际所属安装副本缺页/空/坏编码/100MiB页分别可诊断、API小任务完成，巨template请求400且dry成功，恢复原页面后下一启动逐字节提供200。没有打开桌面编辑器/浏览器或改真实.env。
+- 原startup-readiness因server组件启动改动本批首次单次 **13/13**：dream挂起/抢占/deadline、bind失败零副作用、显式启动任务/失败可恢复、强制终止/再次启动owner锁恢复均保持。npm/test-all/README、Node13语法/diff通过。未跑完整A–J/UI/test-all、实际浏览器/Win7/磁盘故障/24–72h/打包；页面缓存/模板各自预算不等于整个安装校验或全局heap。按授权提交、未推送，完成后重看额度。
