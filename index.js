@@ -967,7 +967,7 @@ const tools = [
   { type: "function", function: { name: "powershell_tool", description: "Run a command in REAL Windows PowerShell (uses PS2-compatible APIs, UTF-16LE Base64 input and UTF-8 text output). Best for Windows administration tasks.", parameters: { type: "object", properties: { command: { type: "string" } }, required: ["command"] } } },
   { type: "function", function: { name: "glob_tool", description: "File search (glob). Plain patterns like *.js match the basename at any depth. Patterns naming a path are directory-aware: * stays within one directory, ** spans directories (e.g. src/*.js, src/**/*.js, **/*.test.js). Budget: node_modules/.git/dist/.cache are skipped; at most 1000 matches, 4000 visited entries and depth 12. Truncation/incomplete markers distinguish partial scans from no matches.", parameters: { type: "object", properties: { pattern: { type: "string" }, directory: { type: "string" } }, required: ["pattern"] } } },
   { type: "function", function: { name: "grep_tool", description: "Search contents of a file or directory. Budget: node_modules/.git/dist/.cache, files over 2MB and binary files are skipped; at most 5000 text files, 20000 visited entries and depth 12. Matching stops with an error after 100ms per file; traversal checks a 5s/caller deadline between operations. Truncation/incomplete markers identify partial scans; invalid input paths are errors.", parameters: { type: "object", properties: { pattern: { type: "string" }, path: { type: "string" } }, required: ["pattern"] } } },
-  { type: "function", function: { name: "list_dir", description: "List directory contents (name, type, size).", parameters: { type: "object", properties: { path: { type: "string" } } } } },
+  { type: "function", function: { name: "list_dir", description: "List up to 200 directory entries (name, type, size); incomplete results are marked. Use narrower directories/glob patterns for omitted paths.", parameters: { type: "object", properties: { path: { type: "string" } } } } },
   { type: "function", function: { name: "download_tool", description: "Download a URL to a local file inside the workspace (streamed, 500 MB cap).", parameters: { type: "object", properties: { url: { type: "string" }, path: { type: "string" } }, required: ["url", "path"] } } },
   { type: "function", function: { name: "process_list_tool", description: "List running processes (tasklist on Windows, ps on Unix).", parameters: { type: "object", properties: {} } } },
   { type: "function", function: { name: "process_kill_tool", description: "Kill a process by PID. On Windows uses taskkill /T /F (kills the whole child tree).", parameters: { type: "object", properties: { pid: { type: "number" } }, required: ["pid"] } } },
@@ -1325,15 +1325,25 @@ function buildRepoMap() {
   const MAX_LINES = 150;
   const lines = [];
   let truncated = false;
-  function countFiles(dir) {
+  let remaining = 2000;
+  const deadlineAt = Date.now() + 5000, incomplete = new Set();
+  function entriesFor(dir) {
+    if (remaining <= 1) { incomplete.add('total visit limit 2000'); return []; }
     try {
-      return fs.readdirSync(dir, { withFileTypes: true }).filter(e => !e.isDirectory() && !SKIP.has(e.name)).length;
-    } catch (e) { return 0; }
+      const result = readDirectoryEntriesBounded(dir, { maxEntries: Math.min(400, remaining - 1), deadlineAt });
+      remaining -= result.visited;
+      if (result.incomplete) incomplete.add(result.incomplete);
+      return result.entries;
+    } catch (e) { incomplete.add('unreadable directory (' + (e.code || 'IO error') + ')'); return []; }
+  }
+  function countFiles(dir) {
+    const before = incomplete.size, entries = entriesFor(dir);
+    const count = entries.filter(e => !e.isDirectory() && !SKIP.has(e.name)).length;
+    return (incomplete.size !== before || incomplete.size > 0 ? 'at least ' : '') + count;
   }
   function walk(dir, rel, depth) {
     if (depth >= MAX_DEPTH || truncated) return;
-    let entries = [];
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    const entries = entriesFor(dir);
     const dirs = [];
     const files = [];
     for (const ent of entries) {
@@ -1357,6 +1367,7 @@ function buildRepoMap() {
   let out = lines.join('\n');
   if (!out) out = '(empty workspace)';
   else if (truncated) out += '\n(workspace file map truncated at ' + MAX_LINES + ' lines)';
+  if (incomplete.size) out = '(workspace file map incomplete: ' + Array.from(incomplete).join('; ') + ')\n' + out;
   return out;
 }
 const SYSTEM_PROMPT_BASE = `You are 7coder, a helpful, honest, and harmless AI coding assistant - a clean-room full replacement for Claude Code.
@@ -1406,6 +1417,28 @@ function isInsideDir(baseDir, targetPath) {
   const normTarget = process.platform === 'win32' ? target.toLowerCase() : target;
   const relative = path.relative(normBase, normTarget);
   return relative === '' || (relative !== '..' && !relative.startsWith('..' + path.sep) && !path.isAbsolute(relative));
+}
+
+function readDirectoryEntriesBounded(directory, options = {}) {
+  const maxEntries = options.maxEntries || 200, maxBytes = options.maxBytes || 64 * 1024;
+  const deadlineAt = Number.isFinite(options.deadlineAt) ? options.deadlineAt : Date.now() + 5000;
+  const entries = []; let handle, visited = 0, bytes = 0, incomplete = '';
+  const check = () => { checkExecution(options.cancelled); return Date.now() < deadlineAt; };
+  if (!check()) return { entries, visited, bytes, incomplete: 'directory scan deadline exceeded' };
+  try {
+    handle = fs.opendirSync(directory);
+    while (true) {
+      if (!check()) { incomplete = 'directory scan deadline exceeded'; break; }
+      const entry = handle.readSync();
+      if (!entry) break;
+      visited++;
+      if (entries.length >= maxEntries) { incomplete = 'entry limit ' + maxEntries; break; }
+      const size = Buffer.byteLength(entry.name, 'utf8');
+      if (size > maxBytes - bytes) { incomplete = 'directory name byte limit ' + maxBytes; break; }
+      bytes += size; entries.push(entry);
+    }
+  } finally { if (handle) handle.closeSync(); }
+  return { entries, visited, bytes, incomplete };
 }
 
 // Resolves symlinks/junctions on the longest existing prefix of a path, so the
@@ -3668,16 +3701,19 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     try {
       const dirPath = args.path ? path.join(launchDir, sanitizePath(args.path)) : launchDir;
       if (!fs.statSync(dirPath).isDirectory()) return makeToolResult('error', 'List error: not a directory');
-      const entries = fs.readdirSync(dirPath);
-      const lines = entries.map(e => {
-        const full = path.join(dirPath, e);
+      const deadlineAt = Math.min(Date.now() + 5000, cancelled && cancelled.deadlineAt || Infinity);
+      const scan = readDirectoryEntriesBounded(dirPath, { deadlineAt, cancelled }), lines = [];
+      for (const entry of scan.entries) {
+        checkExecution(cancelled);
+        if (Date.now() >= deadlineAt) { scan.incomplete = 'directory scan deadline exceeded'; break; }
+        const e = entry.name, full = path.join(dirPath, e);
         try {
           const st = fs.statSync(full);
-          return st.isDirectory() ? '[DIR]     ' + e : String(st.size).padStart(9) + '  ' + e;
-        } catch (err) { return '[?]       ' + e; }
-      });
-      return makeToolResult('ok', lines.length ? lines.join('\n') : '(empty directory)');
-    } catch (e) { return makeToolResult('error', `List error: ${e.message}`); }
+          lines.push(st.isDirectory() ? '[DIR]     ' + e : String(st.size).padStart(9) + '  ' + e);
+        } catch (err) { lines.push('[?]       ' + e); }
+      }
+      return makeToolResult('ok', (scan.incomplete ? '[incomplete: ' + scan.incomplete + ']\n' : '') + (lines.length ? lines.join('\n') : scan.incomplete ? '(no entries collected)' : '(empty directory)'));
+    } catch (e) { return makeToolResult(cancelled && cancelled() ? 'cancelled' : 'error', `List error: ${e.message}`); }
   }
 
   if (name === 'process_list_tool') {
@@ -4071,8 +4107,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     try {
       const safeDir = internalStatePath('.mcp');
       fs.mkdirSync(safeDir, { recursive: true });
-      return makeToolResult('ok', fs.readdirSync(safeDir).join('\n') || 'No MCP resources');
-    } catch (e) { return makeToolResult('error', `MCP resource list error: ${e.message}`); }
+      const scan = readDirectoryEntriesBounded(safeDir, { deadlineAt: cancelled && cancelled.deadlineAt, cancelled });
+      return makeToolResult('ok', (scan.incomplete ? '[incomplete: ' + scan.incomplete + ']\n' : '') + (scan.entries.map(e => e.name).join('\n') || (scan.incomplete ? 'No resources collected' : 'No MCP resources')));
+    } catch (e) { return makeToolResult(cancelled && cancelled() ? 'cancelled' : 'error', `MCP resource list error: ${e.message}`); }
   }
   if (name === 'read_mcp_resource_tool') {
     try {
@@ -4239,8 +4276,10 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       if (e.code !== 'ENOENT') return makeToolResult('error', 'Skill read error: ' + e.message);
       let available = 'none';
       try {
-        available = fs.readdirSync(internalStatePath('.7coder/skills')).filter(f => f.endsWith('.md')).join(', ') || 'none';
-      } catch (e2) {}
+        const scan = readDirectoryEntriesBounded(internalStatePath('.7coder/skills'), { deadlineAt: cancelled && cancelled.deadlineAt, cancelled });
+        available = scan.entries.filter(e => e.name.endsWith('.md')).map(e => e.name).join(', ') || 'none';
+        if (scan.incomplete) available = '[incomplete: ' + scan.incomplete + '] ' + available;
+      } catch (e2) { if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: skill listing cancelled]'); if (e2.code !== 'ENOENT') available = '[unavailable: ' + e2.message + ']'; }
       return makeToolResult('error', `Skill "${skillName}" not found. Available skills: ${available}. Create skills as .7coder/skills/<name>.md files.`);
     }
   }

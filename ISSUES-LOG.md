@@ -1607,3 +1607,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 静态检查同步发现旧取消VM夹具缺后来新增的Buffer/MODEL_RESPONSE_MAX_BYTES依赖；本批显式补齐，首15项验证了实际headers/JSON/SSE、retry/deadline、四类helper取消、压缩不改原history、审批revocation与后续两类backend恢复。不能把当前依赖修正反推此前每次历史测试均有效。失败诊断保留job/stream/closed及有限backend输出，tail只选未通过的5项。
 - 新transport-ownership Node13首次单次 **8/8**：真实HTTP在响应头已交付后取消plain/redirect/gzip均确认源res.close，consumer拒绝与stream body超限同样关闭生产者，两个并发response仅取消一个且另一个可完成，成功请求保留keepalive socket复用，controls归零。只关闭响应所属句柄，不假称取消一定回滚远端副作用。
 - npm/test-all与README同步，Node13语法/diff通过；未重跑已通过的请求13/其它旧响应预算或完整A–J/UI/test-all，未做Win7/真实网关/代理/TLS/24–72h/打包。剩余全局heap/目录/磁盘/原生进程树仍开放，按授权提交、未推送，收尾后重新检查额度。
+
+### 2026-10-25 —— T22-15启动摘要与目录工具采集边界
+
+- 模型准入/连接批已提交`537f1e3`；五小时used36%/remaining64%，判断本项可完整实现/验证/提交，继续。
+- 新共享readDirectoryEntriesBounded按Node13 opendirSync/readSync分批采集、finally close，普通listing至多200条与64KiB UTF8名字、最多额外探一项区分恰好完整/实际超限；读/close失败不假装空成功，过期零open、取消明确cancelled。list_dir在逐项stat间也复核5秒或原deadline，MCP resource与skill missing候选共享有界路径。incomplete前置，不靠最后截输出才能止损。
+- buildRepoMap原readdir/filter对每目录整收集，countFiles又整收集；现单目录400、全图2000实际visited（含probe及重复count/walk）与5秒间隔检查，保留原150行/深度2/SKIP及局部排序；不完整图头有说明，文件数显式at least，不能把采样数当总数。收集前是FS顺序，未扫描部分不承诺名称排序/分页可达；按更窄目录/glob探索，未据此关闭session/backup索引、全部目录或native IO硬期限。
+- 新directory-budget首跑前 **11项**通过：逻辑百万条仅收200/probe1/close、恰200完整、UTF8名预算、预期限零open、读中取消/期限/IO和close错误、真实250文件partial/缺目录/error/取消及句柄关闭。随后map夹具断言失败：普通400文件先达到150行展示上限，未触发目标全图访问上限；改为大量不参与展示的logical link entry，按授权仅tail **4/4**，首11不重跑。tail覆盖全图≤2000/全部close、MCP/skill partial，真实Agent三个精确call ID分别completed/completed/error、前置incomplete及活动归零。
+- 旧A仅repo-map首次单次 **1/1**。无其它重复测试，Node13语法/diff、README/npm/test-all同步。未跑完整A–J/UI/test-all、Win7/ACL/网络盘/真实百万文件/24–72h/打包。单次native opendir/read/stat可能阻塞；目录内容并发变化没有快照一致性，记录边界不冒充OS硬约束。按授权提交、未推送，之后重读额度再定下一项。
