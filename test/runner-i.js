@@ -8,12 +8,24 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
+const IContext = require('./_i-context-fixture');
+const { create: createEndpoint } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'I', wsPrefix: 'w-i-' });
 const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18550;
-function startMock(scriptObj) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj); }
+function startMock(scriptObj, env) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj, env); }
+async function readyMock(mock) {
+  const end = Date.now() + 4000;
+  while (Date.now() < end) {
+    if (mock.child.exitCode !== null) throw Error('owned mock exited before ready');
+    try { if ((await httpReq(mock.port, 'GET', '/', null)).status === 200) return; }
+    catch (e) { if (e.code !== 'ECONNREFUSED') throw e; }
+    await new Promise(resolve => setTimeout(resolve, 15));
+  }
+  throw Error('owned mock readiness deadline');
+}
 // extract an inner function/const from index.js source for direct unit testing
 function extract(re) {
   const src = fs.readFileSync(IDX, 'utf8');
@@ -90,39 +102,41 @@ scenarios.push({
     // dead zone: turn1 must leave an assistant turn AFTER the user turn so the
     // live-task guard allows compressing the old user turn on turn2
     let cwd = freshCwd('i3a');
-    let m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'dz0', type: 'function', function: { name: 'read_file', arguments: '{"path":"seed.txt"}' } }] },
-      { role: 'assistant', content: 'DEADZONE-REPLY' },
-      { role: 'assistant', content: 'deadzone summary' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    fs.writeFileSync(path.join(cwd, 'seed.txt'), 'seed content for dead zone');
+    let m = startMock(IContext.deadScript, { MOCK_STRICT: '1' });
+    await readyMock(m);
+    fs.writeFileSync(path.join(cwd, 'seed.txt'), IContext.seed);
+    const env = { PERMISSION_MODE: 'bypass', CONTEXT_CHARS: '3100', HEAVY_MODEL: IContext.main, LIGHT_MODEL: IContext.light,
+      MAX_RETRIES: '1', DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false' };
     let r = await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass', CONTEXT_CHARS: '3100' }, cwd, timeoutMs: 30000,
+      port: m.port, args: [], env, cwd, timeoutMs: 30000,
       stdinSteps: [
-        { t: 'DZPAYLOAD-' + 'x'.repeat(600) + '\n', d: 80 }, { t: '/execute-task-now\n', d: 3500 },
-        { t: 'second turn\n', d: 80 }, { t: '/execute-task-now\n', d: 3500 },
+        { t: IContext.deadPrompt + '\n', d: 80 }, { t: '/execute-task-now\n', d: 3500 },
+        { t: IContext.nextPrompt + '\n', d: 80 }, { t: '/execute-task-now\n', d: 3500 },
         { t: '/bye\n', d: 400 }
       ]
     });
-    const logA = readLog(m.log).filter(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
-    record('compress: dead zone fixed (old user turn compressible once processed)', logA.length >= 1, 'comp reqs=' + logA.length);
+    const logA = readLog(m.log);
+    record('compress: exact four-request transcript preserves old user, tool pairing and active task', IContext.deadEvidence(logA), 'requests=' + logA.length + '\n' + r.out.slice(-1800));
+    record('compress: both REPL tasks finish with distinct main replies and clean exit', r.code === 0 && r.out.includes(IContext.firstReply) && r.out.includes(IContext.secondReply) && !r.out.includes('MOCK_PROTOCOL'), r.out.slice(-1800));
+    const audit = readLog(path.join(cwd, '.7coder', 'audit.jsonl')).filter(row => row.type === 'tool');
+    record('compress: original read executes exactly once across both tasks', audit.length === 1 && audit[0].callId === IContext.readCall.id && audit[0].tool === 'read_file' && audit[0].status === 'ok', JSON.stringify(audit));
     stopMock(m);
 
     // no-progress: single giant user message, nothing processed -> live-task
     // guard bails, task completes, no runaway looping
     cwd = freshCwd('i3b');
-    m = startMock([{ role: 'assistant', content: 'NOLOOP-DONE' }, { role: 'assistant', content: 'noloop summary' }]);
-    await new Promise(r => setTimeout(r, 600));
+    m = startMock(IContext.giantScript, { MOCK_STRICT: '1' });
+    await readyMock(m);
     r = await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass', CONTEXT_CHARS: '3100' }, cwd, timeoutMs: 30000,
+      port: m.port, args: [], env, cwd, timeoutMs: 30000,
       stdinSteps: [
-        { t: 'GIANT-' + 'y'.repeat(8000) + '\n', d: 80 }, { t: '/execute-task-now\n', d: 5000 },
+        { t: IContext.giantPrompt + '\n', d: 80 }, { t: '/execute-task-now\n', d: 5000 },
         { t: '/bye\n', d: 400 }
       ]
     });
     const warns = (r.out.match(/Context still over budget/g) || []).length;
-    record('compress: live-task guard protects giant first task (completes, bounded)', r.out.includes('NOLOOP-DONE') && warns === 0 && r.code === 0, 'warns=' + warns);
+    record('compress: giant live instruction reaches main model exactly once and verbatim', IContext.giantEvidence(readLog(m.log)), r.out.slice(-1800));
+    record('compress: giant task finishes without summary calls or runaway looping', r.out.includes(IContext.giantReply) && warns === 0 && r.code === 0 && !r.out.includes('MOCK_PROTOCOL'), 'warns=' + warns + '\n' + r.out.slice(-1800));
     stopMock(m);
   }
 });
@@ -457,23 +471,28 @@ scenarios.push({
   name: 'content-fallback',
   fn: async () => {
     const cwd = freshCwd('i11');
-    const m = startMock([{ role: 'assistant', content: 'CF-OK' }]);
-    await new Promise(r => setTimeout(r, 600));
-    const srvPort = port + 340;
-    const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
-      cwd, stdio: 'ignore'
-    });
-    await new Promise(r => setTimeout(r, 2500));
+    const m = startMock(IContext.contentScript, { MOCK_STRICT: '1' });
+    await readyMock(m);
+    const agent = createEndpoint({ suite: 'I-content-agent', endpoint: 'http://127.0.0.1:' + m.port + '/v1', key: '', model: IContext.main, permissionMode: 'bypass' });
     try {
-      await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: { weird: 'object', n: 1 } }] });
-      const req = readLog(m.log)[0];
-      const userMsg = (req.messages || []).find(x => x.role === 'user');
-      record('content: object content serializes as JSON, not [object Object]', !!userMsg && String(userMsg.content).includes('"weird":"object"') && !String(userMsg.content).includes('[object Object]'), userMsg ? String(userMsg.content).substring(0, 80) : 'no req');
-      record('content: string content unchanged', (req.messages.filter(x => x.role === 'user').length) >= 1, '');
+      const evidenceOnly = process.env.I_CONTENT_EVIDENCE_ONLY === '1';
+      await agent.start(cwd);
+      const objectResponse = await agent.api('/v1/chat/completions', { messages: IContext.contentMessages }, 8000);
+      if (!evidenceOnly) record('content: JSON request completes with exact fixture response', JSON.parse(objectResponse.body).choices[0].message.content === IContext.objectReply, objectResponse.body);
+      let rejected;
+      try { await agent.api('/v1/chat/completions', { messages: [{ role: 'user', content: IContext.rejectedInput }] }, 8000); }
+      catch (e) { rejected = e; }
+      if (!evidenceOnly) record('content: strict upstream rejection propagates as a failed request', rejected && rejected.message.includes('MOCK_PROTOCOL'), rejected ? rejected.message : 'unexpected success');
+      const info = JSON.parse((await agent.api('/api/info')).body);
+      if (!evidenceOnly) record('content: failed upstream leaves health available with no active task/tool', info.runtime.activeTasks === 0 && info.runtime.activeTools === 0, JSON.stringify(info.runtime));
+      const stringResponse = await agent.chat([{ role: 'user', content: IContext.stringInput }], 8000);
+      if (!evidenceOnly) record('content: same Agent completes next streamed request after rejection', stringResponse.content === IContext.stringReply && stringResponse.tools.length === 0, stringResponse.raw);
+      const log = readLog(m.log);
+      record('content: exact nested JSON, assistant history and unchanged string reach their own requests', IContext.contentEvidence(log), 'requests=' + log.length + '\n' + JSON.stringify(log.map(r => ({ model: r.model, stream: r.stream, messages: (r.messages || []).filter(m => m.role !== 'system') }))).slice(-2000));
+      if (evidenceOnly) S.info('content: setup HTTP calls reconstructed failed evidence; first four assertions NOT RUN');
     } finally {
-      try { srv.kill(); } catch (e) {}
-      stopMock(m);
+      try { await agent.stop(); }
+      finally { agent.S.cleanup(); stopMock(m); }
     }
   }
 });
