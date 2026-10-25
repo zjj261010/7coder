@@ -23,11 +23,12 @@ async function rejectsFrame(value) {
     ['data', 'end', 'error', 'close', 'aborted'].every(event => input.listenerCount(event) === 0);
 }
 function context(callOpenAI, budget = 1000) {
-  const sandbox = vm.createContext({ console: { log() {}, warn() {} }, LIGHT_MODEL: 'fixture', HEAVY_MODEL: 'fixture',
+  const sandbox = vm.createContext({ Buffer, console: { log() {}, warn() {} }, LIGHT_MODEL: 'fixture', HEAVY_MODEL: 'fixture',
     createModelContext: main => ({ main, light: 'fixture', summary: 'fixture' }),
     CONTEXT_CHARS: budget, MAX_TOOL_STEPS: 2, callOpenAI, READ_ONLY_TOOLS: new Set(), capToolResult: String,
     safeExecuteTool: () => { throw Error('tool must not run after compression failure'); } });
-  vm.runInContext(cut('function charUnits(', '// ====================== TASK CHANGE SUMMARY'), sandbox);
+  vm.runInContext(cut('function executionCancelledError(', 'function watchExecution(') +
+    cut('function charUnits(', '// ====================== TASK CHANGE SUMMARY'), sandbox);
   return sandbox;
 }
 const history = () => [{ role: 'system', content: 'system' },

@@ -3202,7 +3202,7 @@ function executionCancelledError(cancelled) {
   error.code = 'EXECUTION_CANCELLED';
   return error;
 }
-function serializeModelRequest(payload, cancelled, maxBytes = 8 * 1024 * 1024) {
+function serializeModelRequest(payload, cancelled, maxBytes = 8 * 1024 * 1024, measureOnly = false) {
   let bytes = 0, nodes = 0, chars = 0;
   const ancestors = new Set();
   function add(n) { bytes += n; if (bytes > maxBytes) throw new Error('JSON body exceeds ' + maxBytes + ' byte budget'); }
@@ -3259,6 +3259,9 @@ function serializeModelRequest(payload, cancelled, maxBytes = 8 * 1024 * 1024) {
   }
   try {
     checkExecution(cancelled); walk(payload, 0);
+    // History admission needs the same byte/structure checks before any large
+    // stringify or transcript allocation. Ordinary callers still get JSON.
+    if (measureOnly) return bytes;
     const body = JSON.stringify(payload);
     if (typeof body !== 'string' || Buffer.byteLength(body, 'utf8') !== bytes) throw new Error('JSON body changed during preparation');
     return body;
@@ -5655,9 +5658,12 @@ function charUnits(c) {
       (c >= 0x3040 && c <= 0x30FF) ||    // Kana
       (c >= 0xAC00 && c <= 0xD7FF)) ? 2 : 1; // Hangul syllables
 }
-function textUnits(s) {
+function textUnits(s, cancelled) {
   let n = 0;
-  for (let i = 0; i < s.length; i++) n += charUnits(s.charCodeAt(i));
+  for (let i = 0; i < s.length; i++) {
+    if (cancelled && (i & 4095) === 0) checkExecution(cancelled);
+    n += charUnits(s.charCodeAt(i));
+  }
   return n;
 }
 // A2-13: slice a string to at most maxUnits weighted units (the exact
@@ -5674,37 +5680,56 @@ function textUnitsSlice(s, maxUnits) {
   }
   return s;
 }
-function messageSize(m) {
+function messageSize(m, cancelled) {
   let n = 0;
-  if (m.content) n += textUnits(typeof m.content === 'string' ? m.content : JSON.stringify(m.content));
-  if (m.tool_calls) n += textUnits(JSON.stringify(m.tool_calls));
+  if (m.content) n += textUnits(typeof m.content === 'string' ? m.content : serializeModelRequest(m.content, cancelled), cancelled);
+  if (m.tool_calls) n += textUnits(serializeModelRequest(m.tool_calls, cancelled), cancelled);
   return n;
 }
 
 async function summarizeConversation(oldMessages, modelContext, cancelled) {
+  // Bound the source before map/join/JSON.stringify, including escaped JSON,
+  // nesting and value count. This is an intentional refusal, never a tail cut.
+  const inputLimit = 1024 * 1024, outputLimit = 256 * 1024;
+  serializeModelRequest(oldMessages, cancelled, inputLimit, true);
   const transcript = oldMessages
-    .map(m => `${m.role}: ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content || '')}` +
-      (m.tool_calls ? ` [called: ${JSON.stringify(m.tool_calls)}]` : ''))
+    .map(m => {
+      checkExecution(cancelled);
+      if (typeof m.role !== 'string') throw new Error('invalid context message role');
+      return `${m.role}: ${typeof m.content === 'string' ? m.content : serializeModelRequest(m.content || '', cancelled, inputLimit)}` +
+        (m.tool_calls ? ` [called: ${serializeModelRequest(m.tool_calls, cancelled, inputLimit)}]` : '');
+    })
     .join('\n');
   // Every removed character must reach the summarizer. Keep each request
   // small for local models, but never truncate the unsent tail of history.
-  const parts = [];
+  const ends = [];
   for (let start = 0; start < transcript.length;) {
+    checkExecution(cancelled);
     let end = Math.min(start + 20000, transcript.length);
     const last = transcript.charCodeAt(end - 1);
     if (end < transcript.length && last >= 0xD800 && last <= 0xDBFF) end--;
-    parts.push(transcript.slice(start, end));
+    ends.push(end);
     start = end;
   }
   const summaries = [];
-  for (let i = 0; i < parts.length; i++) {
+  let summaryBytes = 0, start = 0;
+  for (let i = 0; i < ends.length; i++) {
+    checkExecution(cancelled);
     const choice = await callOpenAI([{
       role: 'user',
-      content: `Summarize this coding conversation compactly. Keep: user goals, hard constraints, files touched, completed side effects (do not repeat them), key decisions, errors hit and their fixes, open threads. Max 15 bullet lines. Part ${i + 1}/${parts.length}.\n\n${parts[i]}`
+      content: `Summarize this coding conversation compactly. Keep: user goals, hard constraints, files touched, completed side effects (do not repeat them), key decisions, errors hit and their fixes, open threads. Max 15 bullet lines. Part ${i + 1}/${ends.length}.\n\n${transcript.slice(start, ends[i])}`
     }], { model: modelContext ? modelContext.light : LIGHT_MODEL || HEAVY_MODEL, modelContext, cancel: cancelled, useTools: false, maxTokens: 600 });
+    checkExecution(cancelled);
     const content = choice && choice.message && choice.message.content;
+    // Check before trim/join. A provider may ignore maxTokens; its response
+    // already has a separate transport cap, but must not accumulate per part.
+    if (typeof content === 'string' && summaryBytes + (i ? 2 : 0) + Buffer.byteLength(content, 'utf8') > outputLimit)
+      throw new Error('context summaries exceed 262144 byte budget');
     if (typeof content !== 'string' || !content.trim()) throw new Error('empty context summary');
-    summaries.push(content.trim());
+    const summary = content.trim();
+    summaryBytes += (i ? 2 : 0) + Buffer.byteLength(summary, 'utf8');
+    summaries.push(summary);
+    start = ends[i];
   }
   if (!summaries.length) throw new Error('empty context transcript');
   return summaries.join('\n\n');
@@ -5718,14 +5743,18 @@ async function summarizeConversation(oldMessages, modelContext, cancelled) {
 // part). This also enables compression inside sub-agent conversations, which
 // contain no user turns after the initial task.
 async function compressConversationIfNeeded(currentMessages, modelContext, cancelled) {
+  // The request serializer would reject this history anyway; protect the
+  // earlier weighted-size scan and non-string JSON allocations as well.
+  serializeModelRequest(currentMessages, cancelled, 8 * 1024 * 1024, true);
   let total = 0;
-  for (const m of currentMessages) total += messageSize(m);
+  for (const m of currentMessages) { checkExecution(cancelled); total += messageSize(m, cancelled); }
   if (total <= CONTEXT_CHARS) return;
 
   let kept = 0;
   let splitIdx = 1;
   for (let i = currentMessages.length - 1; i >= 1; i--) {
-    kept += messageSize(currentMessages[i]);
+    checkExecution(cancelled);
+    kept += messageSize(currentMessages[i], cancelled);
     splitIdx = i;
     if (kept > CONTEXT_CHARS * 0.6) break;
   }
@@ -5771,10 +5800,12 @@ async function compressConversationIfNeeded(currentMessages, modelContext, cance
     content: `[CONTEXT COMPRESSION] Earlier turns were summarized to fit the context window. Summary of everything before this point:\n${digest}`
   };
   const replacement = activeUser ? [summaryMsg, activeUser] : [summaryMsg];
-  if (cancelled && cancelled()) throw executionCancelledError(cancelled);
-  currentMessages.splice(1, splitIdx - 1, ...replacement);
+  const nextMessages = currentMessages.slice(0, 1).concat(replacement, currentMessages.slice(splitIdx));
+  serializeModelRequest(nextMessages, cancelled, 8 * 1024 * 1024, true);
   let newTotal = 0;
-  for (const m of currentMessages) newTotal += messageSize(m);
+  for (const m of nextMessages) { checkExecution(cancelled); newTotal += messageSize(m, cancelled); }
+  checkExecution(cancelled);
+  currentMessages.splice(1, splitIdx - 1, ...replacement);
   console.log(`[CTX] Context compressed: ${oldPart.length} messages summarized (${total} -> ${newTotal} chars).`);
 }
 

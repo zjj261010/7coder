@@ -31,6 +31,7 @@
     "test:all": "node scripts/test-all.js",
     "test:harness": "node test/harness-isolation.js",
     "test:stream-context": "node test/stream-context.js",
+    "test:context-budget": "node test/context-budget.js",
     "test:repl-approval": "node test/repl-approval.js",
     "test:download-commit": "node test/download-commit.js",
     "test:backup-ownership": "node test/backup-ownership.js",
