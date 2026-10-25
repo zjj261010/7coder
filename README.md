@@ -192,12 +192,31 @@ a Windows-only warning instead of being injected.
 
 ## Edit Safety Net
 
-- `write_file` / `append_file` / `edit_file` / `notebook_edit_tool` **automatically back up the
-  previous file** to `.7coder/backups/` before writing (newest 5 per source
-  file, 200 total kept).
+- `write_file` / `append_file` / `edit_file` / `notebook_edit_tool` (and the
+  download commit) **automatically back up the previous file** before writing.
+  New snapshots publish as an owned store under `.7coder/backups/v1/`:
+  `store.json` holds the workspace identity (`storeId`) and a monotonic
+  `lastSequence`; each record is `<16-digit sequence>-<32hex id>/` containing
+  the raw `data.bak` bytes plus a `manifest.json` (source path, size, sha256).
+  A backup reserves its sequence, copies through held descriptors in 64KiB
+  chunks, verifies the digest by re-reading, and publishes with one rename.
+- Retention only ever deletes records it can fully attribute to this store
+  (manifest + payload + digest re-verified): newest 5 per source, 200 global,
+  1GiB owned-bytes target, 2GiB hard admission including the new snapshot, and
+  1GiB per snapshot. Over-budget writes are rejected before the original file
+  is touched. Deletion renames records to `.deleting-*` first; failures keep
+  the evidence and report it. Legacy flat `*.bak` files, foreign/corrupt
+  records, staging and crash residue are never auto-deleted.
+- `/undo <file>` restores the newest backup of a file. New-format history
+  wins; legacy flat backups are a fallback only when the source has no v1
+  record. The restore stages and verifies the content (digest, and the strict
+  parser for managed state files) in a sibling temp file and commits with a
+  single rename; any failure or conflict before that rename leaves the
+  current file byte-for-byte intact. Outcomes are explicit: restored,
+  no backup found, failed (with stage), conflict, or unknown (index/identity
+  cannot be proven) - read failures are never reported as "not found".
 - In default permission mode, file edits are approved against a **real diff
   preview** (`-` removed / `+` added lines), not an LLM paraphrase.
-- `/undo <file>` restores the newest backup of a file.
 
 ## Per-Project Configuration
 
@@ -358,9 +377,9 @@ The entry point also includes `test/stream-context.js` (`npm run test:stream-con
 
 `npm run test:repl-approval` covers the CLI question queue and actual isolated REPL against a local model fixture: parallel protected reads, approval EOF, ordered BTW notes, repeated execution commands and stale notes after `/clear`. The REPL asks one question at a time; EOF declines unanswered approvals and marks unanswered user questions unreachable. `/bye` remains available during a question. `/execute-task-now` takes the current draft immediately, waits for all its earlier BTW notes, and holds the execution slot while waiting. Input and BTW notes received afterwards belong to the next draft; another execution command while busy is refused and must be issued again after completion. `/clear` discards the current draft, including late results of its pending notes. Non-interactive user-question tools return an explicit unreachable result.
 
-`npm run test:download-commit` checks download replacement and failure recovery with real files, streams and local fixtures. Downloads exclusively create a unique sibling `.part-*` file, wait for writer close, flush the completed file and publish a complete previous-version backup before renaming over an existing destination. A failed rename never falls back to deleting the destination. Failed backup/flush/close operations stop the replacement. Completed backups use the existing `.7coder/backups` and `/undo <path>` mechanism, with the current rollback copy protected during the existing five-per-file/200-total pruning pass. Text writers share the strict snapshot routine described below.
+`npm run test:download-commit` checks download replacement and failure recovery with real files, streams and local fixtures. Downloads exclusively create a unique sibling `.part-*` file, wait for writer close, flush the completed file and publish a complete previous-version backup before renaming over an existing destination. A failed rename never falls back to deleting the destination. Failed backup/flush/close operations stop the replacement. Completed backups publish as owned v1 records and are restorable with `/undo <path>` (the successful download result reports its backup path); the just-published record is protected during retention. Text writers share the strict snapshot routine described below. `npm run test:backup-ownership` and `npm run test:backup-restore` cover the ownership, retention, budget and atomic-restore contracts with real files and subprocess crash points.
 
-On restart, use the destination as it stands: there is no intermediate step that removes the old destination. Incomplete `.part-*` and `.bak.tmp` files are never automatically promoted or selected by `/undo`. After an interrupted commit, the complete previous version can be restored with `/undo <path>` (the successful download result also reports its backup path). Temporary cleanup failures report the retained file path. Interrupted operations may leave temporary files; inspect them before manual removal, especially if another instance is active. Backups have count limits and require space for the previous file; this does not guarantee hardware power-loss durability or coordinate concurrent instances. Real Win7 filesystem/antivirus and power-cut verification remain required.
+On restart, use the destination as it stands: there is no intermediate step that removes the old destination. Incomplete `.part-*` files, `.stage-*` directories and other crash residue are never automatically promoted, claimed or selected by `/undo`. After an interrupted commit, the complete previous version can be restored with `/undo <path>`. Temporary cleanup failures report the retained path. Interrupted operations may leave temporary files; inspect them before manual removal, especially if another instance is active. Backups have count and byte budgets and require space for the previous file; this does not guarantee hardware power-loss durability or coordinate concurrent instances. Real Win7 filesystem/antivirus and power-cut verification remain required.
 
 `npm run test:text-encoding` checks text safety and strict backups. `read_file` and `prompt_from_file` require lossless UTF-8 decoding. Existing files used by `write_file`, `append_file`, `edit_file` and `notebook_edit_tool` must also pass that check before mutation. Invalid UTF-8, common GBK/CP936/UTF-16 byte sequences and NUL-containing text are refused with an explicit error. Tool input rejects unpaired surrogates and NUL. This is a UTF-8 contract: bytes that happen to be valid in both UTF-8 and a legacy encoding cannot reveal their intended encoding. Prepare an explicitly converted copy for legacy projects; the Agent does not guess or automatically convert them.
 
@@ -410,7 +429,7 @@ Use the session/memory delete action to remove both primary and previous files; 
 
 The state protocol retains a recoverable version and the ownership rule excludes cooperating local instances; neither guarantees rename/directory durability through a hardware power cut or termination of old descendants. Real Win7 filesystem, sharing/antivirus and power-loss tests remain required. Full-file note/log replacement adds IO proportional to file size; log retention and total storage budgets remain separate work.
 
-Existing UTF-8 BOMs are retained. Uniform CRLF, LF or CR line endings are used for incoming write/append/replacement text and edit matching; untouched bytes stay intact. Mixed/no line-ending styles keep incoming text literal. Every existing target modified by those four text writers requires a complete, flushed, published backup; backup or recovery-metadata failure stops the write. Backup ordering advances across rapid writes and clock rollback so `/undo` selects the latest complete version. Managed state text writers additionally use the state protocol above. Other user-file writes retain their ordinary write/append behavior: an interrupted or partially failed write can require `/undo` recovery. Total backup-byte limits remain separate work.
+Existing UTF-8 BOMs are retained. Uniform CRLF, LF or CR line endings are used for incoming write/append/replacement text and edit matching; untouched bytes stay intact. Mixed/no line-ending styles keep incoming text literal. Every existing target modified by those four text writers requires a complete, flushed, published backup; backup or recovery-metadata failure stops the write. Backup ordering uses the store's monotonic sequence, so rapid writes, tied timestamps and clock rollback cannot make `/undo` select an older generation. Managed state text writers additionally use the state protocol above. Other user-file writes retain their ordinary write/append behavior: an interrupted or partially failed write can require `/undo` recovery.
 
 A–J run a private copy of the application in a `7coder-test-*` system temporary directory, with workspaces outside the source repository. The real install `.env`, model profiles and permission files are not loaded. `npm run test:harness` checks the isolation and child ownership helpers. Real keyboard/mouse injection is excluded by default; explicitly set `DESKTOP_TEST=1` only in a controlled desktop session. Skipped desktop scenarios are reported separately from passed assertions. K/R remain explicit real-endpoint tests.
 
