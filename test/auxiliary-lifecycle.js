@@ -20,6 +20,7 @@ function fixture(name, run, extra) {
   fs.writeFileSync(md, 'ORIGINAL_DREAM_NOTES');
   let updates = 0;
   const ctx = loadContext(source, cwd, {}, Object.assign({
+    Buffer, appDir: path.dirname(S.IDX),
     DREAM_ALLOW: true, shuttingDown: false, systemPrompt: 'fixture', listMemoryTopics: () => [],
     getLastInteractionTime: () => Date.now() - 6 * 3600000, getRandomSpinner: () => 'fixture',
     updateLastInteractionTime: () => { updates++; }, processWithTools: run,

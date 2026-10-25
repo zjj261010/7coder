@@ -2662,19 +2662,20 @@ function scheduleCronJob(jobId, schedule, command) {
 // place for all 7coder state). Read paths fall back to the legacy root
 // location once; migrateWorkspaceRootFiles() renames legacy files at startup.
 function getLastInteractionTime() {
-  const file = internalStatePath('.7coder', 'last_interaction');
-  try {
-    const content = fs.readFileSync(file, 'utf8').trim();
-    return parseInt(content, 10) || 0;
-  } catch {
-    // legacy layout fallback (pre-P2-1 root file, e.g. migration was blocked)
+  const locations = [() => internalStatePath('.7coder', 'last_interaction'), () => managedWorkspacePath('.7coder_last_interaction')];
+  for (const location of locations) {
     try {
-      const content = fs.readFileSync(path.join(launchDir, '.7coder_last_interaction'), 'utf8').trim();
-      return parseInt(content, 10) || 0;
+      const content = decodeUtf8Text(readFileBytesBounded(location(), 1024, 'Last interaction time')).trim();
+      const time = Number(content);
+      if (!/^\d+$/.test(content) || !Number.isSafeInteger(time)) throw new Error('invalid last interaction timestamp');
+      return time;
     } catch (e) {
-      return 0;
+      if (e.code === 'ENOENT') continue; // only absence may fall back to legacy
+      console.warn('[WARN] automatic dream deferred; last interaction unavailable: ' + e.message);
+      return Date.now();
     }
   }
+  return 0; // both layouts absent: no prior interaction
 }
 
 function updateLastInteractionTime() {
@@ -2714,26 +2715,28 @@ function migrateWorkspaceRootFiles() {
     if (fs.existsSync(oldBtw)) {
       ensureDot();
       const record = readStateRecord(newBtw);
-      writeStateFile(newBtw, (record ? record.value : '') + decodeUtf8Text(fs.readFileSync(managedWorkspacePath('BTW.md'))));
+      writeStateFile(newBtw, (record ? record.value : '') + decodeUtf8Text(readFileBytesBounded(managedWorkspacePath('BTW.md'), stateFileByteLimit(), 'Legacy BTW notes')));
       fs.unlinkSync(oldBtw);
     }
-  } catch (e) {}
+  } catch (e) { console.warn('[WARN] BTW migration left original in place: ' + e.message); }
 }
 
 async function triggerDreamIfNeeded(modelContext, execution) {
   if (triggerDreamIfNeeded.owner || shuttingDown) return false;
   triggerDreamIfNeeded.lastOutcome = 'skipped';
+  if (!DREAM_ALLOW) return false;
+  checkExecution(execution);
   const lastTime = getLastInteractionTime();
   const hoursSince = (Date.now() - lastTime) / (1000 * 60 * 60);
   const lockPath = internalStatePath('.7coder', 'dream.lock');
-  if (!DREAM_ALLOW || hoursSince < 5) return false;
+  if (hoursSince < 5) return false;
   // The workspace lease excludes another current Agent. Recognized locks
   // from a previous owner can therefore recover immediately; legacy locks
   // retain their existing four-hour grace period.
   try {
     if (fs.existsSync(lockPath)) {
       let recognized = false;
-      try { recognized = JSON.parse(fs.readFileSync(lockPath, 'utf8')).kind === '7coder-dream-owner-v1'; } catch (e) {}
+      try { recognized = JSON.parse(decodeUtf8Text(readFileBytesBounded(lockPath, 4096, 'Dream lock'))).kind === '7coder-dream-owner-v1'; } catch (e) {}
       if (recognized || Date.now() - fs.statSync(lockPath).mtimeMs > 4 * 60 * 60 * 1000) fs.unlinkSync(lockPath);
     }
   } catch (e) {}
@@ -2757,7 +2760,7 @@ async function triggerDreamIfNeeded(modelContext, execution) {
   } finally {
     if (!execution) cancelled.dispose();
     triggerDreamIfNeeded.owner = null;
-    try { if (fs.readFileSync(lockPath, 'utf8') === owner) fs.unlinkSync(lockPath); }
+    try { if (decodeUtf8Text(readFileBytesBounded(lockPath, 4096, 'Dream lock')) === owner) fs.unlinkSync(lockPath); }
     catch (e) { if (e.code !== 'ENOENT') console.warn('[WARN] dream lock cleanup failed: ' + e.message); }
   }
 }
@@ -2768,7 +2771,10 @@ async function runDreamSession(modelContext, cancelled) {
   try {
     const record = readStateRecord(mdPath);
     if (record) currentContent = record.value || currentContent;
-  } catch (e) {}
+  } catch (e) {
+    console.warn('[DREAM] source notes unavailable; consolidation skipped: ' + e.message);
+    return false;
+  }
   const dreamSystemPrompt = `${systemPrompt}
 [DREAM MODE OVERRIDE - SELF-CONSOLIDATION SESSION WITH AN EXECUTION DEADLINE]
 You are now in a dedicated deep organization session for 7CODER.md.
@@ -5992,7 +5998,7 @@ function pruneCliSessionHistory(currentName) {
       const file = internalStatePath('.7coder/sessions', name), stat = fs.lstatSync(file);
       if (!stat.isFile() || stat.size > SESSION_MAX_BYTES) continue;
       // Retention must not repair/quarantine or reinterpret an unknown file.
-      const bytes = fs.readFileSync(file), record = parseSessionState(decodeUtf8Text(bytes));
+      const bytes = readFileBytesBounded(file, SESSION_MAX_BYTES, 'CLI archive'), record = parseSessionState(decodeUtf8Text(bytes));
       if (record.kind !== '7coder-cli-session-v1' || !Number.isFinite(Date.parse(record.savedAt))) continue;
       candidates.push({ name, time: Date.parse(record.savedAt), hash: crypto.createHash('sha256').update(bytes).digest('hex') });
     } catch (error) { unreadable++; }
@@ -6003,7 +6009,7 @@ function pruneCliSessionHistory(currentName) {
     if (remove <= 0) break;
     if (candidate.name === currentName) continue; // protect latest save even after clock rollback
     const file = internalStatePath('.7coder/sessions', candidate.name);
-    if (crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex') !== candidate.hash) {
+    if (crypto.createHash('sha256').update(readFileBytesBounded(file, SESSION_MAX_BYTES, 'CLI archive')).digest('hex') !== candidate.hash) {
       console.warn('[WARN] CLI history changed during retention; cleanup stopped without deleting it.'); break;
     }
     deleteStateFile(file); remove--;

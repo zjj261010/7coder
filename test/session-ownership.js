@@ -39,7 +39,7 @@ async function until(test, label) { const end = Date.now() + 6000; while (!await
     check('pruning does not quarantine or repair a corrupt candidate', !fs.readdirSync(dir).some(name => name.includes('feedface.json.7coder-corrupt')));
 
     const changedCwd = S.freshCwd('changed'), changed = seedCli(changedCwd, 21), oldest = path.join(changed.dir, changed.names[0]); let reads = 0;
-    const changedContext = context(changedCwd, { readFileSync(file, ...args) { if (file === oldest && ++reads === 2) fs.writeFileSync(file, body(webKind, '2024-01-01T00:00:00.000Z', 'changed while pruning')); return fs.readFileSync(file, ...args); } });
+    const changedContext = context(changedCwd, { openSync(file, flags, mode) { if (file === oldest && flags === 'r' && ++reads === 2) fs.writeFileSync(file, body(webKind, '2024-01-01T00:00:00.000Z', 'changed while pruning')); return fs.openSync(file, flags, mode); } });
     changedContext.pruneCliSessionHistory(changed.names[20]);
     check('changed candidate stops cleanup without deleting it or another archive', fs.existsSync(oldest) && fs.readdirSync(changed.dir).length === 21 && JSON.parse(fs.readFileSync(oldest, 'utf8')).kind === webKind);
     const deniedCwd = S.freshCwd('delete-denied'), denied = seedCli(deniedCwd, 21), deniedFile = path.join(denied.dir, denied.names[0]);

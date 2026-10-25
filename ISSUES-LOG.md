@@ -1536,3 +1536,13 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新mcp-retention Node13首次单次 **22/22**：受控时钟/真实Node Stream的UTF8洪泛tail/1秒节流/64KiB总量、父背压排空/恢复、回拨和late data，metadata无正文；两页准确cache/复用、1MiB/256边界及跨页溢出、坏/重复/超长name、循环/8页/大cursor、并发not sent、force失败后恢复、reply后exit防复活；所属真实Node13 stdio server两页发现并输出约560KiB中文emoji stderr、管道全部排空、后续真实UTF8工具调用成功，dispose观察直属close且map/cache/pending清空。Native rate计时仍用受控clock以免用墙钟竞争断言，不据短跑推导72h稳定。
 - 旧mcp-budget因同构造器实际变更在本批首次单次 **11/11**：原pending32、4MiB UTF8待写、late callback与真实不读stdin管道未知结果/close保持。两个专项均无失败复跑。npm/test-all登记，Node13语法/diff通过；未重跑已通过的其它专项或完整A–J/UI/test-all。新增snapshot原函数有动态字段/脱敏测试，HTTP接线为静态核对，未运行真实HTTP Agent创建额外MCP后代来假称所有树已回收。
 - 未跑Win7/真实外部MCP/浏览器/24/72h或打包；单client限额不等于多client的统一heap上限，stdout帧解析仍有固定上限内的瞬时开销，native进程树/杀毒/IO关闭仍需T22-07与实机门槛。按授权提交本批、未推送，完成后重新读取五小时额度再决定下一项。
+
+### 2026-10-25 —— T22-15辅助状态/锁与会话清理读取边界
+
+- MCP长期预算批已提交`87529e2`。完成后五小时窗口used13%/remaining87%；以上一项约8个百分点消耗为参照，本项范围更小，判断能覆盖实现、必要测试与提交，继续执行。
+- Dream禁用/已取消在读取时间戳/锁前退出。时间戳≤1KiB、lossless UTF8/BOM/非负安全整数，只有ENOENT才能回退旧布局；其它坏值/权限/超限告警并返回当前时间以暂缓自动整理，不再当作从未交互。owner锁识别/退出比较≤4KiB；巨型替换锁不整读、不因finally误删。源7CODER.md不可用时维护failed且零模型调用/不记录成功时间，避免旧catch吞读错后用No prior content整理。
+- 旧BTW读取限状态8MiB，合并超限保留旧source与当前target、告警迁移失败；正常合并仍由可靠state协议保留target上一版后再删source。**尚未解决**：两文件提交后unlink失败/骤停导致下一次重复追加的事务幂等，需要单独处理；不因本批读取预算就声称整条迁移事务完成。
+- CLI archive选择和删除前hash复核均用2MiB bounded reader，fstat/实际采集增长和变化检测/finally close；首轮长大则保留未读文件并告警，复核长大则停止清理、不继续删其它档案。不做quarantine/覆盖陌生历史；读取后至unlink的外部进程竞态仍非原子删除保证。
+- 新auxiliary-budget Node13首次单次 **17/17**：100MiB私有稀疏timestamp/lock的禁用零读、预取消零读、两布局缺省/BOM、坏timestamp不回退、巨锁零data-read/4KiB旧owner恢复/巨大foreign替换保留、不可用source failed零模型；旧BTW超限/合并溢出零改动和正常精确合并/previous、两个archive增长阶段均21档案不删/不整读；实际CLI Dream=false时巨metadata原样，普通模型任务仅一次完成、时间戳保存失败有警告。没有真的制造OOM或操作用户文件。
+- 原auxiliary-lifecycle本批首次单次 **10/10**、session-ownership **11/11**：原重入/失败/截止/finally/foreign owner/恢复/legacy宽限、CLI归属与Web隔离/变化删除失败保持。辅助夹具补真实Buffer/appDir依赖，过去catch吞源读取错误时其生命周期断言不能证明源笔记实际进入模型；本批不扩大历史证据。会话变化注入改到实际第二次open，仍验证selection→delete之间变化，不删除旧断言。三个专项均无失败复跑。
+- npm/test-all登记、Node13语法/diff通过；未重复其它已通过专项或完整A–J/UI/test-all，未做Win7/真实磁盘满/网络盘/断电/24/72h或打包。无native IO硬超时，auto memory recall等聚合内存、BTW迁移事务、REPL unowned lock清理与其它整文件日志/指令读取仍开放。按授权提交本批、未推送，收尾后读取额度再决定下一项。
