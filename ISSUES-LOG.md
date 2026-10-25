@@ -1648,3 +1648,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - configPathForOpen保持workspace .env优先、install .env其次；两者缺失时先在1MiB内完整读/解码template、可靠写workspace .env再选择路径。原hOpen吞template/write错误后选不存在install .env并返回ok，现错误直接400，零editor dispatch，不新建假配置；dry仍零模板读。此项未修桌面spawn异步error或cmd start的全路径约束，不宣称整个/api/open已验收。
 - 新install-resource-budget首跑前 **7项**通过：template精确BOM/CRLF/中文复制及优先级、超大template零data-read/close、不支持编码/写rename失败不降级、巨大页面零内容读与组件错误。随后首个404触发严格_endpoint helper拒绝，夹具误用成功分支，并非产品错误；改assertion检查HTTP错误后按授权仅integration **7/7**，首7不重跑。实际所属安装副本缺页/空/坏编码/100MiB页分别可诊断、API小任务完成，巨template请求400且dry成功，恢复原页面后下一启动逐字节提供200。没有打开桌面编辑器/浏览器或改真实.env。
 - 原startup-readiness因server组件启动改动本批首次单次 **13/13**：dream挂起/抢占/deadline、bind失败零副作用、显式启动任务/失败可恢复、强制终止/再次启动owner锁恢复均保持。npm/test-all/README、Node13语法/diff通过。未跑完整A–J/UI/test-all、实际浏览器/Win7/磁盘故障/24–72h/打包；页面缓存/模板各自预算不等于整个安装校验或全局heap。按授权提交、未推送，完成后重看额度。
+
+### 2026-10-25 —— T22-15/30搜索目录分批与grep增长窗口
+
+- 安装资源批已提交`15663f1`；五小时used57%/remaining43%，评估本项迭代/句柄/增长验证及提交能完整执行，继续。
+- 预算glob/grep的目录从readdirSync整数组改为opendir逐项读取，递归frame finally close；达到结果/访问/期限、regex异常、取消或read故障均回收已开目录。visit口径保持实际处理条目，至多额外probe一项用于判断limit；根至depth12最多13层目录句柄，不为每目录先缓存名字数组。glob预算默认/硬顶1000匹配与4倍visit、depth12；grep有opts时至多5000扫描file/20000visit/12depth/50每file匹配，非有限参数不再等同无上限。
+- grep先stat小于2MiB后仍readFileSync的增长窗口已消除：预算路径用opened fstat＋分块reader，skipHeavy2MiB、其它opts8MiB；打开前长大零data-read，读取中最多上限+probe，检测inode/时间/大小变化不匹配partial正文。原binary探测/UTF8 replacement搜索语义不在本项改成新编码政策；取消传至grep并在读取/枚举间复核。无opts internal traversal/whole-file grep仍保留，production工具始终带预算，不把备份内部scope顺手截断。
+- 新search-collection Node13首次单次 **12/12**：逻辑无界目录glob13读/grep7读即到visit12/6、零whole-array调用、真实递归match/file cap/匹配异常/枚举中取消全部close；100MiB增长于open前零read、增长于read中≤2MiB+1且fdclose、同大小替换不报stale match、legacy跨行语义/全量列表保持、read EIO可见并close。未在父监督进程跑危险回溯pattern。
+- 旧scan-budget **21/21**、glob-deadline **14/14**、grep-deadline **6/6**因native采集路径改变本批首次单次；夹具故障/计数改到实际open/opendir，grep stat数包含每file一致性复核，不把reader改动后未触发的旧readFileSync hook当有效验证。两个regex专项全部危险输入仍在所属监督子进程；真实Agent坏pattern error/audit精确ID、下一正常搜索/health恢复保持。四专项无失败复跑，Node13语法/diff、README/npm/test-all同步。
+- 未重跑其它已通过专项/完整A–J/UI/test-all、Win7/真实网络盘/百万文件/24–72h/打包；opendir默认内部分批缓存、native read/stat仍非硬可中断。总heap、文件内容变化最后检查后的外部竞态、无opts备份/历史索引与磁盘保留继续开放。按授权提交、未推送，之后检查额度决定下一项。

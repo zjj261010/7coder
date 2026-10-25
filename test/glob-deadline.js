@@ -14,10 +14,10 @@ const cut=(a,b)=>source.slice(source.indexOf(a),source.indexOf(b,source.indexOf(
 console.log('MATCHING_STARTED');(async()=>{const r={};const bad=await c.tool('glob_tool',{pattern:'*a'.repeat(24)+'*b'});r.bad=bad.status==='error'&&bad.text.includes('100ms matching budget exceeded')&&!bad.text.includes('No files matched');
 const normalize=items=>Array.from(items,s=>s.split(path.sep).join('/')).sort();const options={skipHeavy:true,maxDepth:12,maxEntries:1000};
 const glob=p=>normalize(c.recursiveReaddir('',p,options));r.next=glob('*.js').join(',')==='src/a.js,src/deep/b.js';r.star=glob('src/**/*.js').join(',')==='src/a.js,src/deep/b.js'&&glob('**/plain.txt').join(',')==='plain.txt';r.question=glob('src/?.js').join(',')==='src/a.js';r.windows=glob('src\\\\**\\\\*.js').join(',')==='src/a.js,src/deep/b.js';r.literal=glob('c++[1].txt').join(',')==='c++[1].txt';
-let reads=0;const native=c.fs.readdirSync;c.fs.readdirSync=(...a)=>{reads++;return native(...a);};const expired=c.recursiveReaddir('','*',{maxEntries:1000,deadlineAt:Date.now()-1});r.expired=reads===0&&expired.length===1&&expired[0].includes('time budget exhausted');
+let reads=0;const native=c.fs.opendirSync;c.fs.opendirSync=(...a)=>{reads++;return native(...a);};const expired=c.recursiveReaddir('','*',{maxEntries:1000,deadlineAt:Date.now()-1});r.expired=reads===0&&expired.length===1&&expired[0].includes('time budget exhausted');
 let cancelled=false;try{c.recursiveReaddir('','*',{maxEntries:1000,cancelled:()=>true});}catch(e){cancelled=e.code==='EXECUTION_CANCELLED';}r.cancel=cancelled&&reads===0;
 const over=await c.tool('glob_tool',{pattern:'*'.repeat(4097)});r.limit=over.status==='error'&&over.text.includes('4096 characters')&&reads===0;
-let now=10000,stats=0;class Clock extends Date{static now(){return now;}}c.Date=Clock;const nativeStat=c.fs.statSync;c.fs.statSync=(...a)=>{stats++;const s=nativeStat(...a);now=16000;return s;};const partial=c.recursiveReaddir('','*',{maxEntries:1000});r.total=stats===1&&partial.length===1&&partial[0].includes('time budget exhausted');c.Date=Date;c.fs.statSync=nativeStat;c.fs.readdirSync=native;
+let now=10000,stats=0;class Clock extends Date{static now(){return now;}}c.Date=Clock;const nativeStat=c.fs.statSync;c.fs.statSync=(...a)=>{stats++;const s=nativeStat(...a);now=16000;return s;};const partial=c.recursiveReaddir('','*',{maxEntries:1000});r.total=stats===1&&partial.length===1&&partial[0].includes('time budget exhausted');c.Date=Date;c.fs.statSync=nativeStat;c.fs.opendirSync=native;
 r.internal=c.recursiveReaddir().length===5&&c.recursiveReaddir().every(s=>!s.startsWith('['));console.log('RESULT '+JSON.stringify(r));})().catch(e=>{console.error(e.stack);process.exitCode=1;});
 `);
     const child = S.spawn(S.NODE_BIN, [script], { cwd }); let output = '', expired = false, matchTimer;
@@ -31,9 +31,9 @@ r.internal=c.recursiveReaddir().length===5&&c.recursiveReaddir().every(s=>!s.sta
     check('question wildcard remains inside one path segment', result.question);
     check('Windows pattern separators retain path-aware behavior', result.windows);
     check('glob regex metacharacters remain literal', result.literal);
-    check('already expired scan performs zero readdir and reports incomplete', result.expired);
-    check('cancelled scan performs zero readdir and throws cancellation', result.cancel);
-    check('oversized glob pattern fails before readdir instead of substring fallback', result.limit);
+    check('already expired scan performs zero directory open and reports incomplete', result.expired);
+    check('cancelled scan performs zero directory open and throws cancellation', result.cancel);
+    check('oversized glob pattern fails before directory open instead of substring fallback', result.limit);
     check('aggregate deadline is checked after IO and before matching', result.total);
     check('internal no-options traversal retains every owned file without markers', result.internal);
     server = http.createServer((req, res) => { let raw = ''; req.setEncoding('utf8'); req.on('data', d => raw += d); req.on('end', () => {

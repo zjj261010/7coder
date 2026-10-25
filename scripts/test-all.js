@@ -79,6 +79,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'audit-budget.js', args: [path.join(ROOT, 'test', 'audit-budget.js')] },
     { name: 'audit-commit-budget.js', args: [path.join(ROOT, 'test', 'audit-commit-budget.js')] },
     { name: 'install-resource-budget.js', args: [path.join(ROOT, 'test', 'install-resource-budget.js')] },
+    { name: 'search-collection.js', args: [path.join(ROOT, 'test', 'search-collection.js')] },
     { name: 'debug-prerequisites.js', args: [path.join(ROOT, 'test', 'debug-prerequisites.js')] },
     { name: 'tool-result-evidence.js', args: [path.join(ROOT, 'test', 'tool-result-evidence.js')] },
     { name: 'git-snapshot-retention.js', args: [path.join(ROOT, 'test', 'git-snapshot-retention.js')] },

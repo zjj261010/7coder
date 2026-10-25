@@ -1487,6 +1487,14 @@ function readDirectoryEntriesBounded(directory, options = {}) {
   } finally { if (handle) handle.closeSync(); }
   return { entries, visited, bytes, incomplete };
 }
+function openScanDirectory(directory, budgeted) {
+  if (!budgeted) {
+    const entries = fs.readdirSync(directory); let index = 0;
+    return { next: () => index < entries.length ? entries[index++] : null, close() {} };
+  }
+  const handle = fs.opendirSync(directory);
+  return { next() { const entry = handle.readSync(); return entry ? entry.name : null; }, close: () => handle.closeSync() };
+}
 
 // Resolves symlinks/junctions on the longest existing prefix of a path, so the
 // sandbox cannot be escaped through links pointing outside the workspace.
@@ -2319,12 +2327,12 @@ const SCAN_SKIP_DIRS = ['node_modules', '.git', 'dist', '.cache'];
 //                traversal at 5s. Each glob regex test has at most 100ms.
 function recursiveReaddir(dir = '', pattern = '', opts = null) {
   const skipHeavy = !!opts && !!opts.skipHeavy;
-  const maxDepth = opts && typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity;
-  const maxEntries = opts && typeof opts.maxEntries === 'number' ? opts.maxEntries : Infinity;
+  const maxDepth = opts ? (Number.isFinite(opts.maxDepth) ? Math.max(0, Math.min(12, Math.floor(opts.maxDepth))) : 12) : Infinity;
+  const maxEntries = opts ? (Number.isFinite(opts.maxEntries) ? Math.max(0, Math.min(1000, Math.floor(opts.maxEntries))) : 1000) : Infinity;
   // A2-20: budgeted walks also cap how many entries they VISIT (maxEntries
   // alone counted matches - a no-match walk could still scan the whole tree)
   // and keep a real-path visited set so junction cycles cannot loop the walk.
-  const maxVisited = opts && typeof opts.maxEntries === 'number' ? opts.maxEntries * 4 : Infinity;
+  const maxVisited = opts ? maxEntries * 4 : Infinity;
   const budgeted = !!opts;
   const scanDeadline = budgeted ? Math.min(Date.now() + 5000, Number.isFinite(opts.deadlineAt) ? opts.deadlineAt : Infinity) : Infinity;
   const visited = new Set();
@@ -2354,10 +2362,11 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
       if (visited.has(realCur)) return;
       visited.add(realCur);
     }
-    let entries;
+    let reader;
     if (!checkScan()) return;
-    try { entries = fs.readdirSync(current); } catch (e) { if (budgeted) incomplete.add('unreadable directory (' + e.code + ')'); return; }
-    for (const entry of entries) {
+    try { reader = openScanDirectory(current, budgeted); } catch (e) { if (budgeted) incomplete.add('unreadable directory (' + e.code + ')'); return; }
+    const next = () => { if (!checkScan()) return null; try { return reader.next(); } catch (e) { if (budgeted) incomplete.add('unreadable directory (' + e.code + ')'); return null; } };
+    try { for (let entry = next(); entry !== null; entry = next()) {
       if (!checkScan()) return;
       if (results.length >= maxEntries) return;
       if (budgeted && visitedCount >= maxVisited) { incomplete.add('visit limit ' + maxVisited); return; }
@@ -2391,7 +2400,7 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
           if (results.length >= maxEntries) return;
         }
       }
-    }
+    } } finally { try { reader.close(); } catch (e) { if (budgeted) incomplete.add('directory close failed (' + e.code + ')'); } }
   }
   walk(startDir, 0);
   if (results.length >= maxEntries) results.push('[truncated at ' + maxEntries + ' entries]');
@@ -2412,12 +2421,14 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
 //                        unreadable files), default 4*maxFiles / 12
 //   deadlineAt         - optional caller deadline; scan also stops after 5s
 function grepSearch(pattern, searchPath = '', opts = null) {
+  checkExecution(opts && opts.cancelled);
   const budgeted = !!opts;
   const skipHeavy = budgeted && !!opts.skipHeavy;
-  const maxFiles = budgeted ? (opts && typeof opts.maxFiles === 'number' ? opts.maxFiles : 5000) : Infinity;
-  const perFileCap = budgeted ? (opts && typeof opts.maxMatchesPerFile === 'number' ? opts.maxMatchesPerFile : 50) : Infinity;
-  const maxVisited = budgeted ? (typeof opts.maxVisited === 'number' ? opts.maxVisited : maxFiles * 4) : Infinity;
-  const maxDepth = budgeted ? (typeof opts.maxDepth === 'number' ? opts.maxDepth : 12) : Infinity;
+  const limit = (key, fallback, ceiling) => Number.isFinite(opts[key]) ? Math.max(0, Math.min(ceiling, Math.floor(opts[key]))) : fallback;
+  const maxFiles = budgeted ? limit('maxFiles', 5000, 5000) : Infinity;
+  const perFileCap = budgeted ? limit('maxMatchesPerFile', 50, 50) : Infinity;
+  const maxVisited = budgeted ? limit('maxVisited', maxFiles * 4, 20000) : Infinity;
+  const maxDepth = budgeted ? limit('maxDepth', 12, 12) : Infinity;
   const results = [];
   const incomplete = new Set();
   const scanDeadline = budgeted ? Math.min(Date.now() + 5000, Number.isFinite(opts.deadlineAt) ? opts.deadlineAt : Infinity) : Infinity;
@@ -2455,13 +2466,15 @@ function grepSearch(pattern, searchPath = '', opts = null) {
   let visitedCount = 0;
   const visited = new Set(); // A2-20: junction cycles must not loop the walk
   function scanFile(full, stat, explicit) {
+    checkExecution(opts && opts.cancelled);
     if (Date.now() >= scanDeadline) { incomplete.add('time budget exhausted'); return; }
     if (skipHeavy && stat.size > 2 * 1024 * 1024) {
       if (explicit) incomplete.add('file exceeds 2MiB limit');
       return;
     }
     try {
-      const buf = fs.readFileSync(full);
+      const buf = budgeted ? readFileBytesBounded(full, skipHeavy ? 2 * 1024 * 1024 : 8 * 1024 * 1024, 'Grep input') : fs.readFileSync(full);
+      checkExecution(opts && opts.cancelled);
       if (skipHeavy) {
         const probe = Math.min(buf.length, 4096);
         for (let i = 0; i < probe; i++) {
@@ -2488,7 +2501,7 @@ function grepSearch(pattern, searchPath = '', opts = null) {
         results.push(`${path.relative(launchDir, full)}: matches "${pattern}"`);
         if (matchedLines > perFileCap) results.push('... (more matches in this file)');
       }
-    } catch (e) { incomplete.add('unreadable file (' + e.code + ')'); }
+    } catch (e) { checkExecution(opts && opts.cancelled); incomplete.add('unreadable file (' + (e.code || String(e.message).slice(0, 200)) + ')'); }
   }
   function walk(current, depth) {
     if (matchError) return;
@@ -2498,9 +2511,10 @@ function grepSearch(pattern, searchPath = '', opts = null) {
     try { realCur = fs.realpathSync(current); } catch (e) { incomplete.add('unreadable path (' + e.code + ')'); return; }
     if (visited.has(realCur)) return;
     visited.add(realCur);
-    let entries;
-    try { entries = fs.readdirSync(current); } catch (e) { incomplete.add('unreadable directory (' + e.code + ')'); return; }
-    for (const entry of entries) {
+    let reader;
+    try { reader = openScanDirectory(current, budgeted); } catch (e) { incomplete.add('unreadable directory (' + e.code + ')'); return; }
+    const next = () => { checkExecution(opts && opts.cancelled); if (Date.now() >= scanDeadline) { incomplete.add('time budget exhausted'); return null; } try { return reader.next(); } catch (e) { incomplete.add('unreadable directory (' + e.code + ')'); return null; } };
+    try { for (let entry = next(); entry !== null; entry = next()) {
       if (matchError) return;
       if (Date.now() >= scanDeadline) { incomplete.add('time budget exhausted'); return; }
       if (scanned >= maxFiles) return;
@@ -2519,7 +2533,7 @@ function grepSearch(pattern, searchPath = '', opts = null) {
       } else {
         scanFile(full, stat, false);
       }
-    }
+    } } finally { try { reader.close(); } catch (e) { incomplete.add('directory close failed (' + e.code + ')'); } }
   }
   let startStat;
   try {
@@ -3752,7 +3766,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     }
   }
   if (name === 'grep_tool') {
-    const text = grepSearch(args.pattern, args.path, { skipHeavy: true, deadlineAt: cancelled && cancelled.deadlineAt });
+    const text = grepSearch(args.pattern, args.path, { skipHeavy: true, deadlineAt: cancelled && cancelled.deadlineAt, cancelled });
     // Invalid patterns/starting paths are errors; an incomplete scan has an
     // explicit marker, while a complete no-match scan remains normal output.
     return makeToolResult(text.startsWith('Tool error:') ? 'error' : 'ok', text);

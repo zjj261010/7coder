@@ -48,7 +48,7 @@ function context(name, overrides) {
     check('internal no-opts traversal retains every file and no markers', ctx.recursiveReaddir().length === 20);
     statCalls = 0;
     let text = ctx.grepSearch('absent', '', { maxFiles: 100, maxVisited: 6 });
-    check('grep nonmatches exhaust visit budget without false no-match', statCalls === 7 && text.includes('visit limit 6') && !text.startsWith('No matches'));
+    check('grep nonmatches exhaust visit budget with bounded-read consistency stats and no false no-match', statCalls === 13 && text.includes('visit limit 6') && !text.startsWith('No matches'));
     text = ctx.grepSearch('plain', '', { maxFiles: 2 });
     check('grep successful file-count cap retains truncation marker', text.includes('truncated after 2 files scanned'));
 
@@ -65,7 +65,8 @@ function context(name, overrides) {
     check('internal junction cycle is visited once', ctx.grepSearch('needle', 'deep', { skipHeavy: true }).split('\n').filter(s => s.includes('deep.txt:')).length === 1);
 
     ({ cwd, ctx } = context('unreadable', {
-      readFileSync(file, ...args) { if (path.basename(file) === 'denied.txt') throw Object.assign(Error('fixture ACL'), { code: 'EACCES' }); return fs.readFileSync(file, ...args); },
+      openSync(file, ...args) { if (path.basename(file) === 'denied.txt') throw Object.assign(Error('fixture ACL'), { code: 'EACCES' }); return fs.openSync(file, ...args); },
+      opendirSync(file, ...args) { if (path.basename(file) === 'blocked') throw Object.assign(Error('fixture ACL'), { code: 'EACCES' }); return fs.opendirSync(file, ...args); },
       readdirSync(file, ...args) { if (path.basename(file) === 'blocked') throw Object.assign(Error('fixture ACL'), { code: 'EACCES' }); return fs.readdirSync(file, ...args); }
     }));
     fs.writeFileSync(path.join(cwd, 'denied.txt'), 'needle'); fs.mkdirSync(path.join(cwd, 'blocked'));

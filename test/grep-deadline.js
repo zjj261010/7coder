@@ -18,7 +18,7 @@ function api(p, url, data = null) {
     const script = path.join(S.runDir, 'match-owned.js');
     fs.writeFileSync(script, `const fs=require('fs'),vm=require('vm');const{loadContext}=require(${JSON.stringify(path.resolve(__dirname, 'download-commit.js'))});
 const source=fs.readFileSync(${JSON.stringify(S.IDX)},'utf8');let reads=0;
-const c=loadContext(source,${JSON.stringify(cwd)},{readFileSync(file,...args){reads++;return fs.readFileSync(file,...args)}},{Buffer,SCAN_SKIP_DIRS:[]});
+const c=loadContext(source,${JSON.stringify(cwd)},{openSync(file,...args){reads++;return fs.openSync(file,...args)}},{Buffer,SCAN_SKIP_DIRS:[]});
 const a=source.indexOf('function grepSearch('),b=source.indexOf('// Keep the handle until close',a);vm.runInContext(source.slice(a,b),c);
 console.log('MATCH_STARTED');const first=c.grepSearch('(a|aa)+$','input.txt',{skipHeavy:true});console.log('BOUNDED '+first);
 console.log('NEXT '+c.grepSearch('a','input.txt',{skipHeavy:true}));const before=reads;
