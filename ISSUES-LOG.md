@@ -1585,3 +1585,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 原REPL slash命令先readFileSync整文件，再以64K字符substring截断；尾部约束可能丢失却照常排队，坏编码被replacement解码，读错/空文件静默当作/name普通输入。现readWorkspaceCommand先以64KiB字节有界读取，再lossless UTF8与trim；超限/IO/编码/空正文明确not queued，保留原draft，不降级成另一条任务。仅ENOENT保持未知命令literal兼容，name校验/受管路径边界不变。
 - 新command-budget Node13首次单次 **13/13**：BOM/CRLF/中文emoji完整、64KiB边界及UTF8字节判定、100MiB私有稀疏源零data-read/close、不支持编码/NUL/空/读拒绝/path拒绝；实际REPL三种错误均不排队、不将部分指令或slash名送上游，既有SAFE_DRAFT原样保留；同REPL下一合法完整命令含最终guard与未知literal准确到达本地模型，正常退出且源不改。旧B仅slashcmd **2/2**一次通过；未因新增边界重跑其它已通过专项。
 - Node13语法/diff检查通过，README/npm/test-all同步。未跑完整A–J/UI/test-all、Win7/真实模型/网络盘/24–72h或打包；这是每command预算，不关闭累计draft、所有输入context或全进程heap预算。按授权提交、未推送，完成后重新评估额度。
+
+### 2026-10-25 —— T22-15 REPL草稿与BTW排队准入
+
+- 命令读取批已提交`9607920`；完成后五小时used25%/remaining75%，判断足够完成本项准入/时序验证/提交，继续。
+- 每draft textBytes＋queued note reservedBytes≤1MiB UTF8，typed input与展开command均在追加前拒绝整条超限输入，保留已有draft，不substring。BTW先按原note及分隔符预留空间，再创建control/Promise；摘要在追加及持久化前原子替换自己的reservation，不能挤占其它note预留。失败/取消finally释放，重复释放不变负值，执行时仍将raw任务原样传递。
+- REPL级pendingReplNotes≤32，横跨current/executing/discarded草稿；/clear取消但不提前清准入账目，直到每项finally真正结束才可重新接纳。不因重置draft创建无界control/timer/闭包。原note时限、顺序、/execute获取draft、clear隔离及session行为保持。单次readline输入行在本层检查前已经分配；旧会话总量、跨HTTP请求heap、模型/日志总磁盘仍开放，不能将本项称全局内存硬限。
+- 新repl-draft-budget Node13首次单次 **17/17**：1MiB精确边界/UTF8/零部分变更、note reservation与摘要替代、超大summary保留后续预留/释放；真实REPL填满draft后拒绝文本及note零模型调用，32note仅首项发送、第33拒绝；同stdin chunk clear＋新note不能绕过global准入，取消关闭transport后新note/任务成功且无旧内容；摘要膨胀拒绝不改BTW文件，随后clear/新任务/bye恢复。
+- 原repl-approval因draft/BTW实际改动在本批首次单次 **26/26**，包含并发审批/EOF、notes顺序与下一draft、重复execute、clear丢弃、过期取消、活动模型与Dream退出；无失败复跑。README/npm/test-all、Node13语法/diff通过。未重跑已通过command13/B2或其它专项、完整A–J/UI/test-all、Win7/真实模型/24–72h/打包；按授权提交、未推送，随后读额度再决定下一项。

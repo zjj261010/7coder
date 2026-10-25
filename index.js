@@ -2935,6 +2935,25 @@ function readWorkspaceCommand(name) {
   return expanded;
 }
 
+function replDraftByteLimit() { return 1024 * 1024; }
+function reserveReplNote(draft, note) {
+  const bytes = Buffer.byteLength('\n' + note + '\n', 'utf8');
+  if (bytes > replDraftByteLimit() - draft.textBytes - draft.reservedBytes) throw new Error('Draft exceeds 1 MiB UTF-8 including queued notes; execute or clear the current draft first.');
+  draft.reservedBytes += bytes;
+  return bytes;
+}
+function releaseReplNote(draft, token) {
+  draft.reservedBytes -= token.draftReservedBytes || 0;
+  token.draftReservedBytes = 0;
+}
+function appendReplDraft(draft, text, token) {
+  const bytes = Buffer.byteLength(text, 'utf8'), reserved = token ? token.draftReservedBytes || 0 : 0;
+  if (bytes > replDraftByteLimit() - draft.textBytes - draft.reservedBytes + reserved) throw new Error('Draft exceeds 1 MiB UTF-8 including queued notes; input was not queued.');
+  if (token) releaseReplNote(draft, token);
+  draft.text += text;
+  draft.textBytes += bytes;
+}
+
 // ====================== LIGHT/HEAVY CALLER ======================
 // GAP-8: token usage observability. The upstream reports per-response token
 // usage; sessionUsage aggregates every callOpenAI call made by THIS process
@@ -7235,7 +7254,10 @@ async function main() {
     // Each execution takes ownership of one draft before its first await.
     // Later input (including BTW) belongs to the next draft, even while the
     // previous draft is still waiting for its own note summaries.
-    const newDraft = () => ({ text: '', pending: Promise.resolve(), modelContext: createModelContext(), discarded: false, notes: new Set() });
+    const newDraft = () => ({ text: '', textBytes: 0, reservedBytes: 0, pending: Promise.resolve(), modelContext: createModelContext(), discarded: false, notes: new Set() });
+    // Count all unsettled notes, including executing/discarded drafts. A /clear
+    // must not reset admission while its cancelled requests are still settling.
+    const pendingReplNotes = new Set();
     let currentDraft = newDraft();
     let taskRunning = false;
     // After stdin EOF the readline interface is closed; calling prompt() on it
@@ -7320,10 +7342,17 @@ async function main() {
       if (trimmed.startsWith('/btw ')) {
         const note = trimmed.slice(5).trim();
         if (note) {
-          console.log(`[BTW] /btw note received - small-model sub-agent summarizing for main task...`);
           const draft = currentDraft;
+          let reservation;
+          try {
+            if (pendingReplNotes.size >= 32) throw new Error('32 BTW notes are still pending; wait for completion before adding another note.');
+            reservation = reserveReplNote(draft, note);
+          } catch (e) { console.error('[BTW] Note not queued: ' + e.message); safePrompt(); return; }
+          console.log(`[BTW] /btw note received - small-model sub-agent summarizing for main task...`);
           const noteExecution = createExecutionControl();
+          noteExecution.draftReservedBytes = reservation;
           draft.notes.add(noteExecution);
+          pendingReplNotes.add(noteExecution);
           // Preserve every note, in input order, and attach it to this draft.
           const work = draft.pending.then(async () => {
             if (draft.discarded || shuttingDown) return;
@@ -7346,7 +7375,7 @@ Make it read like a direct continuation of the user's task instructions for the 
             }
             if (shuttingDown || draft.discarded) return;
             checkExecution(noteExecution);
-            draft.text += '\n' + summarized + '\n';
+            appendReplDraft(draft, '\n' + summarized + '\n', noteExecution);
             console.log(`[BTW] BTW sub-agent injected into queued task prompt:\n${summarized}`);
             // P2-1: BTW.md lives under .7coder/ now (dir created first - at
             // this point it may not exist yet, e.g. /btw then EOF, no task run).
@@ -7357,10 +7386,10 @@ Make it read like a direct continuation of the user's task instructions for the 
               const record = readStateRecord(btwPath);
               writeStateFile(btwPath, (record ? record.value : '') + `\n---\n**BTW** ${new Date().toISOString()}\nOriginal note: ${note}\nInjected summary: ${summarized}\n\n`);
             } catch (e) { console.error(`[BTW] Cannot persist note to ${btwPath}: ${e.message}`); }
-          }).finally(() => { draft.notes.delete(noteExecution); noteExecution.dispose(); });
+          }).finally(() => { releaseReplNote(draft, noteExecution); draft.notes.delete(noteExecution); pendingReplNotes.delete(noteExecution); noteExecution.dispose(); });
           // A failed note must neither reject the next note's chain nor leave
           // an unhandled rejection before /execute starts waiting for it.
-          draft.pending = work.catch(e => console.error(`[BTW] ${e.stack || e.message}`));
+          draft.pending = work.catch(e => console.error(`[BTW] Note not queued: ${e.message}`));
           await draft.pending;
         } else {
           console.log('Usage: /btw your note here');
@@ -7455,12 +7484,12 @@ Make it read like a direct continuation of the user's task instructions for the 
             return;
           }
         }
+        const queued = expanded || input;
+        try { appendReplDraft(currentDraft, queued + '\n'); }
+        catch (e) { console.error('[INPUT] ' + e.message); safePrompt(); return; }
         if (expanded) {
           console.log(`[CMD] ${slashCmd[1]} 展开为 ${expanded.length} 字符任务`);
           console.log(expanded); // echo the queued body (the typed-input equivalent)
-          currentDraft.text += expanded + '\n';
-        } else {
-          currentDraft.text += input + '\n';
         }
       }
 
