@@ -1215,18 +1215,23 @@ body.dark .primary-btn { color: #231b16; }
       .catch(function (e) { if (sequence === modeRequestSeq) { toast('切换失败: ' + e.message, 'err'); modeSel.value = mode; } })
       .then(function () { if (sequence === modeRequestSeq) { modeUpdating = false; modeSel.disabled = false; } });
   });
-  $('openWs').addEventListener('click', function () {
-    fetch('/api/open', { method: 'POST', headers: headers(), body: JSON.stringify({ target: 'workspace' }) })
-      .then(readJSON)
-      .then(function (j) { if (j.ok) toast('已打开工作区', 'ok'); })
-      .catch(function (e) { toast('打开失败: ' + e.message, 'err'); });
-  });
-  $('openCfg').addEventListener('click', function () {
-    fetch('/api/open', { method: 'POST', headers: headers(), body: JSON.stringify({ target: 'config' }) })
-      .then(readJSON)
-      .then(function (j) { if (j.ok) toast('已打开配置文件', 'ok'); })
-      .catch(function (e) { toast('打开失败: ' + e.message, 'err'); });
-  });
+  var desktopOpenPending = false;
+  function requestDesktopOpen(target) {
+    if (desktopOpenPending) return;
+    desktopOpenPending = true; $('openWs').disabled = true; $('openCfg').disabled = true;
+    var openCtrl = new AbortController(), openTimer = setTimeout(function () { openCtrl.abort(); }, 10000);
+    fetch('/api/open', { method: 'POST', headers: headers(), signal: openCtrl.signal, body: JSON.stringify({ target: target }) })
+      .then(function (res) { return res.json().then(function (j) {
+        if (j.status === 'unknown') { toast('打开结果未确认，请先查看桌面，避免重复打开。', 'warn'); return; }
+        if (!res.ok || j.error) { var rejected = new Error((j.error && j.error.message) || 'HTTP ' + res.status); rejected.desktopLaunchRejected = true; throw rejected; }
+        if (!j.ok || j.status !== 'accepted') { toast('打开结果未确认，请先查看桌面，避免重复打开。', 'warn'); return; }
+        toast('系统启动器已接受' + (target === 'workspace' ? '工作区' : '配置文件') + '打开请求，请查看桌面。', 'ok');
+      }); })
+      .catch(function (e) { toast(e && e.desktopLaunchRejected ? '启动请求失败: ' + e.message : '打开结果未确认：' + (e && e.name === 'AbortError' ? '等待超时' : '连接或响应异常') + '，请先查看桌面后再试。', e && e.desktopLaunchRejected ? 'err' : 'warn'); })
+      .then(function () { clearTimeout(openTimer); desktopOpenPending = false; $('openWs').disabled = false; $('openCfg').disabled = false; });
+  }
+  $('openWs').addEventListener('click', function () { requestDesktopOpen('workspace'); });
+  $('openCfg').addEventListener('click', function () { requestDesktopOpen('config'); });
 
   /* ===== Expose to window for console access ===== */
   window.__7coder = { history: history, refreshInfo: refreshInfo };

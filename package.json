@@ -96,6 +96,7 @@
     "test:audit-commit-budget": "node test/audit-commit-budget.js",
     "test:install-resource-budget": "node test/install-resource-budget.js",
     "test:search-collection": "node test/search-collection.js",
+    "test:open-feedback": "node test/open-feedback.js",
     "test:debug-prerequisites": "node test/debug-prerequisites.js",
     "test:tool-result-evidence": "node test/tool-result-evidence.js",
     "test:git-snapshot-retention": "node test/git-snapshot-retention.js",

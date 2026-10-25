@@ -1665,3 +1665,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 交接证据：当前backup排序仍readdirSync整数组，pruneBackups仍无opts全量遍历且按名字分组/包含loose .bak全局清理，尚无版本化归属凭据；/undo仍直接copyFileSync覆盖目标、catch返回false，尚无“原件在恢复失败后仍保持”的独立提交协议。这些是下一项需要验证/设计的风险边界，不能据静态位置声称已复现真实Win7数据损失；不得把本轮有界搜索替换扩大到备份内部遍历。
 - 会话历史全量索引/分页与归属保留、其余background/截图/BTW/TODO/证据/temp磁盘预算、native进程树/Job Object、实际Win7/PS2/中文路径及24→72h仍未完成。完整A–J/UI/test-all和新离线包均未执行；真实模型/浏览器/磁盘满/注销关机未由本地fixture替代。
 - 停止前只做日志记录与Git状态核对，不启动新测试或循环验证。所有本轮产品修改已有独立提交；后续从上述备份闭环开始重新评估额度。
+
+### 2026-10-25 —— INC-25-09桌面打开请求的启动失败反馈
+
+- 用户在额度停点后明确选择并授权先做小项`/api/open`反馈，备份闭环没有启动。开工读取额度接口失败，沿用上次remaining30%作保守工作量判断；本项限定启动器结算、必要诊断及页面反馈，不以旧读数声称当前额度仍为30%。
+- **Medium／已确认错误路径**：原hOpen给spawn返回对象绑定空error处理便立即返回200/ok，异步ENOENT/EACCES和随后非零退出均不能反映在响应；页面又显示“已打开”，掩盖现场故障并容易导致重复操作。现由launchDesktopPath等待error/exit/close，以close＋exit0返回accepted，只表示启动器成功结束，绝不等同编辑器/窗口实际就绪。使用Node13已存在事件，不依赖较新spawn事件；windowsHide与ignore stdio，原平台启动命令/argv保持。
+- 500表示launcher error/非零退出，504表示close/结果未知，400保留输入/配置准备失败，dry仍零spawn。最多4个未close launcher；5秒超时后仅对所属直属ChildProcess句柄发停止请求，不taskkill其它PID/不杀编辑器树；未确认close不提前释放容量，第5请求429。无PID的Node13异步spawn error可直接释放，late close诊断并归还slot，不产生第二响应或把先前unknown改成成功。runtime.jsonl与audit记录status/path/PID/可用exit/signal/有界错误；客户端已断开时不再次写HTTP响应。
+- 页面单在途并禁用两个按钮，accepted提示“系统启动器已接受…请查看桌面”；明确拒绝提示启动请求失败，504/网络/响应异常及旧无status成功响应标结果未知。10秒fetch期限释放按钮/局部timer，不自动重放，也不把AbortError当服务端操作回滚。
+- 新open-feedback随包Node13首次单次 **33/33**：pid/exit尚无close不成功、0/7/signal、无pid异步error/无close（含脱敏与late error）、sync throw、4个timeout仍占slot/第5零spawn/late回收；原handler在VM中验证等待与200/500/504/429/400/dry/config错误、audit状态和迟到单次响应。所属真实Node子进程分别exit0/7/hang超时后close/不存在cwd异步error，全部观察槽位清零；预期missing-cwd产生一条fixture ENOENT诊断，不是套件失败。页面夹具覆盖双按钮防重复、accepted措辞/失败/unknown/legacy、网络期限及错误释放且不重试。
+- 接口handler是原函数VM＋受控事件，**不是实际HTTP＋Windows编辑器端到端**；真实子进程也是私有Node fixture，没有打开编辑器、工作区窗口、浏览器或改真实.env。首跑通过后仅给native测试进程补windowsHide属性，静态检查，不为此重复专项。npm/test-all登记、Node13语法/diff检查；未重复原UI全套、安装资源/其它已通过专项或A–J/test-all，未验收Win7/PS2/文件关联/真实cmd特殊字符路径/GUI/24–72h/进程树。按既有授权提交、未推送；完成后重新读取额度，无法确认余量或不足下一完整项则停止。

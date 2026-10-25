@@ -3043,6 +3043,66 @@ function configPathForOpen() {
   return workspace;
 }
 
+function launchDesktopPath(openPath, target, timeoutMs = 5000) {
+  const active = launchDesktopPath.active || (launchDesktopPath.active = new Set());
+  const waitMs = Number.isFinite(timeoutMs) ? Math.max(1, Math.min(5000, Math.floor(timeoutMs))) : 5000;
+  if (active.size >= 4) return Promise.resolve({ status: 'busy', pid: null, exitCode: null, signal: null,
+    error: { code: 'OPEN_BUSY', message: 'Four desktop launchers still await close; inspect them before another request.' } });
+  return new Promise(resolve => {
+    let child, timer, settled = false, outcome, exitCode = null, signal = null;
+    const finish = (status, error) => {
+      if (settled) return;
+      settled = true; clearTimeout(timer);
+      outcome = { status, pid: child && child.pid || null, exitCode, signal,
+        error: error ? { code: runtimeText(error.code, 40), message: runtimeText(error.message) } : null };
+      recordRuntimeEvent('open-launcher', status === 'accepted' ? 'ok' : 'error', { id: target, path: openPath,
+        pid: outcome.pid, exitCode, signal, code: error && error.code,
+        message: error ? error.message : 'Launcher exited 0; actual application state is unverified.' });
+      resolve(outcome);
+    };
+    const stopDirect = () => {
+      // Stop only the retained launcher's direct handle. Never infer that an
+      // editor/window or any descendants have been stopped or opened.
+      if (child && child.pid && child.exitCode == null && child.signalCode == null && !child.killed) {
+        try { child.kill(); } catch (e) { recordRuntimeEvent('open-launcher-stop', 'error', { id: target, path: openPath, pid: child.pid, message: e.message, code: e.code }); }
+      }
+    };
+    const failed = error => {
+      if (settled) return;
+      if (!child || !child.pid) active.delete(child); // Node13 EMFILE may have no close
+      finish('error', error); stopDirect();
+    };
+    try {
+      let cmd, argv;
+      if (process.platform === 'win32') { cmd = 'cmd.exe'; argv = ['/c', 'start', '', openPath]; }
+      else if (process.platform === 'darwin') { cmd = 'open'; argv = [openPath]; }
+      else { cmd = 'xdg-open'; argv = [openPath]; }
+      child = child_process.spawn(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true });
+      active.add(child);
+      child.on('error', failed); // attach even when pid/stdio were never created
+      child.once('exit', (code, sig) => { exitCode = Number.isInteger(code) ? code : null; signal = sig || null; });
+      child.once('close', (code, sig) => {
+        active.delete(child); clearTimeout(timer);
+        if (exitCode === null) exitCode = Number.isInteger(code) ? code : null;
+        if (!signal) signal = sig || null;
+        if (settled) {
+          recordRuntimeEvent('open-launcher-close', 'error', { id: target, path: openPath, pid: child.pid, exitCode, signal,
+            message: 'Late launcher close observed after ' + outcome.status + '; application state remains unverified.' });
+          return;
+        }
+        if (exitCode === 0 && !signal) finish('accepted');
+        else finish(exitCode == null && !signal ? 'unknown' : 'error', { code: 'OPEN_EXIT',
+          message: 'Desktop launcher did not confirm success (exit ' + exitCode + (signal ? ', signal ' + signal : '') + ').' });
+      });
+      timer = setTimeout(() => {
+        finish('unknown', { code: 'OPEN_TIMEOUT', message: 'Desktop launcher close was not confirmed within ' + waitMs + 'ms; opening result is unknown. Check the desktop before retrying.' });
+        stopDirect();
+      }, waitMs);
+      child.unref();
+    } catch (error) { failed(error); }
+  });
+}
+
 function replDraftByteLimit() { return 1024 * 1024; }
 function reserveReplNote(draft, note) {
   const bytes = Buffer.byteLength('\n' + note + '\n', 'utf8');
@@ -6974,7 +7034,7 @@ function startHttpServer() {
     });
   }
   function hOpen(req, res) {
-    readJsonBody(req, res, BODY_LIMIT_DEFAULT, body => {
+    readJsonBody(req, res, BODY_LIMIT_DEFAULT, async body => {
       try {
         const j = JSON.parse(body);
         const target = j.target;
@@ -6990,19 +7050,15 @@ function startHttpServer() {
         } else {
           openPath = configPathForOpen();
         }
-        let cmd, cmdArgs;
-        if (process.platform === "win32") { cmd = "cmd.exe"; cmdArgs = ["/c", "start", "", openPath]; }
-        else if (process.platform === "darwin") { cmd = "open"; cmdArgs = [openPath]; }
-        else { cmd = "xdg-open"; cmdArgs = [openPath]; }
-        const c = child_process.spawn(cmd, cmdArgs, { detached: true, stdio: "ignore" });
-        c.on("error", () => {});
-        c.unref();
-        audit({ ts: new Date().toISOString(), type: 'open', target, path: openPath });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, target, path: openPath }));
+        const result = await launchDesktopPath(openPath, target);
+        audit({ ts: new Date().toISOString(), type: 'open', status: result.status, target, path: openPath, pid: result.pid, exitCode: result.exitCode, signal: result.signal, error: result.error });
+        if (res.destroyed || res.writableEnded) return;
+        res.writeHead(result.status === 'accepted' ? 200 : result.status === 'busy' ? 429 : result.status === 'unknown' ? 504 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(Object.assign({ ok: result.status === 'accepted', target, path: openPath }, result)));
       } catch (e) {
+        if (res.destroyed || res.writableEnded) return;
         res.writeHead(400, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: { message: e.message } }));
+        res.end(JSON.stringify({ error: { message: runtimeText(e.message), code: runtimeText(e.code, 40) } }));
       }
     });
   }
