@@ -6293,6 +6293,7 @@ const BACKUP_DISCOVERY_MAX_CANDIDATES = 1024;
 const BACKUP_DISCOVERY_MAX_META_BYTES = 4 * 1024 * 1024;
 const BACKUP_DISCOVERY_DEADLINE_MS = 5000;
 const BACKUP_CHUNK_BYTES = 64 * 1024;
+const BACKUP_IO_BUDGET_MS = 300000; // per-operation wall clock for copy/hash/restore phases
 const BACKUP_MAX_SEQUENCE = 9999999999999999; // fits the 16-digit directory name
 const backupRecordDirRe = /^(\d{16})-([0-9a-f]{32})$/;
 const backupLegacyNameRe = /^(.+)\.\d{4}-\d{2}-\d{2}T[\d\-]+Z\.bak$/;
@@ -6359,15 +6360,19 @@ function loadBackupStore() {
     handle = fs.opendirSync(v1Dir);
     // Only published record directories claim the identity: leftover staging
     // or deleting residue alone must not permanently block store creation.
-    let entry;
+    // The emptiness scan is budgeted too - an unprovable directory (entry or
+    // time budget hit) fails closed instead of scanning unbounded (recheck R5).
+    let entry, visited = 0;
+    const scanDeadline = Date.now() + BACKUP_DISCOVERY_DEADLINE_MS;
     while ((entry = handle.readSync()) !== null) {
       if (backupRecordDirRe.test(entry.name)) { occupied = true; break; }
+      if (++visited >= BACKUP_DISCOVERY_MAX_ENTRIES || Date.now() >= scanDeadline) { occupied = true; break; }
     }
   } catch (e) {
     if (e.code !== 'ENOENT') throw e;
   } finally { if (handle) { try { handle.closeSync(); } catch (e2) {} } }
   if (occupied) {
-    const err = new Error('backup store identity is missing while v1 records exist; refusing to claim them - inspect or remove ' + v1Dir + ' manually');
+    const err = new Error('backup store identity is missing and v1 is not provably empty within budget; refusing to claim its contents - inspect or remove ' + v1Dir + ' manually');
     err.code = 'EBACKUPIDENTITY';
     throw err;
   }
@@ -6434,7 +6439,7 @@ function discoverBackupV1(storeId) {
 // scans that one directory; v1/ is never confused with legacy files. Loose
 // .bak names (no timestamp) are counted but are never restore candidates.
 function discoverLegacyBackupCandidates(safeRel) {
-  const out = { candidates: [], loose: 0, incomplete: '' };
+  const out = { candidates: [], loose: 0, hardlinked: 0, incomplete: '' };
   let dirPath;
   try {
     const parentRel = path.dirname(safeRel);
@@ -6458,7 +6463,11 @@ function discoverLegacyBackupCandidates(safeRel) {
     let st;
     try { st = fs.lstatSync(full); }
     catch (e) { out.incomplete = out.incomplete || 'unreadable legacy entry (' + e.code + ')'; continue; }
-    if (!st.isFile()) continue; // links/directories are never restore candidates
+    // Links/directories are never candidates; hard-linked payloads are
+    // excluded under the same rule as the v1 store, but counted for the
+    // not-found report (recheck R7 - the two layouts share one policy).
+    if (!st.isFile()) continue;
+    if (st.nlink > 1) { out.hardlinked++; continue; }
     out.candidates.push({ full, name: entry.name, size: st.size, mtimeMs: st.mtimeMs,
       stat: { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs } });
   }
@@ -6466,7 +6475,7 @@ function discoverLegacyBackupCandidates(safeRel) {
 }
 // Streaming sha256 with the same read-time identity discipline as
 // readFileBytesBounded; payloads are never held in memory as a whole.
-function digestBackupFile(file, expectedBytes, label) {
+function digestBackupFile(file, expectedBytes, label, context) {
   const fd = fs.openSync(file, 'r');
   try {
     const before = fs.fstatSync(fd);
@@ -6475,6 +6484,10 @@ function digestBackupFile(file, expectedBytes, label) {
     const hash = crypto.createHash('sha256');
     let total = 0;
     while (total < expectedBytes) {
+      // Chunk-level progress checks: cancellation and the per-operation wall
+      // clock apply INSIDE long digests, not only between victims (recheck R5).
+      checkExecution(context && context.cancelled);
+      if (context && context.deadlineAt && Date.now() >= context.deadlineAt) throw new Error(label + ' digest budget exceeded');
       const want = Math.min(BACKUP_CHUNK_BYTES, expectedBytes - total);
       const chunk = Buffer.alloc(want);
       const count = fs.readSync(fd, chunk, 0, want, total);
@@ -6491,7 +6504,7 @@ function digestBackupFile(file, expectedBytes, label) {
 // Chunked copy through two held descriptors (never name-then-reopen), hashing
 // while writing and rejecting zero-progress loops, short reads and any change
 // to the source identity between the initial stat, the copy and its end.
-function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled) {
+function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled, deadlineAt) {
   const srcFd = fs.openSync(sourcePath, 'r');
   let payloadFd = null, payloadClosed = false;
   try {
@@ -6504,6 +6517,7 @@ function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled) {
     let total = 0, idleWrites = 0;
     while (total < before.size) {
       checkExecution(cancelled);
+      if (deadlineAt && Date.now() >= deadlineAt) throw new Error('backup copy budget exceeded');
       const want = Math.min(BACKUP_CHUNK_BYTES, before.size - total);
       const got = fs.readSync(srcFd, buffer, 0, want, total);
       if (!got) throw new Error('source ended early at ' + total + ' of ' + before.size + ' bytes');
@@ -6576,6 +6590,15 @@ function backupExistingFile(fullPath, cancelled, limits) {
       seenSequence[r.seq] = true;
       if (r.seq > publishedMax) publishedMax = r.seq;
     }
+    // Damaged records still occupy their directory sequence: "metadata
+    // unreadable" must not become "never published" after a counter rollback
+    // (recheck R4), or allocation would reuse a published sequence.
+    for (const c of index.corrupt) {
+      if (c.seq === null) continue;
+      if (seenSequence[c.seq]) throw new Error('duplicate sequence ' + c.seq + ' among published records');
+      seenSequence[c.seq] = true;
+      if (c.seq > publishedMax) publishedMax = c.seq;
+    }
     const sequence = publishedMax + 1;
     if (sequence > BACKUP_MAX_SEQUENCE) throw new Error('backup sequence space exhausted');
     if (index.ownBytes + sourceStat.size > cap.hardAdmit) throw new Error('owned published backups (' + index.ownBytes + ' bytes) plus this snapshot (' + sourceStat.size + ' bytes) exceed the ' + cap.hardAdmit + '-byte hard budget; clean .7coder/backups/v1 manually');
@@ -6584,13 +6607,14 @@ function backupExistingFile(fullPath, cancelled, limits) {
     writeStateFile(backupV1StatePath('store.json'), JSON.stringify(Object.assign({}, store, { lastSequence: sequence })), parseBackupStoreState);
     checkExecution(cancelled);
     const v1Dir = internalStatePath(path.join('.7coder', 'backups', 'v1'));
+    const opDeadline = Date.now() + BACKUP_IO_BUDGET_MS;
     let stagingDir = null, owned = false;
     try {
       stagingDir = createOwnedBackupStageDir(v1Dir);
       owned = true;
-      const staged = copyBackupPayload(fullPath, sourceStat, path.join(stagingDir, 'data.bak'), cancelled);
+      const staged = copyBackupPayload(fullPath, sourceStat, path.join(stagingDir, 'data.bak'), cancelled, opDeadline);
       // Independent read-back: the digest and byte count must survive a reopen.
-      const verify = digestBackupFile(path.join(stagingDir, 'data.bak'), staged.bytes, 'Staged backup');
+      const verify = digestBackupFile(path.join(stagingDir, 'data.bak'), staged.bytes, 'Staged backup', { cancelled, deadlineAt: opDeadline });
       if (verify.sha256 !== staged.sha256 || verify.bytes !== staged.bytes) throw new Error('staged payload failed its read-back digest check');
       const snapshotId = crypto.randomBytes(16).toString('hex');
       const manifest = {
@@ -6630,6 +6654,41 @@ function backupExistingFile(fullPath, cancelled, limits) {
 // .deleting-* evidence instead of pretending success. Incomplete discovery,
 // foreign/unknown/corrupt/legacy entries and deleting/staging residue are
 // never deleted, so owned caps cannot be met by deleting what we do not own.
+// Full re-verification of one deletion candidate immediately before any
+// destructive step (recheck R1). Discovery-time eligibility is never trusted
+// across the gap: the directory must still be a plain, non-link directory
+// resolving inside the store root with exactly the two protocol members, the
+// payload must be an exclusively owned regular file with an unchanged
+// identity, and the manifest must still prove ownership of THIS store with
+// every field unchanged. Any deviation preserves the record and reports.
+function reverifyOwnedRecordForDeletion(store, victim, context) {
+  const dirStat = fs.lstatSync(victim.dir);
+  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) throw new Error('record path is no longer a plain directory');
+  const dirReal = realPathSafe(victim.dir);
+  if (path.basename(dirReal) !== victim.name || path.dirname(dirReal) !== realPathSafe(path.dirname(victim.dir))) {
+    throw new Error('record path resolves outside the store root (link/junction suspected)');
+  }
+  const members = fs.readdirSync(victim.dir);
+  if (members.length !== 2 || members.indexOf('data.bak') < 0 || members.indexOf('manifest.json') < 0) {
+    throw new Error('record carries unexpected members (' + members.join(', ') + ')');
+  }
+  const payloadPath = path.join(victim.dir, 'data.bak');
+  const payloadStat = fs.lstatSync(payloadPath);
+  const manifestStat = fs.lstatSync(path.join(victim.dir, 'manifest.json'));
+  if (!payloadStat.isFile() || payloadStat.isSymbolicLink() || payloadStat.nlink > 1) throw new Error('payload is not an exclusively owned regular file');
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error('manifest is not a regular file');
+  const same = st => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => st[k] === victim.payloadStat[k]);
+  if (!same(payloadStat)) throw new Error('payload identity changed since discovery');
+  const bytes = readFileBytesBounded(path.join(victim.dir, 'manifest.json'), BACKUP_MANIFEST_MAX_BYTES, 'Backup manifest');
+  const manifest = validateBackupManifest(JSON.parse(decodeUtf8Text(bytes)), victim.name, victim.seq, victim.manifest.snapshotId);
+  if (manifest.storeId !== store.storeId || manifest.storeId !== victim.manifest.storeId) throw new Error('record no longer belongs to this store');
+  for (const field of ['sha256', 'bytes', 'sourceKey', 'sourceRel', 'createdAt', 'snapshotId']) {
+    if (manifest[field] !== victim.manifest[field]) throw new Error('manifest field ' + field + ' changed since discovery');
+  }
+  const digest = digestBackupFile(payloadPath, victim.bytes, 'Prune check', context);
+  if (digest.sha256 !== manifest.sha256) throw new Error('payload digest changed since discovery');
+  return dirStat;
+}
 function pruneOwnedBackups(protectDir, cancelled, cap) {
   cap = cap || backupRetentionLimits(null);
   try {
@@ -6639,58 +6698,67 @@ function pruneOwnedBackups(protectDir, cancelled, cap) {
       console.warn('[BACKUP] cleanup deferred: index incomplete (' + index.incomplete.join('; ') + ')');
       return;
     }
+    // Unified survivor plan (recheck R2/R3): count and byte quotas are
+    // computed over ONE survivor set that includes EVERY owned record - the
+    // just-published snapshot and pinned records occupy quota slots and bytes
+    // like any other record; they are only excluded from becoming victims.
+    const isProtected = r => r.dir === protectDir || activeBackupRestorePins.has(r.dir);
+    const victims = new Map();
+    const addVictims = list => { for (const r of list) if (!isProtected(r) && !victims.has(r.dir)) victims.set(r.dir, r); };
     const groups = Object.create(null);
-    for (const r of index.records) {
-      if (r.dir === protectDir || activeBackupRestorePins.has(r.dir)) continue;
-      const key = r.manifest.sourceKey;
-      (groups[key] = groups[key] || []).push(r);
-    }
-    const byNewest = (a, b) => b.seq - a.seq;
-    let victims = [];
-    const counted = [];
+    for (const r of index.records) (groups[r.manifest.sourceKey] = groups[r.manifest.sourceKey] || []).push(r);
     for (const key of Object.keys(groups)) {
-      const list = groups[key].sort(byNewest);
-      victims = victims.concat(list.slice(cap.perSource));
-      for (let i = 0; i < Math.min(list.length, cap.perSource); i++) counted.push(list[i]);
+      addVictims(groups[key].sort((a, b) => b.seq - a.seq).slice(cap.perSource));
     }
-    counted.sort(byNewest);
-    victims = victims.concat(counted.slice(cap.globalKeep));
-    let total = index.ownBytes;
-    if (total > cap.retainTarget) {
-      for (const r of counted.slice(0, cap.globalKeep).sort((a, b) => a.seq - b.seq)) {
-        if (total <= cap.retainTarget) break;
-        victims.push(r); total -= r.bytes;
+    addVictims(index.records.slice().sort((a, b) => b.seq - a.seq).slice(cap.globalKeep));
+    let remaining = 0;
+    for (const r of index.records) if (!victims.has(r.dir)) remaining += r.bytes;
+    if (remaining > cap.retainTarget) {
+      for (const r of index.records.slice().sort((a, b) => a.seq - b.seq)) {
+        if (remaining <= cap.retainTarget) break;
+        if (victims.has(r.dir) || isProtected(r)) continue;
+        victims.set(r.dir, r); remaining -= r.bytes;
       }
     }
-    const seen = Object.create(null);
-    const ordered = [];
-    for (const v of victims) { if (seen[v.dir]) continue; seen[v.dir] = true; ordered.push(v); }
-    if (!ordered.length) return;
-    ordered.sort((a, b) => a.seq - b.seq); // oldest first
+    const failures = [];
+    // Never report a byte target as met when protected records hold it open.
+    if (remaining > cap.retainTarget) failures.push('byte target not reachable: protected/pinned records still hold ' + remaining + ' of ' + cap.retainTarget + ' target bytes');
+    const ordered = Array.from(victims.values()).sort((a, b) => a.seq - b.seq); // oldest first
+    if (!ordered.length) {
+      if (failures.length) console.warn('[BACKUP] ' + failures.join('; '));
+      return;
+    }
     const deadline = Date.now() + BACKUP_DISCOVERY_DEADLINE_MS;
     let removed = 0;
-    const failures = [];
     for (const v of ordered) {
       if (Date.now() >= deadline) { failures.push('cleanup time budget reached; stopped with candidates remaining'); break; }
       try {
-        if (v.dir === protectDir || activeBackupRestorePins.has(v.dir)) continue;
-        const bytes = readFileBytesBounded(path.join(v.dir, 'manifest.json'), BACKUP_MANIFEST_MAX_BYTES, 'Backup manifest');
-        const manifest = validateBackupManifest(JSON.parse(decodeUtf8Text(bytes)), v.name, v.seq, v.manifest.snapshotId);
-        if (manifest.sha256 !== v.manifest.sha256 || manifest.bytes !== v.manifest.bytes || manifest.sourceKey !== v.manifest.sourceKey) throw new Error('manifest changed since discovery');
-        const digest = digestBackupFile(path.join(v.dir, 'data.bak'), v.bytes, 'Prune check');
-        if (digest.sha256 !== v.manifest.sha256) throw new Error('payload digest changed since discovery');
+        if (isProtected(v)) continue; // a pin may have appeared since planning
+        const dirStat = reverifyOwnedRecordForDeletion(store, v, { cancelled, deadlineAt: deadline });
         const deletingDir = path.join(path.dirname(v.dir), '.deleting-' + v.name + '-' + crypto.randomBytes(4).toString('hex'));
+        let exists = true;
+        try { fs.statSync(deletingDir); } catch (e) { exists = false; }
+        if (exists) throw new Error('deleting destination already exists');
         fs.renameSync(v.dir, deletingDir);
-        try {
-          fs.unlinkSync(path.join(deletingDir, 'data.bak'));
-          fs.unlinkSync(path.join(deletingDir, 'manifest.json'));
-          try { fs.rmdirSync(deletingDir); }
-          catch (e2) { throw new Error('extra members or busy directory (' + e2.code + ')'); }
-        } catch (e2) { failures.push(deletingDir + ': ' + e2.message); continue; }
+        // Re-check the moved object itself before unlinking through the new
+        // path: a swap around the rename must not turn member deletion into
+        // deleting through a foreign link.
+        const moved = fs.lstatSync(deletingDir);
+        if (!moved.isDirectory() || moved.isSymbolicLink() || moved.dev !== dirStat.dev || moved.ino !== dirStat.ino) {
+          throw new Error('moved record changed identity before member deletion; evidence kept at ' + deletingDir);
+        }
+        const members = fs.readdirSync(deletingDir);
+        if (members.length !== 2 || members.indexOf('data.bak') < 0 || members.indexOf('manifest.json') < 0) {
+          throw new Error('unexpected members after move; evidence kept at ' + deletingDir);
+        }
+        fs.unlinkSync(path.join(deletingDir, 'data.bak'));
+        fs.unlinkSync(path.join(deletingDir, 'manifest.json'));
+        try { fs.rmdirSync(deletingDir); }
+        catch (e2) { throw new Error('directory busy (' + e2.code + '); evidence kept at ' + deletingDir); }
         removed++;
       } catch (e) { failures.push(v.dir + ': ' + e.message); }
     }
-    if (failures.length) console.warn('[BACKUP] cleanup incomplete, evidence kept (' + failures.length + ' failure(s), ' + removed + ' removed): ' + failures.slice(0, 4).join('; '));
+    if (failures.length) console.warn('[BACKUP] cleanup incomplete, evidence kept (' + failures.length + ' issue(s), ' + removed + ' removed): ' + failures.slice(0, 4).join('; '));
   } catch (e) {
     console.warn('[BACKUP] cleanup deferred after publishing (' + e.message + ') - the new snapshot is intact');
   }
@@ -6704,7 +6772,7 @@ function backupRestoreConflict(stage, message) {
 // never unlinked or truncated: staging is written in the target's parent,
 // re-read, (for managed state) parsed, and both target and selected backup are
 // re-verified immediately before the one rename that replaces the target.
-function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, info) {
+function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, info, context) {
   const result = { format: info.format, snapshotId: info.snapshotId === undefined ? null : info.snapshotId, sequence: info.sequence === undefined ? null : info.sequence };
   const parent = path.dirname(target);
   try {
@@ -6735,6 +6803,9 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
       const buffer = Buffer.alloc(BACKUP_CHUNK_BYTES);
       let total = 0, idleWrites = 0;
       while (total < expectedBytes) {
+        // Chunk-level cancellation and wall-clock budget (recheck R5).
+        checkExecution(context && context.cancelled);
+        if (context && context.deadlineAt && Date.now() >= context.deadlineAt) throw new Error('restore staging budget exceeded');
         const want = Math.min(BACKUP_CHUNK_BYTES, expectedBytes - total);
         const got = fs.readSync(srcFd, buffer, 0, want, total);
         if (!got) throw new Error('selected backup ended early at ' + total + ' of ' + expectedBytes + ' bytes');
@@ -6755,7 +6826,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
       if (tempFd !== null && !tempClosed) { try { fs.closeSync(tempFd); } catch (e2) {} }
       try { fs.closeSync(srcFd); } catch (e2) {}
     }
-    const staged = digestBackupFile(tempPath, expectedBytes, 'Restore staging');
+    const staged = digestBackupFile(tempPath, expectedBytes, 'Restore staging', context);
     if (staged.sha256 !== expectedSha256) throw new Error('restore staging digest mismatch');
     // Managed state must parse before it may replace a live target; parser
     // errors never echo file contents (models.json/.env may hold credentials).
@@ -6782,10 +6853,12 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
       if (appeared) throw backupRestoreConflict('verify', 'a target that was initially absent appeared during restore');
     }
     if (!isInsideDir(getLaunchDirReal(), realPathSafe(parent))) throw backupRestoreConflict('verify', 'target path boundary changed before commit');
+    // A restore that outlived its operation budget must not commit (recheck R5).
+    if (context && context.deadlineAt && Date.now() >= context.deadlineAt) throw new Error('restore operation budget exceeded before commit');
     // The only commit point: one same-directory rename over the target.
     fs.renameSync(tempPath, target);
     tempOwned = false;
-    outcome = Object.assign(result, { status: 'restored', stage: 'commit', message: 'restored ' + expectedBytes + ' byte(s)', bytes: expectedBytes, warnings: [] });
+    outcome = Object.assign(result, { status: 'restored', stage: 'commit', message: 'restored ' + expectedBytes + ' byte(s)', bytes: expectedBytes, warnings: info.warnings || [] });
   } catch (e) {
     outcome = Object.assign(result, e.restoreConflict
       ? { status: 'conflict', stage: e.restoreConflict, message: e.message }
@@ -6806,7 +6879,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
 // explicitly; unattributable newer records make the result "unknown" rather
 // than a silently older "success". Result statuses: restored / not-found /
 // failed / conflict / unknown.
-function restoreLatestBackupDetailed(rel) {
+function restoreLatestBackupDetailed(rel, cancelled) {
   const base = { requested: String(rel) };
   let safeRel;
   try { safeRel = sanitizePath(rel); }
@@ -6823,7 +6896,11 @@ function restoreLatestBackupDetailed(rel) {
     if (e.code === 'EBACKUPIDENTITY') return Object.assign(base, { status: 'unknown', stage: 'store', message: e.message });
     return Object.assign(base, { status: 'failed', stage: 'store', message: e.message });
   }
-  const index = discoverBackupV1(store.storeId);
+  let index;
+  // Index IO failures (EACCES/EIO/...) must stay inside the detailed-result
+  // protocol instead of escaping as exceptions (recheck R6).
+  try { index = discoverBackupV1(store.storeId); }
+  catch (e) { return Object.assign(base, { status: 'unknown', stage: 'index', message: 'backup index unreadable (' + (e.code || e.message) + ')' }); }
   if (index.incomplete.length) return Object.assign(base, { status: 'unknown', stage: 'index', message: 'backup index incomplete (' + index.incomplete.join('; ') + ')' });
   const key = normalizeBackupSourceKey(safeRel);
   let best = null, tie = false;
@@ -6836,12 +6913,19 @@ function restoreLatestBackupDetailed(rel) {
   if (best) {
     for (const c of index.corrupt) {
       if (c.seq === null) continue;
+      // Sequence uniqueness is a store invariant: a damaged record SHARING
+      // the selected sequence makes "newest" ambiguous (recheck R4B), not
+      // silently restorable.
+      if (c.seq === best.seq) return Object.assign(base, { status: 'unknown', stage: 'select', message: 'sequence ' + c.seq + ' is ambiguous: a damaged record shares the newest owned sequence for this source' });
       if (c.sourceKey === key && c.seq > best.seq) return Object.assign(base, { status: 'failed', stage: 'select', message: 'the newest v1 snapshot (sequence ' + c.seq + ') is damaged: ' + c.reason });
       if (!c.sourceKey && c.seq > best.seq) return Object.assign(base, { status: 'unknown', stage: 'select', message: 'a newer unattributable record (sequence ' + c.seq + ') exists; cannot prove this is the newest generation' });
     }
+    const warnings = managedStateParser(target)
+      ? ['restored configuration applies to disk only; restart or re-run the reload command to change running state']
+      : [];
     return Object.assign(base, commitBackupRestore(target, path.join(best.dir, 'data.bak'), best.manifest.bytes, best.manifest.sha256, {
-      format: 'v1', snapshotId: best.manifest.snapshotId, sequence: best.seq, payloadStat: best.payloadStat, recordDir: best.dir
-    }));
+      format: 'v1', snapshotId: best.manifest.snapshotId, sequence: best.seq, payloadStat: best.payloadStat, recordDir: best.dir, warnings
+    }, { cancelled, deadlineAt: Date.now() + BACKUP_IO_BUDGET_MS }));
   }
   for (const c of index.corrupt) {
     if (c.seq === null) continue;
@@ -6851,17 +6935,27 @@ function restoreLatestBackupDetailed(rel) {
   }
   const legacy = discoverLegacyBackupCandidates(safeRel);
   if (legacy.incomplete) return Object.assign(base, { status: 'unknown', stage: 'legacy-index', message: 'legacy backup scan incomplete (' + legacy.incomplete + ')' });
-  if (!legacy.candidates.length) return Object.assign(base, { status: 'not-found', stage: 'select', message: 'no v1 or legacy backup exists for this file' });
+  if (!legacy.candidates.length) return Object.assign(base, {
+    status: 'not-found', stage: 'select',
+    message: legacy.hardlinked
+      ? 'no usable backup (' + legacy.hardlinked + ' legacy candidate(s) are hard-linked and were excluded)'
+      : 'no v1 or legacy backup exists for this file'
+  });
   let newest = null, tieCount = 0;
   for (const c of legacy.candidates) {
     if (!newest || c.mtimeMs > newest.mtimeMs) { newest = c; tieCount = 1; }
     else if (c.mtimeMs === newest.mtimeMs) tieCount++;
   }
   if (tieCount > 1) return Object.assign(base, { status: 'unknown', stage: 'legacy-select', message: tieCount + ' legacy backups share the newest timestamp; inspect ' + path.join('.7coder', 'backups', path.dirname(safeRel) === '.' ? '' : path.dirname(safeRel)) + ' manually' });
+  // Explicit admission for legacy payloads (recheck R5): the 1GiB cap is not
+  // automatically inherited from the creation path.
+  if (newest.size > BACKUP_SINGLE_MAX_BYTES) return Object.assign(base, { status: 'failed', stage: 'legacy-verify', message: 'legacy backup exceeds the ' + BACKUP_SINGLE_MAX_BYTES + '-byte single-snapshot budget' });
   let digest;
-  try { digest = digestBackupFile(newest.full, newest.size, 'Legacy backup'); }
+  try { digest = digestBackupFile(newest.full, newest.size, 'Legacy backup', { cancelled, deadlineAt: Date.now() + BACKUP_IO_BUDGET_MS }); }
   catch (e) { return Object.assign(base, { status: 'failed', stage: 'legacy-verify', message: e.message }); }
-  return Object.assign(base, commitBackupRestore(target, newest.full, newest.size, digest.sha256, { format: 'legacy', payloadStat: newest.stat }));
+  const legacyWarnings = ['legacy snapshot has no creation-time digest; only this copy could be verified'];
+  if (managedStateParser(target)) legacyWarnings.push('restored configuration applies to disk only; restart or re-run the reload command to change running state');
+  return Object.assign(base, commitBackupRestore(target, newest.full, newest.size, digest.sha256, { format: 'legacy', payloadStat: newest.stat, warnings: legacyWarnings }, { cancelled, deadlineAt: Date.now() + BACKUP_IO_BUDGET_MS }));
 }
 // Boolean wrapper kept for older internal callers and tests.
 function restoreLatestBackup(rel) {
@@ -8102,9 +8196,17 @@ async function main() {
         } else {
           // Detailed restore outcome: never collapse read failures, damaged
           // snapshots, conflicts or unknown states into "No backup found".
-          const outcome = restoreLatestBackupDetailed(rel);
+          // The protocol itself never throws, but a guard here keeps the
+          // prompt alive even if an internal regression escapes (recheck R6).
+          let outcome;
+          try {
+            outcome = restoreLatestBackupDetailed(rel);
+          } catch (e) {
+            outcome = { status: 'failed', stage: 'internal', message: e.message };
+          }
           if (outcome.status === 'restored') {
             console.log(`[OK] Restored ${rel} from the newest backup (${outcome.format}${outcome.sequence ? ', sequence ' + outcome.sequence : ''}).`);
+            for (const warning of outcome.warnings || []) console.log(`[UNDO WARNING] ${warning}`);
           } else if (outcome.status === 'not-found') {
             console.log(`No backup found for ${rel}.`);
           } else {
