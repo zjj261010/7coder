@@ -625,7 +625,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-27 | Medium／确认 | **修 Markdown语言属性转义**：10-24新增属性上下文escAttr，在原HTML转义后补单双引号实体，仅data-language使用；文本/code渲染保持。DOM专项15项单次通过，含相邻属性注入形状、引号/&/尖括号、空language、c++/c#与未闭合围栏。实际目标浏览器仍属V22-02；不把桩DOM宣称为真实脚本执行验证。 | R1 M15；A2-04保护保留；本日Markdown属性批 |
 | ✅ | T22-28 | Low／确认 | **修 git status 首行 trim**：10-24只去末尾CR/LF，保留首项XY的index空格；CRLF按行计数。旧Git集成断言由错误staged:1/modified:0改为staged:0/modified:1并检查实际前导空格。新真实隔离Git专项9/9（未暂存/已暂存/MM/未跟踪/clean/CRLF/故障）、旧Git集成4/4，Node13均单次。 | R1 L01；DS-4/P2-11原分列保留；本日Git首列记录 |
 | ✅ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：10-24先将relative路径分隔符归一为/再匹配例外；原函数＋实际私有磁盘写入证实反斜杠memory在default模式可自动写，普通source仍需审批，deny/denial/protected-extra不被绕过，外指junction仍拒绝；新路径25/25、旧权限8/8。 | R1 L02；GAP-9；本日路径批记录 |
-| ✅ | T22-30 | Low／确认 | **修搜索输入与扫描预算**：10-24 grep支持单文件，缺失/越界不伪装无匹配；glob按每个目录条目计4×匹配预算，grep同样计跳过/不匹配条目并限深12；深度/访问/读取失败显式incomplete，原匹配截断marker保留。新scan-budget修夹具后21/21、旧B扫描/结果契约13/13；无opts备份遍历保持原语义。后续INC-24-04另补正则期限并定向回归21/21；同步文件IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20保护保留；本日扫描批和INC-24-04 |
+| ✅ | T22-30 | Low／确认＋后续High风险修复 | **搜索输入与扫描预算**：10-24单文件grep、实际访问/深度/不匹配预算、失败incomplete及旧sentinel保留；INC-24-04补grep正则期限。10-25 INC-25-04再补glob pattern4096/匹配100ms/opts扫描5s或更早deadline与取消，匹配失败明确error，不改无pattern备份遍历scope。新glob14/14＋扫描21/21本批首次单次；**/零目录/问号/Win分隔符原语义验证。同步IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20；各扫描/期限批记录 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
 | 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例见各批。SSE/audit/保存活动callId新10/10＋pilot11；10-25再迁B2–B7至唯一ID/状态，反例10/10＋六场景40/40首跑。仍待旧位置mock按业务期望迁移、跨请求execution ID和真实模型质量验收；不据本地fixture宣称全套/真实端点已验收。 | R1 §10.3；R2 N01/N02/N03；各定向记录 |
@@ -1515,3 +1515,14 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 配置准入批已提交`379baeb`。编译出的matcher保留argRe.test接口供deny/allow/protected-extra消费，内部只有escaped literal regex，重用时重置lastIndex。matchPermRule每bucket最多生成一次参数文本，避免1000规则重复JSON.stringify同一对象。未改glob工具的**/路径语义；其独立globToRegex仍需检查，不能把权限matcher修复扩大为所有glob已受限。
 - 新permission-wildcard Node13首次单次 **12/12**：危险匹配都在所属子进程、独立2秒监督，19种字面/转义/边界/Unicode/跨行矩阵，重复true-false-true无状态串扰；原missing-tail立即false、1000次missing-middle不组合回溯，128段边界/129拒绝、4096相邻星号保持全匹配；1000匹配selector只做一次参数序列化。实际私有Agent同时经过复杂deny与protected-extra后完成写入，run_command(*)阻断真实含换行的私有marker命令（marker不创建），*.key仍在bypass阻断，三个call ID审计分别ok/blocked/blocked且活动归零。
 - npm/test-all登记，Node13语法/diff检查通过；未重跑前批已通过的配置18＋integration2/旧权限8等，旧path-boundaries提取器静态核对会包含新helper且仍使用.test。没有为纯matcher更换重跑完整A–J/UI/test-all。未做Win7/真实浏览器/24/72h或打包；聚合1000规则×大输入仍有扫描成本，不等于全执行硬期限或统一内存上限。按授权提交本批、未推送，继续glob扫描匹配的同步阻塞边界。
+
+### 2026-10-25 —— INC-25-04 glob扫描正则阻塞与取消边界
+
+| ID | 确认依据与影响 | 处理与范围 |
+|---|---|---|
+| INC-25-04 | **High／高可信阻塞风险；1秒路径已确认**：权限通配符修复不覆盖globToRegex。原recursiveReaddir在仅一个80个a＋!.txt的私有文件名上，用24个*a加*b的合法小glob，在独立原函数Node13进程超过1秒无DONE，被所属监督进程终止。条目/深度上限无法打断单个rx.test，HTTP/取消被同步匹配阻塞；并非巨目录才出现。 | 已修：glob regex仅经固定VM脚本每次≤100ms，首个匹配失败停止并报Glob error，不返回成功空匹配；pattern≤4096，编译失败不再静默substring fallback。带opts的遍历检查5秒或更早deadline，glob_tool传取消令牌与调用期限，已取消返回cancelled。 |
+
+- 权限通配符批已提交`e3b9a65`。保留glob原**跨目录/**/零目录、*和?单段、basename任意层与Win反斜杠语义，未把权限matcher错误复用于文件glob。匹配超时失败丢弃当前预览；单纯遍历时间耗尽仍用原incomplete marker，已得到的部分路径明确不完整。遍历之间检查不能硬中断单次native stat/readdir或其分配；VM不是内存/权限沙箱。
+- 新glob-deadline Node13首次单次 **14/14**：危险匹配只在所属子进程、独立2秒期限；原pattern现100ms error，下一普通glob成功；**任意与零目录、?不跨段、Windows分隔符、literal regex符号保持；已过期限/取消/超长pattern零readdir，模拟IO后总5秒预算在match前停止，无opts无pattern仍得到全部私有文件。实际私有Agent坏glob在2秒内SSE完成且audit记精确ID error，下一**/*.js包含两级文件且活动归零。
+- 旧scan-budget因遍历器实际变更在本批首次单次 **21/21**：保留访问计数、stat次数、截断/深度/丢失/ACL/junction/无opts语义及grep原计数。不是反复跑未变全套；新旧两个专项均无失败复跑。npm/test-all登记，Node13语法/diff检查通过；未跑其它已通过专项、完整A–J/UI/test-all、Win7/网络盘/真实浏览器、24/72h或打包。
+- 仍有聚合内存、native IO、进程树与剩余状态/日志/caches预算，T22-06/07/15不整体关闭。按授权提交本批、未推送。用户新增额度规则：每完成一项读取当前五小时窗口，再评估下一项完整实现/必要验证/提交是否可承受；额度不足则停止自动执行。开始本批收尾前窗口used4%（remaining96%），不是承诺固定token预算，收尾后重新读取。

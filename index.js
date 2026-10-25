@@ -2122,6 +2122,7 @@ function disposePersistentShells() {
 // are treated as separators (Windows users type `src\*.js`).
 function globToRegex(pattern) {
   const norm = String(pattern).split('\\').join('/');
+  if (norm.length > 4096) throw new Error('glob pattern exceeds 4096 characters; narrow the pattern');
   let out = '';
   for (let i = 0; i < norm.length; i++) {
     const c = norm[i];
@@ -2157,6 +2158,8 @@ const SCAN_SKIP_DIRS = ['node_modules', '.git', 'dist', '.cache'];
 //   maxDepth   - recursion depth cap (start dir = depth 0)
 //   maxEntries - at most N matches / 4N visited directory entries; match,
 //                visit, depth and IO limits are surfaced as explicit markers
+//   deadlineAt / cancelled - check caller control between IO; opts also cap
+//                traversal at 5s. Each glob regex test has at most 100ms.
 function recursiveReaddir(dir = '', pattern = '', opts = null) {
   const skipHeavy = !!opts && !!opts.skipHeavy;
   const maxDepth = opts && typeof opts.maxDepth === 'number' ? opts.maxDepth : Infinity;
@@ -2166,20 +2169,27 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
   // and keep a real-path visited set so junction cycles cannot loop the walk.
   const maxVisited = opts && typeof opts.maxEntries === 'number' ? opts.maxEntries * 4 : Infinity;
   const budgeted = !!opts;
+  const scanDeadline = budgeted ? Math.min(Date.now() + 5000, Number.isFinite(opts.deadlineAt) ? opts.deadlineAt : Infinity) : Infinity;
   const visited = new Set();
   let visitedCount = 0;
   const results = [];
   const incomplete = new Set();
   const startDir = dir ? path.join(launchDir, sanitizePath(dir)) : launchDir;
   let rx = null;
-  if (pattern) {
-    try { rx = globToRegex(pattern); } catch (e) { rx = null; }
-  }
+  if (pattern) rx = globToRegex(pattern);
+  const matchContext = rx ? vm.createContext({ rx, value: '' }) : null;
+  const matchScript = rx ? new vm.Script('rx.test(value)') : null;
+  const checkScan = () => {
+    if (opts && opts.cancelled && opts.cancelled()) throw executionCancelledError(opts.cancelled);
+    if (Date.now() >= scanDeadline) { incomplete.add('time budget exhausted'); return false; }
+    return true;
+  };
   // Path-aware semantics only for patterns that NAME a path (contain a
   // separator or **). Plain patterns like *.js keep matching basenames at any
   // depth - the pre-existing behavior and the most common search intent.
   const pathAware = pattern && (pattern.indexOf('/') >= 0 || pattern.indexOf('\\') >= 0 || pattern.indexOf('**') >= 0);
   function walk(current, depth) {
+    if (!checkScan()) return;
     if (results.length >= maxEntries) return;
     if (budgeted) {
       let realCur;
@@ -2188,8 +2198,10 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
       visited.add(realCur);
     }
     let entries;
+    if (!checkScan()) return;
     try { entries = fs.readdirSync(current); } catch (e) { if (budgeted) incomplete.add('unreadable directory (' + e.code + ')'); return; }
     for (const entry of entries) {
+      if (!checkScan()) return;
       if (results.length >= maxEntries) return;
       if (budgeted && visitedCount >= maxVisited) { incomplete.add('visit limit ' + maxVisited); return; }
       visitedCount++;
@@ -2209,13 +2221,13 @@ function recursiveReaddir(dir = '', pattern = '', opts = null) {
         if (!pattern) {
           isMatch = true;
         } else if (rx) {
-          if (pathAware) {
-            isMatch = rx.test(rel.split(path.sep).join('/'));
-          } else {
-            isMatch = rx.test(entry);
-          }
-        } else {
-          isMatch = entry.toLowerCase().includes(pattern.toLowerCase());
+          if (!checkScan()) return;
+          matchContext.value = pathAware ? rel.split(path.sep).join('/') : entry;
+          const budget = Math.max(1, Math.min(100, Math.floor(scanDeadline - Date.now())));
+          try { isMatch = matchScript.runInContext(matchContext, { timeout: budget }); }
+          catch (e) {
+            throw new Error('glob matching failed at ' + rel + (e.code === 'ERR_SCRIPT_EXECUTION_TIMEOUT' ? ' (' + budget + 'ms matching budget exceeded)' : ' (' + e.message + ')'));
+          } finally { matchContext.value = ''; }
         }
         if (isMatch) {
           results.push(rel);
@@ -3383,8 +3395,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   if (name === 'glob_tool') {
     // P2-3: budgeted walk - heavy dirs skipped, depth/entry caps keep huge
     // workspaces from flooding the context (sentinel line marks truncation).
-    const files = recursiveReaddir(args.directory, args.pattern, { skipHeavy: true, maxDepth: 12, maxEntries: 1000 });
-    return makeToolResult('ok', files.length ? files.join('\n') : 'No files matched');
+    try {
+      const files = recursiveReaddir(args.directory, args.pattern, { skipHeavy: true, maxDepth: 12, maxEntries: 1000, deadlineAt: cancelled && cancelled.deadlineAt, cancelled });
+      return makeToolResult('ok', files.length ? files.join('\n') : 'No files matched');
+    } catch (e) {
+      if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: glob cancelled]');
+      return makeToolResult('error', 'Glob error: ' + e.message);
+    }
   }
   if (name === 'grep_tool') {
     const text = grepSearch(args.pattern, args.path, { skipHeavy: true, deadlineAt: cancelled && cancelled.deadlineAt });
