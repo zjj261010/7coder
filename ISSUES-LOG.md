@@ -1615,3 +1615,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - buildRepoMap原readdir/filter对每目录整收集，countFiles又整收集；现单目录400、全图2000实际visited（含probe及重复count/walk）与5秒间隔检查，保留原150行/深度2/SKIP及局部排序；不完整图头有说明，文件数显式at least，不能把采样数当总数。收集前是FS顺序，未扫描部分不承诺名称排序/分页可达；按更窄目录/glob探索，未据此关闭session/backup索引、全部目录或native IO硬期限。
 - 新directory-budget首跑前 **11项**通过：逻辑百万条仅收200/probe1/close、恰200完整、UTF8名预算、预期限零open、读中取消/期限/IO和close错误、真实250文件partial/缺目录/error/取消及句柄关闭。随后map夹具断言失败：普通400文件先达到150行展示上限，未触发目标全图访问上限；改为大量不参与展示的logical link entry，按授权仅tail **4/4**，首11不重跑。tail覆盖全图≤2000/全部close、MCP/skill partial，真实Agent三个精确call ID分别completed/completed/error、前置incomplete及活动归零。
 - 旧A仅repo-map首次单次 **1/1**。无其它重复测试，Node13语法/diff、README/npm/test-all同步。未跑完整A–J/UI/test-all、Win7/ACL/网络盘/真实百万文件/24–72h/打包。单次native opendir/read/stat可能阻塞；目录内容并发变化没有快照一致性，记录边界不冒充OS硬约束。按授权提交、未推送，之后重读额度再定下一项。
+
+### 2026-10-25 —— T22-15测试自动识别的读取准入
+
+- 目录批已提交`80bfa79`；完成后五小时used40%/remaining60%，评估本项可完整实现/验证/提交，继续。
+- run_tests_tool无明确command时，package.json改用1MiB lossless UTF8/BOM读取与JSON验证，manifest必须object、若有scripts必须object、test若有必须string；不对超限/坏编码/坏类型退回另一runner。显式command仍跳过metadata，空test字符串仍保留既有loose检测。入口先检查取消，未开始之前无额外IO/进程。
+- loose文件检测用有界目录枚举至多1000条/额外probe/名字64KiB/5秒或原期限；观察到真实.test.js保持Node版本门，未找到且scan incomplete则明确error/零启动，不能把部分目录当nothing-to-detect。不是升级Node，不运行本机其它新版test runner，不自动安装npm/框架。
+- 新test-detection-budget Node13首次单次 **15/15**：100MiB私有manifest零data-read/close/零执行、显式绕过、6类bad shape/encoding零fallback、精确1MiB BOM/npm优先、逻辑大目录1001读停止且incomplete、找到test的Node13拒绝/modern captured argv、预取消零IO；真实Agent超大manifest自动error与同请求显式echo成功、两个call ID/status准确，poison loose文件未运行，源未变、活动归零。
+- 原test-runtime **11/11**、tool-prerequisites **12/12**本批首次单次，提取器显式加载新reader/目录依赖；真实空PATH绝对Node、中文/空格脚本和私有npm shim路径执行保持，没有调用registry或真实项目测试。三项均无失败复跑，Node13语法/diff、README/npm/test-all同步。未重跑已通过的目录/命令/其它专项或完整A–J/UI/test-all、Win7/真实npm矩阵/24–72h/打包。Native IO硬期限及剩余目录/会话/日志采集仍开放；按授权提交、未推送，之后重新读取额度。

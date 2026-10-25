@@ -31,7 +31,9 @@ function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, 
         const child = cp.exec(command, Object.assign({}, options, { cwd, env: runtimeEnv, windowsHide: true }), callback); owned.push(child);
         if (child.pid) fs.appendFileSync(S.manifest, child.pid + '\t--7coder-test-owner=' + S.runDir + '\n'); return child;
       } } });
-    vm.runInContext(cut('function executionCancelledError(', 'function parseSSEStream(') + cut('function quoteForShell(', '// Locate a real bash binary') +
+    vm.runInContext(cut('function fileByteLimitError(', 'function guardStateFile(') + cut('function parseStateJson(', 'function parseModelState(') +
+      cut('function decodeUtf8Text(', '// Bounded line view.') + cut('function readDirectoryEntriesBounded(', '// Resolves symlinks/junctions') +
+      cut('function executionCancelledError(', 'function parseSSEStream(') + cut('function quoteForShell(', '// Locate a real bash binary') +
       cut('function withUtf8Codepage(', '// ====================== PERSISTENT SHELL') +
       cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
       'async function tests(args,cancelled=null) { const name="run_tests_tool";\n' + cut('function parseTestOutput(', '// ====================== DIAGNOSTICS FORMATTING') + '\n}', raw);

@@ -12,7 +12,9 @@ function context(cwd) {
     console: { log() {} }, setTimeout, clearTimeout, setInterval, clearInterval, withUtf8Codepage: command => command,
     findOptionalExecutable: () => 'npm', quoteForShell: file => file,
     runCommandAsync: (spec, options) => { calls.push({ spec, options }); return { promise: Promise.resolve({ stdout: '1 passing', stderr: '', error: null, exitCode: 0 }) }; } });
-  vm.runInContext(cut('function executionCancelledError(', 'function parseSSEStream(') +
+  vm.runInContext(cut('function fileByteLimitError(', 'function guardStateFile(') + cut('function parseStateJson(', 'function parseModelState(') +
+    cut('function decodeUtf8Text(', '// Bounded line view.') + cut('function readDirectoryEntriesBounded(', '// Resolves symlinks/junctions') +
+    cut('function executionCancelledError(', 'function parseSSEStream(') +
     cut('async function awaitCommandCancellable(', '// ====================== PERSISTENT SHELL') +
     cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
     cut('function supportsBuiltinTestRunner(', "  if (name === 'run_tests_tool') {") +

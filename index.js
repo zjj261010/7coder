@@ -4516,14 +4516,17 @@ function supportsBuiltinTestRunner(version) {
 }
 
   if (name === 'run_tests_tool') {
+    checkExecution(cancelled);
     let command = String(args.command || "").trim();
     let spec = null;
     let autoNpm = false;
     if (!command) {
       try {
         const pkgPath = path.join(launchDir, 'package.json');
-        if (fs.existsSync(pkgPath)) {
-          const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8").replace(/^\uFEFF/, ''));
+        const pkg = readOptionalJsonConfig(pkgPath, 'Test package manifest');
+        if (pkg !== undefined) {
+          if (!pkg || typeof pkg !== 'object' || Array.isArray(pkg)) return makeToolResult('error', 'Tests error: package.json must contain an object.');
+          if (pkg.scripts !== undefined && (!pkg.scripts || typeof pkg.scripts !== 'object' || Array.isArray(pkg.scripts))) return makeToolResult('error', 'Tests error: package.json scripts must be an object.');
           const script = pkg && pkg.scripts && pkg.scripts.test;
           if (script !== undefined && typeof script !== 'string') return makeToolResult('error', 'Tests error: package.json scripts.test must be a string.');
           if (script && script.trim()) { command = "npm test --silent"; autoNpm = true; }
@@ -4532,7 +4535,9 @@ function supportsBuiltinTestRunner(version) {
     }
     if (!command) {
       try {
-        const hasTests = fs.readdirSync(launchDir).some(f => /\.test\.js$/i.test(f) && fs.statSync(path.join(launchDir, f)).isFile());
+        const scan = readDirectoryEntriesBounded(launchDir, { maxEntries: 1000, deadlineAt: Math.min(Date.now() + 5000, cancelled && cancelled.deadlineAt || Infinity), cancelled });
+        const hasTests = scan.entries.some(e => /\.test\.js$/i.test(e.name) && fs.statSync(path.join(launchDir, e.name)).isFile());
+        if (!hasTests && scan.incomplete) return makeToolResult('error', 'Tests error: test-file discovery incomplete (' + scan.incomplete + '); supply an explicit command. No tests were started.', { exitCode: null });
         if (hasTests) {
           if (!supportsBuiltinTestRunner(process.versions.node)) return makeToolResult('error', 'Tests error: Agent Node ' + process.versions.node + ' does not support --test. Supply an explicit command for this project\'s test framework; no tests were started.', { exitCode: null });
           spec = { file: process.execPath, args: ['--test'] };
