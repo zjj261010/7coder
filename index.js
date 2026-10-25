@@ -422,6 +422,13 @@ function createMcpStdioClient(name, cfg) {
     pending: new Map(), // id -> { resolve, reject, timer }
     queuedBytes: 0, // encoded writes whose callbacks have not completed
     toolsCache: null,
+    toolsCacheBytes: 0,
+    listingTools: false,
+    stderrTail: '',
+    stderrBytes: 0,
+    stderrLogBytes: 0,
+    stderrSuppressedChunks: 0,
+    stderrLastLogAt: null,
     initialized: false,
     initPromise: null,
     dead: false,
@@ -434,6 +441,7 @@ function createMcpStdioClient(name, cfg) {
     client.deadErr = String(err);
     client.initialized = false;
     client.toolsCache = null;
+    client.toolsCacheBytes = 0;
     buf = '';
     client.queuedBytes = 0;
     for (const p of client.pending.values()) {
@@ -465,9 +473,35 @@ function createMcpStdioClient(name, cfg) {
     catch (e) { release(); die('stdin write: ' + e.message); throw e; }
   }
   client.dispose = function () { die('disposed'); };
+  function tailUtf8(text, limit) {
+    let end = String(text).slice(-limit);
+    if (end.length && end.charCodeAt(0) >= 0xDC00 && end.charCodeAt(0) <= 0xDFFF) end = end.slice(1);
+    const bytes = Buffer.from(end, 'utf8');
+    let offset = Math.max(0, bytes.length - limit);
+    while (offset < bytes.length && (bytes[offset] & 0xC0) === 0x80) offset++;
+    return bytes.slice(offset).toString('utf8');
+  }
+  function logDiagnostic(text, force = false) {
+    const now = Date.now();
+    if (!force && client.stderrLastLogAt !== null && now >= client.stderrLastLogAt && now - client.stderrLastLogAt < 1000) return false;
+    const prefix = '[MCP:' + String(name).slice(0, 80) + '] ';
+    const suffix = ' [stderr received=' + client.stderrBytes + ', unforwarded chunks=' + client.stderrSuppressedChunks + ']';
+    const fixed = Buffer.byteLength(prefix + suffix, 'utf8') + 1;
+    const available = Math.min(4096, 64 * 1024 - client.stderrLogBytes) - fixed;
+    if (available <= 0) return false;
+    const line = prefix + tailUtf8(text, available) + suffix;
+    const bytes = Buffer.byteLength(line, 'utf8') + 1;
+    // Never add MCP diagnostics to an already backed-up parent stderr queue.
+    if (process.stderr && (process.stderr.writableLength || 0) + bytes > 1024 * 1024) return false;
+    try { console.warn(line); }
+    catch (e) { return false; }
+    client.stderrLogBytes += bytes;
+    client.stderrLastLogAt = now;
+    return true;
+  }
   // Node 13 returns early on EMFILE/ENFILE before constructing stdio, then
   // emits the spawn error on nextTick. Bind before touching any pipe.
-  child.on('error', e => { console.warn('[MCP:' + name + '] spawn: ' + e.message); die(e.message); });
+  child.on('error', e => { logDiagnostic('spawn: ' + e.message, true); die(e.message); });
   child.on('exit', code => die('exit code ' + code));
   child.on('close', code => die('close code ' + code));
   if (!child.stdin || !child.stdout || !child.stderr) {
@@ -518,7 +552,13 @@ function createMcpStdioClient(name, cfg) {
     if (Buffer.byteLength(buf, 'utf8') > MCP_MAX_FRAME_BYTES) die('unterminated incoming frame exceeds 4 MB');
   });
   child.stderr.setEncoding('utf8');
-  child.stderr.on('data', d => console.warn('[MCP:' + name + '] ' + String(d).trim()));
+  child.stderr.on('data', d => {
+    if (client.dead) return; // keep draining, but retain no late output
+    const text = String(d);
+    client.stderrBytes = Math.min(Number.MAX_SAFE_INTEGER, client.stderrBytes + Buffer.byteLength(text, 'utf8'));
+    client.stderrTail = tailUtf8(client.stderrTail + tailUtf8(text, 4096), 4096);
+    if (!logDiagnostic(client.stderrTail)) client.stderrSuppressedChunks = Math.min(Number.MAX_SAFE_INTEGER, client.stderrSuppressedChunks + 1);
+  });
   client.request = function (method, params, timeoutMs, cancelled) {
     return new Promise((resolve, reject) => {
       if (cancelled && cancelled()) return reject(executionCancelledError(cancelled));
@@ -565,12 +605,36 @@ function createMcpStdioClient(name, cfg) {
   client.listTools = async function (force, cancelled) {
     checkExecution(cancelled);
     if (client.toolsCache && !force) return client.toolsCache;
-    await client.ensureInit(cancelled);
-    checkExecution(cancelled);
-    const res = await client.request('tools/list', {}, 15000, cancelled);
-    checkExecution(cancelled);
-    client.toolsCache = (res && Array.isArray(res.tools)) ? res.tools : [];
-    return client.toolsCache;
+    if (client.listingTools) throw new Error('MCP tool discovery already running; request not sent');
+    client.listingTools = true;
+    if (force) { client.toolsCache = null; client.toolsCacheBytes = 0; }
+    try {
+      await client.ensureInit(cancelled);
+      const tools = [], names = new Set(), cursors = new Set();
+      let cursor, bytes = 2;
+      for (let page = 0; page < 8; page++) {
+        checkExecution(cancelled);
+        const res = await client.request('tools/list', cursor === undefined ? {} : { cursor }, 15000, cancelled);
+        checkExecution(cancelled);
+        if (client.dead) throw new Error('MCP server closed during tool discovery');
+        if (!res || !Array.isArray(res.tools)) throw new Error('MCP tools/list must return a tools array');
+        if (tools.length + res.tools.length > 256) throw new Error('MCP tool discovery exceeds 256 tools; no complete list cached');
+        const added = Buffer.byteLength(JSON.stringify(res.tools), 'utf8') - 2 + (tools.length && res.tools.length ? 1 : 0);
+        if (bytes + added > 1024 * 1024) throw new Error('MCP tool discovery exceeds 1MiB cache budget; no complete list cached');
+        for (const tool of res.tools) {
+          if (!tool || typeof tool !== 'object' || Array.isArray(tool) || typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 256 || names.has(tool.name)) throw new Error('MCP tools/list has invalid or duplicate tool names');
+          names.add(tool.name); tools.push(tool);
+        }
+        bytes += added;
+        if (res.nextCursor === undefined || res.nextCursor === null || res.nextCursor === '') {
+          client.toolsCache = tools; client.toolsCacheBytes = bytes;
+          return client.toolsCache;
+        }
+        if (typeof res.nextCursor !== 'string' || res.nextCursor.length > 1024 || cursors.has(res.nextCursor)) throw new Error('MCP tool discovery has invalid or repeated cursor');
+        cursors.add(res.nextCursor); cursor = res.nextCursor;
+      }
+      throw new Error('MCP tool discovery exceeds 8 pages; no complete list cached');
+    } finally { client.listingTools = false; }
   };
   client.callTool = async function (toolName, toolArgs, cancelled) {
     await client.ensureInit(cancelled);
@@ -587,7 +651,7 @@ function getMcpClient(serverName, cancelled) {
   checkExecution(cancelled);
   if (!mcpServers[serverName]) return null;
   if (!mcpClients[serverName] || mcpClients[serverName].dead) {
-    console.log('[MCP] starting stdio server "' + serverName + '": ' + mcpServers[serverName].command);
+    console.log('[MCP] starting stdio server "' + String(serverName).slice(0, 80) + '": ' + String(mcpServers[serverName].command).slice(0, 200));
     const previous = mcpClients[serverName];
     const next = createMcpStdioClient(serverName, mcpServers[serverName]);
     if (!next.dead) mcpClients[serverName] = next;
@@ -600,6 +664,16 @@ function disposeMcpClients() {
   for (const k of Object.keys(mcpClients)) {
     mcpClients[k].dispose();
   }
+}
+function mcpDiagnosticsSnapshot() {
+  return Object.keys(mcpClients).slice(0, 32).map(name => {
+    const c = mcpClients[name];
+    return { name: String(name).slice(0, 80), pid: c.child && c.child.pid || null,
+      initialized: !!c.initialized, pending: c.pending.size, queuedBytes: c.queuedBytes,
+      tools: c.toolsCache ? c.toolsCache.length : null, toolsCacheBytes: c.toolsCacheBytes, discovering: !!c.listingTools,
+      stderr: { receivedBytes: c.stderrBytes, tailBytes: Buffer.byteLength(c.stderrTail, 'utf8'),
+        loggedBytes: c.stderrLogBytes, logBudgetRemaining: Math.max(0, 64 * 1024 - c.stderrLogBytes), suppressedChunks: c.stderrSuppressedChunks } };
+  });
 }
 
 // Redact secrets from the audit log's args preview: a run_command like
@@ -6378,6 +6452,7 @@ function startHttpServer() {
       keyRequired: !!HTTP_API_KEY, models: modelList(),
       load: { chatRequests: chatAdmission.count, chatBodyBytes: chatAdmission.bytes, chatActive: requestGateBusy, chatQueued: requestGateQueue.length, summaries: actionSummaryQueue.stats() },
       runtime: runtimeSnapshot(),
+      mcp: mcpDiagnosticsSnapshot(),
       startup: { phase: serverStartupState.phase, error: serverStartupState.error },
       capabilities: { persistentShell: !ENABLE_HTTP_SERVER },
       usage: { prompt: sessionUsage.prompt, completion: sessionUsage.completion, total: sessionUsage.prompt + sessionUsage.completion } }));
