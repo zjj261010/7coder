@@ -67,6 +67,7 @@
     "test:tool-results-complete": "node test/tool-results-complete.js",
     "test:tool-prerequisites": "node test/tool-prerequisites.js",
     "test:session-ownership": "node test/session-ownership.js",
+    "test:session-history-budget": "node test/session-history-budget.js",
     "test:grep-deadline": "node test/grep-deadline.js",
     "test:tool-step-limit": "node test/tool-step-limit.js",
     "test:review-oracles": "node test/review-oracles.js",

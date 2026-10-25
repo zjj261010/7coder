@@ -7064,32 +7064,121 @@ function simpleLineDiff(oldText, newText, contextLines = 2, maxLines = 40) {
 // continue it via --resume (CLI) or /resume (REPL command). Only user/
 // assistant turns are saved: tool messages would break API pairing on load.
 function sessionFilePath() { return internalStatePath('.7coder', 'session.json'); }
-function pruneCliSessionHistory(currentName) {
+function cliSessionHistoryBudget(options = {}) {
+  const limit = (value, max) => Number.isSafeInteger(value) && value > 0 ? Math.min(value, max) : max;
+  return {
+    maxEntries: limit(options.maxEntries, 4096), maxNameBytes: limit(options.maxNameBytes, 256 * 1024),
+    maxCandidates: limit(options.maxCandidates, 256), maxReadBytes: limit(options.maxReadBytes, 64 * 1024 * 1024),
+    deadlineAt: Date.now() + limit(options.timeoutMs, 5000), cancelled: options.cancelled,
+    readBytes: 0, visited: 0, checked: 0, removed: 0
+  };
+}
+function cliHistoryBudgetError(reason) {
+  return Object.assign(new Error(reason), { code: 'ECLIHISTORYBUDGET' });
+}
+function checkCliSessionHistoryBudget(budget) {
+  checkExecution(budget.cancelled);
+  if (Date.now() >= budget.deadlineAt) throw cliHistoryBudgetError('operation deadline exceeded');
+}
+function verifyCliSessionHistoryRoot(directory, root) {
+  const current = internalStatePath('.7coder/sessions'), stat = fs.statSync(current);
+  if (current !== directory || path.relative(root.real, fs.realpathSync(current)) !== '' ||
+      !stat.isDirectory() || stat.dev !== root.dev || stat.ino !== root.ino) {
+    throw new Error('CLI history directory changed during retention');
+  }
+}
+// A per-file limit alone does not bound a whole retention pass. Read through
+// held descriptors with one shared byte/time budget, including pre-delete
+// rechecks and failed reads; do not charge only successfully parsed files.
+function readCliSessionHistoryArchive(file, budget) {
+  checkCliSessionHistoryBudget(budget);
+  const fd = fs.openSync(file, 'r');
+  try {
+    const before = fs.fstatSync(fd);
+    if (!before.isFile() || before.nlink !== 1) throw new Error('CLI archive is not an exclusively owned regular file');
+    if (before.size > SESSION_MAX_BYTES) throw fileByteLimitError('CLI archive', SESSION_MAX_BYTES);
+    if (before.size > budget.maxReadBytes - budget.readBytes) throw cliHistoryBudgetError('aggregate archive byte limit reached');
+    const chunks = []; let total = 0;
+    while (total < before.size) {
+      checkCliSessionHistoryBudget(budget);
+      const chunk = Buffer.alloc(Math.min(64 * 1024, before.size - total));
+      const count = fs.readSync(fd, chunk, 0, chunk.length, total);
+      if (!count) throw new Error('CLI archive ended before its recorded size');
+      total += count; budget.readBytes += count; chunks.push(chunk.slice(0, count));
+    }
+    const after = fs.fstatSync(fd), named = fs.lstatSync(file);
+    const same = stat => stat.isFile() && stat.nlink === 1 &&
+      ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => stat[k] === before[k]);
+    if (!same(after) || !same(named)) throw new Error('CLI archive changed during read');
+    checkCliSessionHistoryBudget(budget);
+    return { bytes: Buffer.concat(chunks, total), stat: before };
+  } finally { fs.closeSync(fd); }
+}
+function pruneCliSessionHistory(currentName, options) {
   const directory = internalStatePath('.7coder/sessions'), candidates = [];
+  const rootStat = fs.statSync(directory), root = { real: fs.realpathSync(directory), dev: rootStat.dev, ino: rootStat.ino };
+  const budget = cliSessionHistoryBudget(options);
   let unreadable = 0;
-  for (const name of fs.readdirSync(directory)) {
+  const deferred = reason => {
+    console.warn('[WARN] CLI history cleanup deferred: ' + reason + ' (visited=' + budget.visited +
+      ', checked=' + budget.checked + ', readBytes=' + budget.readBytes + ', removed=' + budget.removed + '). History may exceed twenty; no automatic retry.');
+    return { status: 'deferred', reason, visited: budget.visited, checked: budget.checked, readBytes: budget.readBytes, removed: budget.removed };
+  };
+  try {
+  checkCliSessionHistoryBudget(budget);
+  const scan = readDirectoryEntriesBounded(directory, {
+    maxEntries: budget.maxEntries, maxBytes: budget.maxNameBytes, deadlineAt: budget.deadlineAt, cancelled: budget.cancelled
+  });
+  budget.visited = scan.visited;
+  if (scan.incomplete) return deferred(scan.incomplete);
+  verifyCliSessionHistoryRoot(directory, root);
+  for (const entry of scan.entries) {
+    checkCliSessionHistoryBudget(budget);
+    const name = entry.name;
     if (!/^cli-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[a-f0-9]{8}\.json$/.test(name)) continue;
+    if (budget.checked >= budget.maxCandidates) throw cliHistoryBudgetError('CLI-looking candidate limit reached');
+    budget.checked++;
+    verifyCliSessionHistoryRoot(directory, root);
     try {
       const file = internalStatePath('.7coder/sessions', name), stat = fs.lstatSync(file);
-      if (!stat.isFile() || stat.size > SESSION_MAX_BYTES) continue;
+      if (!stat.isFile() || stat.nlink !== 1 || stat.size > SESSION_MAX_BYTES) { unreadable++; continue; }
       // Retention must not repair/quarantine or reinterpret an unknown file.
-      const bytes = readFileBytesBounded(file, SESSION_MAX_BYTES, 'CLI archive'), record = parseSessionState(decodeUtf8Text(bytes));
+      const bytes = readCliSessionHistoryArchive(file, budget).bytes, record = parseSessionState(decodeUtf8Text(bytes));
+      checkCliSessionHistoryBudget(budget);
       if (record.kind !== '7coder-cli-session-v1' || !Number.isFinite(Date.parse(record.savedAt))) continue;
       candidates.push({ name, time: Date.parse(record.savedAt), hash: crypto.createHash('sha256').update(bytes).digest('hex') });
-    } catch (error) { unreadable++; }
+    } catch (error) {
+      if (error.code === 'ECLIHISTORYBUDGET' || error.code === 'EXECUTION_CANCELLED') throw error;
+      unreadable++;
+    }
   }
+  // No deletion until all relevant names have been discovered and checked.
+  verifyCliSessionHistoryRoot(directory, root);
+  checkCliSessionHistoryBudget(budget);
   candidates.sort((a, b) => a.time - b.time || a.name.localeCompare(b.name));
   let remove = candidates.length - 20;
   for (const candidate of candidates) {
     if (remove <= 0) break;
     if (candidate.name === currentName) continue; // protect latest save even after clock rollback
+    checkCliSessionHistoryBudget(budget);
+    verifyCliSessionHistoryRoot(directory, root);
     const file = internalStatePath('.7coder/sessions', candidate.name);
-    if (crypto.createHash('sha256').update(readFileBytesBounded(file, SESSION_MAX_BYTES, 'CLI archive')).digest('hex') !== candidate.hash) {
-      console.warn('[WARN] CLI history changed during retention; cleanup stopped without deleting it.'); break;
+    const checked = readCliSessionHistoryArchive(file, budget);
+    if (crypto.createHash('sha256').update(checked.bytes).digest('hex') !== candidate.hash) {
+      return deferred('archive changed before deletion; preserved it and stopped cleanup');
     }
-    deleteStateFile(file); remove--;
+    verifyCliSessionHistoryRoot(directory, root);
+    const now = fs.lstatSync(file);
+    if (!now.isFile() || now.nlink !== 1 || ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].some(k => now[k] !== checked.stat[k])) return deferred('archive identity changed before deletion');
+    checkCliSessionHistoryBudget(budget);
+    deleteStateFile(file); remove--; budget.removed++;
   }
   if (unreadable) console.warn('[WARN] CLI history retention preserved ' + unreadable + ' unreadable file(s).');
+  return { status: 'complete', visited: budget.visited, checked: budget.checked, readBytes: budget.readBytes, removed: budget.removed, unreadable };
+  } catch (error) {
+    if (error.code === 'ECLIHISTORYBUDGET' || error.code === 'EXECUTION_CANCELLED') return deferred(error.message);
+    throw error; // saveSession reports IO errors; never continue deleting.
+  }
 }
 function saveSession() {
   try {

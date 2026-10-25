@@ -426,7 +426,7 @@ Permission argument and protected-file wildcards match the entire text, case-ins
 
 Managed state reads, previous versions and existing corruption evidence have an 8 MiB byte ceiling, checked on the opened file and while collecting chunks. Proposed writes are checked before encoding/JSON validation. Oversized files fail visibly in place, without duplicating them as evidence or restoring over them, even when a valid previous version exists; repair or move the oversized file explicitly before retrying. Normal bounded corruption recovery is unchanged. Detected read-time file changes also fail without recovery. The limit applies before startup config parsing, so oversized `.env`/model profiles cannot produce a ready Agent; it is a per-file collection limit, not an overall heap or OS IO deadline guarantee. Saved conversations retain their stricter 2 MiB write limit.
 
-Disabled Dream maintenance reads no interaction timestamp or lock. Enabled maintenance reads timestamps within 1 KiB and owner locks within 4 KiB; only a missing timestamp may fall back to the legacy layout. Invalid/unreadable metadata defers automatic consolidation, and unavailable source notes fail maintenance before a model call. Legacy BTW reads use the state-size budget and warn on incomplete migration. CLI archive selection and pre-delete hash checks both read within the existing 2 MiB session limit, rejecting detected growth instead of collecting a whole enlarged file. Directory-wide history quotas retain separate work.
+Disabled Dream maintenance reads no interaction timestamp or lock. Enabled maintenance reads timestamps within 1 KiB and owner locks within 4 KiB; only a missing timestamp may fall back to the legacy layout. Invalid/unreadable metadata defers automatic consolidation, and unavailable source notes fail maintenance before a model call. Legacy BTW reads use the state-size budget and warn on incomplete migration. CLI archive selection and pre-delete hash checks share the bounded retention pass described below; detected growth is rejected instead of collecting the enlarged file. Directory-wide disk quotas and the Web history index retain separate work.
 
 Legacy `BTW.md` migration publishes a small `.7coder/btw-migration.json` intent journal before appending to `.7coder/BTW.md`. Source and before/after target hashes distinguish pending writes from already committed appends; failed source deletion or abrupt process exit can resume without appending twice. The target is verified before source cleanup, and the journal is removed last. Conflicting edits or invalid metadata retain available files/journal and warn for manual review. Source links/directories and detected source/target hardlink aliases are refused. Content checks are optimistic: external writes between checks/native replacement, loss of both copies, directory durability on power failure and real Win7 file-sharing behavior still require separate validation.
 
@@ -492,3 +492,18 @@ MCP discovery reports a failure if any configured server fails while retaining t
 Automatic package-script testing checks for npm before launching any test process and invokes the executable found on PATH by its checked absolute path. Missing npm is an explicit prerequisite error; the bundled Node executable does not include npm, and this check neither installs npm nor guarantees an arbitrary installed npm supports Node 13/Win7. Git tools distinguish a real non-repository from a missing/broken Git executable, config/permission failures and ownership errors. Shell codepage requests do not transcode arbitrary native or cmd redirected error output; those encoding cases still require target validation.
 
 CLI history retention recognizes both a dedicated archive name and `kind: 7coder-cli-session-v1`, keeping twenty new CLI archives and always protecting the current save. It preserves legacy/Web/unknown/corrupt records, evidence and staging files. Changed content or delete errors stop cleanup. Continuing a CLI/legacy archive in the Web UI creates a Web-owned copy instead of overwriting the source; later saves reuse that Web file. Session listing orders by savedAt across both entry points. This is not a total disk quota: Web/legacy history, snapshots, screenshots and other logs still need the separate retention work tracked in T22-26.
+
+CLI retention collects at most 4096 directory entries / 256 KiB of UTF-8
+names, inspects at most 256 CLI-looking candidates, and shares a 64 MiB
+archive-read budget and five-second deadline across discovery and pre-delete
+verification. Each archive remains limited to 2 MiB and is read in 64 KiB
+chunks through a held descriptor. Failed or unowned payload reads also consume
+the byte budget; hard-linked records are preserved. Incomplete discovery
+cannot authorize deletion. If a budget is exhausted, cleanup reports its
+reason and counts, keeps the primary session already saved, and starts no
+automatic retry. History may exceed twenty until a later successful pass or
+explicit maintenance; this bounds collection, not total disk use. Directory
+identity and workspace boundaries are checked again before deletion. Native
+IO still cannot be interrupted within one synchronous OS call, and ordinary
+path checks are not an atomic condition against arbitrary external writers.
+This change does not paginate or bound the separate Web history list.
