@@ -1560,6 +1560,7 @@ function managedStateParser(file) {
   const rel = path.relative(launchDir, file).split(path.sep).join('/').toLowerCase();
   if (rel === '.7coder/todos.json') return parseTodoState;
   if (rel === '.7coder/models.json') return parseModelState;
+  if (rel === '.7coder/btw-migration.json') return parseBtwMigrationState;
   if (rel === '.7coder/session.json' || /^\.7coder\/sessions\/[a-z0-9._-]+\.json$/.test(rel)) return parseSessionState;
   if (rel === '.env' || isManagedNote(file)) return parseStateText;
   return null;
@@ -1657,11 +1658,13 @@ function readStateRecord(file, parse = parseStateText, readOnly = false, maxByte
     ' from ' + previous + (invalid ? '; invalid bytes retained' : '; primary was missing'));
   return { bytes: saved, value };
 }
-function writeStateFile(file, text, parse = parseStateText) {
+function writeStateFile(file, text, parse = parseStateText, expectedCurrent = undefined) {
   if (typeof text === 'string' && Buffer.byteLength(text, 'utf8') > stateFileByteLimit()) throw fileByteLimitError('Proposed state', stateFileByteLimit());
   const bytes = Buffer.from(normalizeUtf8Input(text), 'utf8');
   parse(decodeUtf8Text(bytes)); // validate proposed data before changing anything
   const current = readStateRecord(file, parse);
+  if (expectedCurrent !== undefined && (expectedCurrent === null ? current !== null :
+      !current || !Buffer.isBuffer(expectedCurrent) || !current.bytes.equals(expectedCurrent))) throw new Error('State changed before commit: ' + file);
   if (current && current.bytes.equals(bytes)) return;
   if (current) replaceStateBytes(file + '.7coder-prev', current.bytes, file);
   replaceStateBytes(file, bytes);
@@ -2686,6 +2689,61 @@ function updateLastInteractionTime() {
   } catch (e) { console.warn('[WARN] last interaction save failed: ' + e.message); }
 }
 
+function parseBtwMigrationState(text) {
+  const j = parseStateJson(text), digest = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+  if (!j || j.kind !== '7coder-btw-migration-v1' || !digest(j.sourceHash) || !digest(j.afterTargetHash) ||
+      !(j.beforeTargetHash === null || digest(j.beforeTargetHash)) ||
+      !Number.isSafeInteger(j.sourceBytes) || j.sourceBytes < 0 || j.sourceBytes > stateFileByteLimit() ||
+      !Number.isSafeInteger(j.afterTargetBytes) || j.afterTargetBytes < 0 || j.afterTargetBytes > stateFileByteLimit()) throw new Error('invalid BTW migration journal');
+  return j;
+}
+function migrateLegacyBtw() {
+  const source = managedWorkspacePath('BTW.md'), target = internalStatePath('.7coder', 'BTW.md'), journal = internalStatePath('.7coder', 'btw-migration.json');
+  const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
+  const saved = readStateRecord(journal, parseBtwMigrationState);
+  let sourceBytes = null, sourceStat = null;
+  try {
+    sourceStat = fs.lstatSync(source);
+    if (!sourceStat.isFile()) throw new Error('Legacy BTW source must be a regular file, not a link/directory');
+    sourceBytes = readFileBytesBounded(source, stateFileByteLimit(), 'Legacy BTW notes');
+  }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (!saved && sourceBytes === null) return false;
+  let current = readStateRecord(target), currentHash = current ? hash(current.bytes) : null, record = saved && saved.value;
+  if (sourceBytes !== null && current) {
+    const stat = fs.statSync(target);
+    if (sourceStat.ino && sourceStat.ino === stat.ino && sourceStat.dev === stat.dev) throw new Error('BTW migration source and target refer to the same file; files retained');
+  }
+  if (!record) {
+    const proposed = (current ? current.value : '') + decodeUtf8Text(sourceBytes);
+    if (Buffer.byteLength(proposed, 'utf8') > stateFileByteLimit()) throw fileByteLimitError('Merged BTW notes', stateFileByteLimit());
+    const after = Buffer.from(proposed, 'utf8');
+    record = { kind: '7coder-btw-migration-v1', sourceHash: hash(sourceBytes), sourceBytes: sourceBytes.length,
+      beforeTargetHash: currentHash, afterTargetHash: hash(after), afterTargetBytes: after.length };
+    // Publish intent before touching the target. Content hashes distinguish a
+    // pending append from a committed append after unlink/crash/cleanup failure.
+    writeStateFile(journal, JSON.stringify(record), parseBtwMigrationState, null);
+  }
+  if (sourceBytes === null) {
+    if (currentHash !== record.afterTargetHash || current.bytes.length !== record.afterTargetBytes) throw new Error('BTW migration conflict: source absent and target does not match committed content; journal retained');
+    deleteStateFile(journal); return true;
+  }
+  if (sourceBytes.length !== record.sourceBytes || hash(sourceBytes) !== record.sourceHash) throw new Error('BTW migration conflict: legacy source changed; original files and journal retained');
+  if (currentHash !== record.afterTargetHash) {
+    if (currentHash !== record.beforeTargetHash) throw new Error('BTW migration conflict: target changed; original files and journal retained');
+    const proposed = (current ? current.value : '') + decodeUtf8Text(sourceBytes), bytes = Buffer.from(proposed, 'utf8');
+    if (bytes.length !== record.afterTargetBytes || hash(bytes) !== record.afterTargetHash) throw new Error('BTW migration conflict: proposed content differs from journal');
+    writeStateFile(target, proposed, parseStateText, current ? current.bytes : null);
+    current = readStateRecord(target); currentHash = current ? hash(current.bytes) : null;
+  }
+  if (currentHash !== record.afterTargetHash || !current || current.bytes.length !== record.afterTargetBytes) throw new Error('BTW migration conflict: committed target could not be verified');
+  const latest = readFileBytesBounded(source, stateFileByteLimit(), 'Legacy BTW notes');
+  if (latest.length !== record.sourceBytes || hash(latest) !== record.sourceHash) throw new Error('BTW migration conflict: legacy source changed before cleanup');
+  fs.unlinkSync(source); // failure leaves journal: next startup must not append again
+  deleteStateFile(journal);
+  return true;
+}
+
 // P2-1: one-time migration of the three legacy workspace-root files into
 // .7coder/. Idempotent: only fires when the old file exists (last_interaction /
 // dream.lock: and the new one does not; BTW.md: appended into the new file so
@@ -2710,15 +2768,8 @@ function migrateWorkspaceRootFiles() {
     }
   } catch (e) {}
   try {
-    const oldBtw = path.join(launchDir, 'BTW.md');
-    const newBtw = path.join(dotDir, 'BTW.md');
-    if (fs.existsSync(oldBtw)) {
-      ensureDot();
-      const record = readStateRecord(newBtw);
-      writeStateFile(newBtw, (record ? record.value : '') + decodeUtf8Text(readFileBytesBounded(managedWorkspacePath('BTW.md'), stateFileByteLimit(), 'Legacy BTW notes')));
-      fs.unlinkSync(oldBtw);
-    }
-  } catch (e) { console.warn('[WARN] BTW migration left original in place: ' + e.message); }
+    migrateLegacyBtw();
+  } catch (e) { console.warn('[WARN] BTW migration stopped; inspect retained source/target/journal: ' + e.message); }
 }
 
 async function triggerDreamIfNeeded(modelContext, execution) {

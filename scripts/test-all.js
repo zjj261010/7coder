@@ -68,6 +68,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'mcp-retention.js', args: [path.join(ROOT, 'test', 'mcp-retention.js')] },
     { name: 'auxiliary-budget.js', args: [path.join(ROOT, 'test', 'auxiliary-budget.js')] },
     { name: 'memory-budget.js', args: [path.join(ROOT, 'test', 'memory-budget.js')] },
+    { name: 'btw-migration.js', args: [path.join(ROOT, 'test', 'btw-migration.js')] },
     { name: 'debug-prerequisites.js', args: [path.join(ROOT, 'test', 'debug-prerequisites.js')] },
     { name: 'tool-result-evidence.js', args: [path.join(ROOT, 'test', 'tool-result-evidence.js')] },
     { name: 'git-snapshot-retention.js', args: [path.join(ROOT, 'test', 'git-snapshot-retention.js')] },

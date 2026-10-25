@@ -1561,3 +1561,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 
 - 新memory-budget Node13首次单次 **20/20**：相关晚note仍排首、最多5份/keywords一次/继承关键词/128与8192界限/raw prompt不截断/emoji，巨与protected note零字节但好note保留、list partial error、explicit大于64KiB read，正常previous恢复/evidence及超大previous/假evidence零data-read；配置输出clamp；400目录entry、读/close故障及20topic上限真实/受控句柄关闭、慢note后5秒止步；真实私有HTTP Agent上游保留原prompt/安全note/不完整标记、不含protected正文，巨源原样/health正常。
 - 旧B memory首次单次 **7/7**：原关键词相关性/无关note排除、topic index与default模式CRUD/preview保持。两个专项无失败复跑，npm/test-all登记，Node13语法/diff通过。未跑其余已通过专项/完整A–J/UI/test-all、Win7/实际网络盘、真实模型、24/72h或打包；默认state 8MiB接口只加内部optional读取上限，原状态可靠写协议未重写。按授权提交本批、未推送，随后读五小时额度决定下一项。
+
+### 2026-10-25 —— INC-25-06旧BTW迁移的中断恢复
+
+- 记忆预算批已提交`bf3fcc9`。完成后五小时窗口used15%/remaining85%，判断本项事务恢复、定向验证及提交可完整执行，继续。
+- **Medium／已确认**：原迁移先append新BTW再unlink旧BTW；注入旧文件EACCES，连续启动得到`EXISTINGLEGACYLEGACY`且旧文件仍在。目标写入后进程骤停也有同一路径，会重复注入笔记并逐次增长，不只是一次告警。
+- 现先可靠发布`.7coder/btw-migration.json`（仅kind/源字节数与SHA256/目标前后hash及最终字节数），再写目标，核对目标与源后删除旧源，最后清journal。下一次以hash区分未应用/已应用，源已删但journal未清时核对目标再收尾；新生成的相同旧笔记仍可独立导入，不用endsWith猜测去重。journal损坏/外部源或目标变化保留现存文件与证据并告警；不自动覆盖冲突。
+- 通用state writer只新增内部optional expectedCurrent字节比较（在相同内容早退与previous写入前），默认调用保持；迁移用其阻止准备intent后已观察到的目标变化。源link/目录、可识别的源目标hardlink别名在写入前拒绝。源及合并内容仍8MiB预算，先验失败不创建journal。外部进程在最后检查与native写/删之间的竞态不是原子CAS保证。
+- 新btw-migration Node13首次单次 **23/23**：BOM/换行/中文emoji字节及previous、空源/缺目标、完成后noop/相同新源再次导入、两次删源失败不重复、journal删除失败、intent/目标rename失败、两类外部冲突、源缺失冲突、坏journal证据、真实NTFS hardlink、100MiB稀疏源与合并超限；所属子进程分别在intent/目标/源删除/journal删除后exit73，下一进程恢复。目标已写阶段另用实际私有Agent启动恢复并完成一次本地fixture模型请求，源/journal清除且只合并一次。
+- auxiliary-budget因迁移实现实际变化在本批首次单次 **17/17**，覆盖原读取/合并边界与Dream/archive行为；不是为无关变动重复其它已通过专项。两项无失败复跑，Node13语法与diff检查通过，npm/test-all登记。未跑完整A–J/UI/test-all、状态59或其它已通过专项、真实模型、Win7/ACL/网络盘/断电/24–72h或打包。目录断电持久性、两份同时丢失与原生文件分享语义仍属实机门槛；按授权提交、未推送，随后重新检查额度。
