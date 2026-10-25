@@ -6388,7 +6388,12 @@ function discoverBackupV1(storeId) {
   const out = { incomplete: [], records: [], corrupt: [], foreign: [], staging: [], deleting: [], unknown: [], visited: 0, metaBytes: 0, ownBytes: 0 };
   const v1Dir = internalStatePath(path.join('.7coder', 'backups', 'v1'));
   let handle = null;
-  try { handle = fs.opendirSync(v1Dir); }
+  try {
+    const st = fs.statSync(v1Dir);
+    out.root = { path: v1Dir, real: fs.realpathSync(v1Dir), dev: st.dev, ino: st.ino };
+    verifyBackupRoot(out.root);
+    handle = fs.opendirSync(v1Dir);
+  }
   catch (e) { if (e.code === 'ENOENT') return out; throw e; }
   const deadline = Date.now() + BACKUP_DISCOVERY_DEADLINE_MS;
   try {
@@ -6428,6 +6433,7 @@ function discoverBackupV1(storeId) {
       if (st.size !== manifest.bytes) { out.corrupt.push({ name, seq, sourceKey: manifest.sourceKey, reason: 'payload size mismatch (' + st.size + ' != ' + manifest.bytes + ')' }); continue; }
       out.records.push({
         dir: path.join(v1Dir, name), name, seq, bytes: st.size, manifest,
+        dirStat: { dev: lstat.dev, ino: lstat.ino },
         payloadStat: { dev: st.dev, ino: st.ino, size: st.size, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs }
       });
       out.ownBytes += st.size;
@@ -6475,7 +6481,12 @@ function discoverLegacyBackupCandidates(safeRel) {
 }
 // Streaming sha256 with the same read-time identity discipline as
 // readFileBytesBounded; payloads are never held in memory as a whole.
+function checkBackupOperation(context, label) {
+  checkExecution(context && context.cancelled);
+  if (context && context.deadlineAt && Date.now() >= context.deadlineAt) throw new Error(label + ' operation budget exceeded');
+}
 function digestBackupFile(file, expectedBytes, label, context) {
+  checkBackupOperation(context, label);
   const fd = fs.openSync(file, 'r');
   try {
     const before = fs.fstatSync(fd);
@@ -6486,8 +6497,7 @@ function digestBackupFile(file, expectedBytes, label, context) {
     while (total < expectedBytes) {
       // Chunk-level progress checks: cancellation and the per-operation wall
       // clock apply INSIDE long digests, not only between victims (recheck R5).
-      checkExecution(context && context.cancelled);
-      if (context && context.deadlineAt && Date.now() >= context.deadlineAt) throw new Error(label + ' digest budget exceeded');
+      checkBackupOperation(context, label);
       const want = Math.min(BACKUP_CHUNK_BYTES, expectedBytes - total);
       const chunk = Buffer.alloc(want);
       const count = fs.readSync(fd, chunk, 0, want, total);
@@ -6498,6 +6508,7 @@ function digestBackupFile(file, expectedBytes, label, context) {
     const after = fs.fstatSync(fd), named = fs.statSync(file);
     const same = st => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => st[k] === before[k]);
     if (!same(after) || !same(named)) throw new Error(label + ' changed during read; retry before using it');
+    checkBackupOperation(context, label);
     return { sha256: hash.digest('hex'), bytes: total };
   } finally { fs.closeSync(fd); }
 }
@@ -6505,6 +6516,8 @@ function digestBackupFile(file, expectedBytes, label, context) {
 // while writing and rejecting zero-progress loops, short reads and any change
 // to the source identity between the initial stat, the copy and its end.
 function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled, deadlineAt) {
+  const context = { cancelled, deadlineAt };
+  checkBackupOperation(context, 'Backup copy');
   const srcFd = fs.openSync(sourcePath, 'r');
   let payloadFd = null, payloadClosed = false;
   try {
@@ -6516,13 +6529,13 @@ function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled, deadl
     const buffer = Buffer.alloc(BACKUP_CHUNK_BYTES);
     let total = 0, idleWrites = 0;
     while (total < before.size) {
-      checkExecution(cancelled);
-      if (deadlineAt && Date.now() >= deadlineAt) throw new Error('backup copy budget exceeded');
+      checkBackupOperation(context, 'Backup copy');
       const want = Math.min(BACKUP_CHUNK_BYTES, before.size - total);
       const got = fs.readSync(srcFd, buffer, 0, want, total);
       if (!got) throw new Error('source ended early at ' + total + ' of ' + before.size + ' bytes');
       let off = 0;
       while (off < got) {
+        checkBackupOperation(context, 'Backup copy');
         const wrote = fs.writeSync(payloadFd, buffer, off, got - off);
         if (!(wrote > 0)) { if (++idleWrites > 16) throw new Error('backup payload write made no progress'); continue; }
         idleWrites = 0;
@@ -6538,6 +6551,7 @@ function copyBackupPayload(sourcePath, sourceStat, payloadPath, cancelled, deadl
     const after = fs.fstatSync(srcFd), named = fs.statSync(sourcePath);
     const same = st => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => st[k] === before[k]);
     if (!same(after) || !same(named)) throw new Error('source changed during the copy');
+    checkBackupOperation(context, 'Backup copy');
     return { sha256: hash.digest('hex'), bytes: total };
   } finally {
     if (payloadFd !== null && !payloadClosed) { try { fs.closeSync(payloadFd); } catch (e) {} }
@@ -6624,11 +6638,13 @@ function backupExistingFile(fullPath, cancelled, limits) {
         bytes: staged.bytes, sha256: staged.sha256
       };
       const manifestPath = path.join(stagingDir, 'manifest.json');
+      checkBackupOperation({ cancelled, deadlineAt: opDeadline }, 'Backup publication');
       replaceStateBytes(manifestPath, Buffer.from(JSON.stringify(manifest), 'utf8'), manifestPath);
       const finalDir = path.join(v1Dir, String(sequence).padStart(16, '0') + '-' + snapshotId);
       let exists = true;
       try { fs.statSync(finalDir); } catch (e) { exists = false; }
       if (exists) throw new Error('backup record already exists: ' + path.basename(finalDir));
+      checkBackupOperation({ cancelled, deadlineAt: opDeadline }, 'Backup publication');
       // The publish point: one rename of the fully verified directory.
       fs.renameSync(stagingDir, finalDir);
       owned = false;
@@ -6661,22 +6677,53 @@ function backupExistingFile(fullPath, cancelled, limits) {
 // payload must be an exclusively owned regular file with an unchanged
 // identity, and the manifest must still prove ownership of THIS store with
 // every field unchanged. Any deviation preserves the record and reports.
-function reverifyOwnedRecordForDeletion(store, victim, context) {
-  const dirStat = fs.lstatSync(victim.dir);
-  if (!dirStat.isDirectory() || dirStat.isSymbolicLink()) throw new Error('record path is no longer a plain directory');
-  const dirReal = realPathSafe(victim.dir);
-  if (path.basename(dirReal) !== victim.name || path.dirname(dirReal) !== realPathSafe(path.dirname(victim.dir))) {
-    throw new Error('record path resolves outside the store root (link/junction suspected)');
-  }
-  const members = fs.readdirSync(victim.dir);
-  if (members.length !== 2 || members.indexOf('data.bak') < 0 || members.indexOf('manifest.json') < 0) {
-    throw new Error('record carries unexpected members (' + members.join(', ') + ')');
-  }
+function verifyBackupRoot(root) {
+  // Re-run the workspace gate and compare with discovery's fixed anchor,
+  // never with the concurrently resolving lexical parent of the victim.
+  const current = internalStatePath(path.join('.7coder', 'backups', 'v1'));
+  if (!root || current !== root.path || path.relative(root.real, fs.realpathSync(current)) !== '') throw new Error('backup store root changed since discovery');
+  const st = fs.statSync(current);
+  if (!st.isDirectory() || st.dev !== root.dev || st.ino !== root.ino) throw new Error('backup store root identity changed since discovery');
+}
+function verifyBackupRecordLocation(root, dir, expected) {
+  verifyBackupRoot(root);
+  const st = fs.lstatSync(dir);
+  if (!st.isDirectory() || st.isSymbolicLink()) throw new Error('record path is no longer a plain directory');
+  if (path.dirname(dir) !== root.path || path.relative(root.real, path.dirname(fs.realpathSync(dir))) !== '') throw new Error('record path resolves outside the discovered store root');
+  if (expected && (st.dev !== expected.dev || st.ino !== expected.ino)) throw new Error('record directory identity changed since discovery');
+  verifyBackupRoot(root);
+  return st;
+}
+function verifyBackupRecordMembers(dir, context) {
+  const handle = fs.opendirSync(dir);
+  const seen = new Set();
+  try {
+    // Two permitted entries plus EOF; a third/unknown member ends discovery
+    // immediately, without collecting its siblings or formatting all names.
+    for (let i = 0; i < 3; i++) {
+      checkBackupOperation(context, 'Backup member scan');
+      const entry = handle.readSync();
+      if (!entry) {
+        if (seen.size !== 2) throw new Error('record is missing protocol members');
+        return;
+      }
+      if (i === 2 || !['data.bak', 'manifest.json'].includes(entry.name) || seen.has(entry.name)) throw new Error('record carries unexpected members');
+      seen.add(entry.name);
+    }
+  } finally { handle.closeSync(); }
+}
+function sameBackupFileIdentity(actual, expected) {
+  return actual.isFile() && !actual.isSymbolicLink() && actual.nlink === 1 &&
+    ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => actual[k] === expected[k]);
+}
+function reverifyOwnedRecordForDeletion(store, victim, context, root) {
+  const dirStat = verifyBackupRecordLocation(root, victim.dir, victim.dirStat);
+  verifyBackupRecordMembers(victim.dir, context);
   const payloadPath = path.join(victim.dir, 'data.bak');
   const payloadStat = fs.lstatSync(payloadPath);
   const manifestStat = fs.lstatSync(path.join(victim.dir, 'manifest.json'));
   if (!payloadStat.isFile() || payloadStat.isSymbolicLink() || payloadStat.nlink > 1) throw new Error('payload is not an exclusively owned regular file');
-  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) throw new Error('manifest is not a regular file');
+  if (!manifestStat.isFile() || manifestStat.isSymbolicLink() || manifestStat.nlink !== 1) throw new Error('manifest is not an exclusively owned regular file');
   const same = st => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => st[k] === victim.payloadStat[k]);
   if (!same(payloadStat)) throw new Error('payload identity changed since discovery');
   const bytes = readFileBytesBounded(path.join(victim.dir, 'manifest.json'), BACKUP_MANIFEST_MAX_BYTES, 'Backup manifest');
@@ -6687,7 +6734,11 @@ function reverifyOwnedRecordForDeletion(store, victim, context) {
   }
   const digest = digestBackupFile(payloadPath, victim.bytes, 'Prune check', context);
   if (digest.sha256 !== manifest.sha256) throw new Error('payload digest changed since discovery');
-  return dirStat;
+  verifyBackupRecordLocation(root, victim.dir, dirStat);
+  if (!sameBackupFileIdentity(fs.lstatSync(payloadPath), payloadStat) ||
+      !sameBackupFileIdentity(fs.lstatSync(path.join(victim.dir, 'manifest.json')), manifestStat)) throw new Error('record members changed during deletion verification');
+  checkBackupOperation(context, 'Backup deletion');
+  return { dir: dirStat, payload: payloadStat, manifest: manifestStat };
 }
 function pruneOwnedBackups(protectDir, cancelled, cap) {
   cap = cap || backupRetentionLimits(null);
@@ -6704,13 +6755,22 @@ function pruneOwnedBackups(protectDir, cancelled, cap) {
     // like any other record; they are only excluded from becoming victims.
     const isProtected = r => r.dir === protectDir || activeBackupRestorePins.has(r.dir);
     const victims = new Map();
-    const addVictims = list => { for (const r of list) if (!isProtected(r) && !victims.has(r.dir)) victims.set(r.dir, r); };
+    const failures = [];
+    const trimCount = (list, limit, label) => {
+      let excess = list.length - limit;
+      for (const r of list.slice().sort((a, b) => a.seq - b.seq)) {
+        if (excess <= 0) break;
+        if (isProtected(r)) continue;
+        victims.set(r.dir, r); excess--;
+      }
+      if (excess > 0) failures.push(label + ' count target not reachable: protected/pinned records exceed it by ' + excess);
+    };
     const groups = Object.create(null);
     for (const r of index.records) (groups[r.manifest.sourceKey] = groups[r.manifest.sourceKey] || []).push(r);
     for (const key of Object.keys(groups)) {
-      addVictims(groups[key].sort((a, b) => b.seq - a.seq).slice(cap.perSource));
+      trimCount(groups[key], cap.perSource, 'per-source');
     }
-    addVictims(index.records.slice().sort((a, b) => b.seq - a.seq).slice(cap.globalKeep));
+    trimCount(index.records.filter(r => !victims.has(r.dir)), cap.globalKeep, 'global');
     let remaining = 0;
     for (const r of index.records) if (!victims.has(r.dir)) remaining += r.bytes;
     if (remaining > cap.retainTarget) {
@@ -6720,7 +6780,6 @@ function pruneOwnedBackups(protectDir, cancelled, cap) {
         victims.set(r.dir, r); remaining -= r.bytes;
       }
     }
-    const failures = [];
     // Never report a byte target as met when protected records hold it open.
     if (remaining > cap.retainTarget) failures.push('byte target not reachable: protected/pinned records still hold ' + remaining + ' of ' + cap.retainTarget + ' target bytes');
     const ordered = Array.from(victims.values()).sort((a, b) => a.seq - b.seq); // oldest first
@@ -6734,25 +6793,29 @@ function pruneOwnedBackups(protectDir, cancelled, cap) {
       if (Date.now() >= deadline) { failures.push('cleanup time budget reached; stopped with candidates remaining'); break; }
       try {
         if (isProtected(v)) continue; // a pin may have appeared since planning
-        const dirStat = reverifyOwnedRecordForDeletion(store, v, { cancelled, deadlineAt: deadline });
+        const context = { cancelled, deadlineAt: deadline };
+        const verified = reverifyOwnedRecordForDeletion(store, v, context, index.root);
         const deletingDir = path.join(path.dirname(v.dir), '.deleting-' + v.name + '-' + crypto.randomBytes(4).toString('hex'));
         let exists = true;
         try { fs.statSync(deletingDir); } catch (e) { exists = false; }
         if (exists) throw new Error('deleting destination already exists');
+        verifyBackupRecordLocation(index.root, v.dir, verified.dir);
+        checkBackupOperation(context, 'Backup deletion');
         fs.renameSync(v.dir, deletingDir);
         // Re-check the moved object itself before unlinking through the new
         // path: a swap around the rename must not turn member deletion into
         // deleting through a foreign link.
-        const moved = fs.lstatSync(deletingDir);
-        if (!moved.isDirectory() || moved.isSymbolicLink() || moved.dev !== dirStat.dev || moved.ino !== dirStat.ino) {
-          throw new Error('moved record changed identity before member deletion; evidence kept at ' + deletingDir);
-        }
-        const members = fs.readdirSync(deletingDir);
-        if (members.length !== 2 || members.indexOf('data.bak') < 0 || members.indexOf('manifest.json') < 0) {
-          throw new Error('unexpected members after move; evidence kept at ' + deletingDir);
-        }
+        verifyBackupRecordLocation(index.root, deletingDir, verified.dir);
+        verifyBackupRecordMembers(deletingDir, context);
+        if (!sameBackupFileIdentity(fs.lstatSync(path.join(deletingDir, 'data.bak')), verified.payload) ||
+            !sameBackupFileIdentity(fs.lstatSync(path.join(deletingDir, 'manifest.json')), verified.manifest)) throw new Error('moved members changed before deletion; evidence kept at ' + deletingDir);
+        verifyBackupRecordLocation(index.root, deletingDir, verified.dir);
+        checkBackupOperation(context, 'Backup deletion');
         fs.unlinkSync(path.join(deletingDir, 'data.bak'));
+        verifyBackupRecordLocation(index.root, deletingDir, verified.dir);
+        if (!sameBackupFileIdentity(fs.lstatSync(path.join(deletingDir, 'manifest.json')), verified.manifest)) throw new Error('manifest changed before deletion; evidence kept at ' + deletingDir);
         fs.unlinkSync(path.join(deletingDir, 'manifest.json'));
+        verifyBackupRecordLocation(index.root, deletingDir, verified.dir);
         try { fs.rmdirSync(deletingDir); }
         catch (e2) { throw new Error('directory busy (' + e2.code + '); evidence kept at ' + deletingDir); }
         removed++;
@@ -6792,6 +6855,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
   let tempOwned = false;
   let outcome = null;
   try {
+    checkBackupOperation(context, 'Restore');
     const srcFd = fs.openSync(sourcePath, 'r');
     let tempFd = null, tempClosed = false;
     try {
@@ -6804,13 +6868,13 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
       let total = 0, idleWrites = 0;
       while (total < expectedBytes) {
         // Chunk-level cancellation and wall-clock budget (recheck R5).
-        checkExecution(context && context.cancelled);
-        if (context && context.deadlineAt && Date.now() >= context.deadlineAt) throw new Error('restore staging budget exceeded');
+        checkBackupOperation(context, 'Restore staging');
         const want = Math.min(BACKUP_CHUNK_BYTES, expectedBytes - total);
         const got = fs.readSync(srcFd, buffer, 0, want, total);
         if (!got) throw new Error('selected backup ended early at ' + total + ' of ' + expectedBytes + ' bytes');
         let off = 0;
         while (off < got) {
+          checkBackupOperation(context, 'Restore staging');
           const wrote = fs.writeSync(tempFd, buffer, off, got - off);
           if (!(wrote > 0)) { if (++idleWrites > 16) throw new Error('restore staging write made no progress'); continue; }
           idleWrites = 0; off += wrote; total += wrote;
@@ -6854,7 +6918,7 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
     }
     if (!isInsideDir(getLaunchDirReal(), realPathSafe(parent))) throw backupRestoreConflict('verify', 'target path boundary changed before commit');
     // A restore that outlived its operation budget must not commit (recheck R5).
-    if (context && context.deadlineAt && Date.now() >= context.deadlineAt) throw new Error('restore operation budget exceeded before commit');
+    checkBackupOperation(context, 'Restore before commit');
     // The only commit point: one same-directory rename over the target.
     fs.renameSync(tempPath, target);
     tempOwned = false;
@@ -6881,6 +6945,9 @@ function commitBackupRestore(target, sourcePath, expectedBytes, expectedSha256, 
 // failed / conflict / unknown.
 function restoreLatestBackupDetailed(rel, cancelled) {
   const base = { requested: String(rel) };
+  const context = { cancelled, deadlineAt: Date.now() + BACKUP_IO_BUDGET_MS };
+  try { checkBackupOperation(context, 'Restore'); }
+  catch (e) { return Object.assign(base, { status: 'failed', stage: 'prepare', message: e.message, errno: e.code || null }); }
   let safeRel;
   try { safeRel = sanitizePath(rel); }
   catch (e) { return Object.assign(base, { status: 'failed', stage: 'resolve-path', message: e.message }); }
@@ -6925,7 +6992,7 @@ function restoreLatestBackupDetailed(rel, cancelled) {
       : [];
     return Object.assign(base, commitBackupRestore(target, path.join(best.dir, 'data.bak'), best.manifest.bytes, best.manifest.sha256, {
       format: 'v1', snapshotId: best.manifest.snapshotId, sequence: best.seq, payloadStat: best.payloadStat, recordDir: best.dir, warnings
-    }, { cancelled, deadlineAt: Date.now() + BACKUP_IO_BUDGET_MS }));
+    }, context));
   }
   for (const c of index.corrupt) {
     if (c.seq === null) continue;
@@ -6951,11 +7018,11 @@ function restoreLatestBackupDetailed(rel, cancelled) {
   // automatically inherited from the creation path.
   if (newest.size > BACKUP_SINGLE_MAX_BYTES) return Object.assign(base, { status: 'failed', stage: 'legacy-verify', message: 'legacy backup exceeds the ' + BACKUP_SINGLE_MAX_BYTES + '-byte single-snapshot budget' });
   let digest;
-  try { digest = digestBackupFile(newest.full, newest.size, 'Legacy backup', { cancelled, deadlineAt: Date.now() + BACKUP_IO_BUDGET_MS }); }
+  try { digest = digestBackupFile(newest.full, newest.size, 'Legacy backup', context); }
   catch (e) { return Object.assign(base, { status: 'failed', stage: 'legacy-verify', message: e.message }); }
   const legacyWarnings = ['legacy snapshot has no creation-time digest; only this copy could be verified'];
   if (managedStateParser(target)) legacyWarnings.push('restored configuration applies to disk only; restart or re-run the reload command to change running state');
-  return Object.assign(base, commitBackupRestore(target, newest.full, newest.size, digest.sha256, { format: 'legacy', payloadStat: newest.stat, warnings: legacyWarnings }, { cancelled, deadlineAt: Date.now() + BACKUP_IO_BUDGET_MS }));
+  return Object.assign(base, commitBackupRestore(target, newest.full, newest.size, digest.sha256, { format: 'legacy', payloadStat: newest.stat, warnings: legacyWarnings }, context));
 }
 // Boolean wrapper kept for older internal callers and tests.
 function restoreLatestBackup(rel) {
@@ -8208,7 +8275,7 @@ async function main() {
             console.log(`[OK] Restored ${rel} from the newest backup (${outcome.format}${outcome.sequence ? ', sequence ' + outcome.sequence : ''}).`);
             for (const warning of outcome.warnings || []) console.log(`[UNDO WARNING] ${warning}`);
           } else if (outcome.status === 'not-found') {
-            console.log(`No backup found for ${rel}.`);
+            console.log(`No backup found for ${rel}.${outcome.message ? ' ' + outcome.message : ''}`);
           } else {
             console.log(`[UNDO ${outcome.status.toUpperCase()}] at ${outcome.stage || 'unknown stage'}: ${outcome.message || 'no details'}${outcome.residue ? ' ; ' + outcome.residue : ''}`);
             console.log('The current file was NOT modified. Inspect .7coder/backups before retrying.');

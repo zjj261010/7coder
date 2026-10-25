@@ -223,8 +223,8 @@ async function main() {
       ctx.activeBackupRestorePins.add(path.join(v1Dir(f.cwd), oldest));
       fs.writeFileSync(f.file, 'p7\n');
       ctx.backupExistingFile(f.file);
-      check('pinned record survives retention even beyond the per-source cap',
-        recordDirs(f.cwd).length === 6 && fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')));
+      check('pinned record survives while occupying a per-source quota slot',
+        recordDirs(f.cwd).length === 5 && fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')));
       ctx.activeBackupRestorePins.delete(path.join(v1Dir(f.cwd), oldest));
       fs.writeFileSync(f.file, 'p8\n');
       ctx.backupExistingFile(f.file);
@@ -409,24 +409,28 @@ async function main() {
       for (let i = 1; i <= 6; i++) { fs.writeFileSync(f.file, 'y' + i + '\n'); ctx.backupExistingFile(f.file); }
       const oldest = recordDirs(f.cwd)[0];
       const manifestPath = path.join(v1Dir(f.cwd), oldest, 'manifest.json');
-      let swapped = false;
+      let swapped = false, opens = 0, verified = 0;
       const hooked = ctxAt(f.cwd, {
-        lstatSync(p) {
-          if (!swapped && path.resolve(String(p)) === path.resolve(path.join(v1Dir(f.cwd), oldest))) {
+        openSync(p, flags) {
+          if (path.resolve(String(p)) === path.resolve(manifestPath) && ++opens === 2) {
             swapped = true;
             const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
             manifest.storeId = crypto.randomBytes(16).toString('hex');
             fs.writeFileSync(manifestPath, JSON.stringify(manifest));
           }
-          return fs.lstatSync(p);
+          return fs.openSync(p, flags);
         }
       });
-      fs.writeFileSync(f.file, 'y7\n');
-      hooked.backupExistingFile(f.file);
+      const originalVerify = hooked.reverifyOwnedRecordForDeletion;
+      hooked.reverifyOwnedRecordForDeletion = function (store, victim) {
+        if (victim.name === oldest) verified++;
+        return originalVerify.apply(this, arguments);
+      };
+      hooked.pruneOwnedBackups(null, null, hooked.backupRetentionLimits({ perSource: 4 }));
       check('record whose storeId changed after discovery is kept, not deleted',
-        swapped && fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')) &&
+        swapped && opens === 2 && verified === 1 && fs.existsSync(path.join(v1Dir(f.cwd), oldest, 'data.bak')) &&
         JSON.parse(fs.readFileSync(manifestPath, 'utf8')).storeId !== JSON.parse(fs.readFileSync(storePath(f.cwd), 'utf8')).storeId &&
-        recordDirs(f.cwd).filter(n => n !== oldest).length === 5 && stageResidue(f.cwd).length === 0);
+        recordDirs(f.cwd).filter(n => n !== oldest).length === 4 && stageResidue(f.cwd).length === 0);
     }
     // 24. Directory swapped for a junction between discovery and deletion (recheck R1A).
     if (process.platform === 'win32') {
@@ -523,6 +527,83 @@ async function main() {
       check('cancellation during the prune digest preserves the candidate',
         token.reason === 'halt cleanup digest' && fs.existsSync(victimData) &&
         recordDirs(f.cwd).length === 6 && stageResidue(f.cwd).length === 0);
+    }
+    // Per-source, global count and bytes must trim the same survivor set.
+    for (const item of [{ bytes: 100, expected: [1, 2, 5, 6] }, { bytes: 9, expected: [2, 5, 6] }]) {
+      const f = fixture('combined-survivors-' + item.bytes), ctx = ctxAt(f.cwd);
+      ['b', 'c', 'a', 'a', 'a', 'a'].forEach((name, i) => {
+        const file = path.join(f.cwd, name + '.txt');
+        fs.writeFileSync(file, 'aaa');
+        ctx.backupExistingFile(file, null, i === 5 ? { perSource: 2, globalKeep: 4, retainTarget: item.bytes } : undefined);
+      });
+      const actual = recordDirs(f.cwd).map(n => parseInt(n.slice(0, 16), 10));
+      check('combined source/global/byte quotas preserve exact eligible generations (' + item.bytes + ')',
+        JSON.stringify(actual) === JSON.stringify(item.expected));
+      check('unrelated source c keeps its only restore point (' + item.bytes + ')',
+        ctx.restoreLatestBackupDetailed('c.txt').status === 'restored' && same(path.join(f.cwd, 'c.txt'), 'aaa'));
+    }
+    // Exercise replacement before verification AND after the deletion rename.
+    // Both source and destination are owned temporary workspaces; remove each
+    // junction explicitly before the harness performs recursive cleanup.
+    if (process.platform === 'win32') {
+      for (const level of ['v1', 'backups', '.7coder']) for (const phase of ['before', 'after']) {
+        const f = fixture('root-swap-' + level + '-' + phase), ctx = ctxAt(f.cwd);
+        ctx.backupExistingFile(f.file);
+        const other = path.join(f.cwd, 'other.txt'); fs.writeFileSync(other, 'other'); ctx.backupExistingFile(other);
+        const names = recordDirs(f.cwd), name = names[0], victim = path.join(v1Dir(f.cwd), name);
+        const otherRecord = path.join(v1Dir(f.cwd), names[1]);
+        const parent = level === 'v1' ? v1Dir(f.cwd) : level === 'backups' ? path.dirname(v1Dir(f.cwd)) : path.join(f.cwd, '.7coder');
+        const outside = S.freshCwd('outside-' + level + '-' + phase), moved = path.join(outside, 'moved');
+        let hits = 0, swapped = false, recordPath = victim;
+        function swap() { fs.renameSync(parent, moved); fs.symlinkSync(moved, parent, 'junction'); swapped = true; }
+        const hooked = ctxAt(f.cwd, {
+          lstatSync(p) { if (phase === 'before' && p === victim && ++hits === 2) swap(); return fs.lstatSync(p); },
+          renameSync(from, to) {
+            fs.renameSync(from, to);
+            if (phase === 'after' && from === victim) { recordPath = to; swap(); }
+          }
+        });
+        try {
+          hooked.pruneOwnedBackups(null, null, hooked.backupRetentionLimits({ globalKeep: 1 }));
+          const preserved = path.join(moved, path.relative(parent, recordPath));
+          check(level + ' junction replacement ' + phase + ' deletion rename keeps both record members',
+            swapped && same(path.join(preserved, 'data.bak'), 'v0\n') && fs.existsSync(path.join(preserved, 'manifest.json')) &&
+            same(f.file, 'v0\n') && fs.existsSync(path.join(moved, path.relative(parent, otherRecord), 'manifest.json')));
+        } finally { if (swapped) fs.rmdirSync(parent); }
+      }
+    }
+    // Member collection stops at the third entry, closes on rejection, and
+    // never calls readdirSync. The provider would be infinite if over-read.
+    {
+      const f = fixture('member-budget'); let reads = 0, closes = 0;
+      const ctx = ctxAt(f.cwd, {
+        readdirSync() { throw Error('unbounded member enumeration'); },
+        opendirSync() { return {
+          readSync() { reads++; return { name: reads === 1 ? 'data.bak' : reads === 2 ? 'manifest.json' : 'foreign-' + reads }; },
+          closeSync() { closes++; }
+        }; }
+      });
+      let error = '';
+      try { ctx.verifyBackupRecordMembers('virtual'); } catch (e) { error = e.message; }
+      check('member scan rejects the third entry with bounded collection and closes its handle', /unexpected members/.test(error) && reads === 3 && closes === 1);
+    }
+    {
+      const f = fixture('member-phases'), ctx = ctxAt(f.cwd);
+      ctx.backupExistingFile(f.file);
+      const other = path.join(f.cwd, 'other.txt'); fs.writeFileSync(other, 'other'); ctx.backupExistingFile(other);
+      const scans = [];
+      const hooked = ctxAt(f.cwd, {
+        readdirSync() { throw Error('unbounded member enumeration'); },
+        opendirSync(dir) {
+          const handle = fs.opendirSync(dir);
+          if (!/^\d{16}-/.test(path.basename(dir)) && !path.basename(dir).startsWith('.deleting-')) return handle;
+          const record = { path: dir, reads: 0, closed: false }; scans.push(record);
+          return { readSync() { record.reads++; return handle.readSync(); }, closeSync() { record.closed = true; handle.closeSync(); } };
+        }
+      });
+      hooked.pruneOwnedBackups(null, null, hooked.backupRetentionLimits({ globalKeep: 1 }));
+      check('both pre/post rename member scans close after two entries and EOF',
+        recordDirs(f.cwd).length === 1 && scans.length === 2 && scans.every(r => r.reads === 3 && r.closed) && scans.some(r => path.basename(r.path).startsWith('.deleting-')));
     }
     console.log('BACKUP/OWNERSHIP: ' + checks + '/' + checks);
   } finally {

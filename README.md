@@ -205,17 +205,26 @@ a Windows-only warning instead of being injected.
   admission including the new snapshot, 1GiB per snapshot) all count every
   owned record - the just-published snapshot and pinned records occupy quota
   slots and bytes and are only exempt from becoming victims. If pins keep the
-  byte target unreachable, that is reported instead of pretended. Deletion
+  count or byte targets unreachable, that is reported instead of pretended.
+  Successive rules trim the previous rule's survivors: per-source, global
+  count, then bytes. Expired records cannot consume global quota slots and
+  unnecessarily evict another source's only recovery point. Deletion
   re-verifies the record immediately before touching it (directory type and
   real path inside the store root, exactly the two protocol members, payload
   identity and exclusive ownership, manifest storeId and every field, content
   digest), renames it to `.deleting-*`, re-checks the moved object, and only
-  then unlinks the two members - a record swapped to a junction or stripped of
-  ownership after discovery is preserved and reported, never deleted through.
+  then unlinks the two members. The store's real path and identity are fixed
+  at discovery and checked against the workspace before destructive steps;
+  replacing the store or its ancestors with a junction defers cleanup and
+  preserves evidence. Member iterators read at most two entries plus EOF,
+  rejecting a third/unknown entry without a full directory array. These
+  optimistic checks do not provide an OS atomic compare-and-swap against
+  arbitrary external writers between the final check and an IO call.
   Over-budget writes are rejected before the original file is touched. Legacy
   flat `*.bak` files, foreign/corrupt records, staging and crash residue are
   never auto-deleted. Backup/restore copy, hash and cleanup phases check
-  cancellation and a per-operation wall-clock budget chunk by chunk (5 minutes
+  cancellation and a per-operation wall-clock budget at entry, between chunks
+  and before publication/restore commit, including empty files (5 minutes
   for create/restore, 5 seconds for cleanup passes; a single synchronous OS
   call still cannot be interrupted in JavaScript).
 - `/undo <file>` restores the newest backup of a file. New-format history
@@ -232,6 +241,9 @@ a Windows-only warning instead of being injected.
   found". Successful restores may carry warnings (legacy snapshots have no
   creation-time digest; restored managed configuration changes disk only -
   restart or reload to affect running state), printed as `[UNDO WARNING]`.
+  The REPL also displays why legacy candidates were excluded, rather than
+  collapsing that explanation into a generic "no backup found". Legacy digest
+  verification and restore staging share the same operation deadline.
 - In default permission mode, file edits are approved against a **real diff
   preview** (`-` removed / `+` added lines), not an LLM paraphrase.
 

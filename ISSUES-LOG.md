@@ -621,7 +621,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | 🔶 | T22-23 | Medium／确认 | **内部运行时与依赖诊断**：JS/--test、npm缺失零启动/绝对路径、Git错误不伪装空仓库见10-24。10-25再补Python/Bash/C#缺失零目标进程、Python绝对PATH绑定、csc PATH/标准.NET目录发现及execFile argv；新10/10（0skip）＋旧debug21＋B命令7。仍待真实npm/Node、Python/.NET、Git Bash和本地tsc/eslint版本/功能矩阵及Win7；发现路径不等于版本支持，chcp不是任意原生输出转码。 | R1 M02；各依赖/运行时批局部证据 |
 | 🔶 | T22-24 | Medium／确认编码路径 | **PowerShell编码闭环**：10-24统一UTF16LE Base64/固定ASCII入口，解析用户脚本前设置UTF8 output；避开实测EncodedCommand的ANSI CLIXML stderr，保留最终Write-Error/throw/显式exit；input.ps1补UTF8 BOM，桌面/截图改execFile argv。新专项根因修复后14/14、旧命令契约21/21；现代宿主实测非真实Win7/PS2/CP936，目标机和自定义编码native工具仍待验收，保持部分完成。 | R1 M06；A2/chcp保护保留；本日PowerShell批 |
 | ✅ | T22-25 | Medium／确认 | **修盘符/共享根目录包含判断**：10-24用relative边界判断，排除父级/绝对结果，消除drive/UNC根末尾双分隔符误拒；保留Win大小写、不同卷/共享及realpath/junction门。新专项修夹具后25/25：纯路径边界＋映射到私有目录的drive/UNC根真实state/文件/备份IO及实际外指junction拒绝；无真实根/网络共享写入。Win7真实根/远程文件系统语义仍由V22-01/05实机验收。 | R1 M11；OPT-14原安全门保留；本日路径批记录 |
-| 🔶 | T22-26 | Medium／确认＋风险 | **磁盘保留与归属**：CLI20条且不误删Web/legacy/证据、Web继续CLI另建副本见10-24专项11/11。10-25新增按canonical workspace隔离的v1 Git快照，kind/subject/名字/OID共同确认，仅本工作区各留50任务/提交前refs；CAS＋no-deref、失败停止与当前保留。新11/11＋旧Git/三入口16/16单次。10-25备份闭环批：文件备份v1归属存储(storeId+单调sequence)、有界发现、归属清理(counts/bytes/pin/deleting证据)与原子/undo落地，legacy只读兼容；新专项27+18、旧41/46/20/87(1项基线存量)/5单次，详见当日记录；同日复核R1–R7（junction删除逃逸、配额重复计字节、同序歧义、预算缺口、索引异常逃逸、legacy硬链接）确认属实并修复，专项38+22、旧41/46/20/3单次；Win7实机/断电/占用/双实例并发与残留自动回收仍开放。仍待旧refs、Git对象字节、Web/截图/background/BTW/TODO/证据/temp保留及分页索引；不能据指针数量宣称全盘有界。 | R1 M14；GAP-12/OP5-5/C8；各归属/保留批 |
+| 🔶 | T22-26 | Medium／确认＋风险 | **磁盘保留与归属**：CLI20条且不误删Web/legacy/证据、Web继续CLI另建副本见10-24专项11/11。10-25新增按canonical workspace隔离的v1 Git快照，kind/subject/名字/OID共同确认，仅本工作区各留50任务/提交前refs；CAS＋no-deref、失败停止与当前保留。新11/11＋旧Git/三入口16/16单次。10-25备份闭环批：文件备份v1归属存储(storeId+单调sequence)、有界发现、归属清理(counts/bytes/pin/deleting证据)与原子/undo落地，legacy只读兼容；新专项27+18、旧41/46/20/87(1项基线存量)/5单次，详见当日记录；同日R1–R7首修后复核（二）仍确认父级junction/跨数量规则/取消边界/无界成员缺口；本日直接修复F1–F4并校正storeId测试时序及REPL反馈，新50+30、受影响旧41/46/20均单次通过，历史38+22不能代替最新证据；Win7实机/断电/占用/双实例并发与残留自动回收仍开放。仍待旧refs、Git对象字节、Web/截图/background/BTW/TODO/证据/temp保留及分页索引；不能据指针数量宣称全盘有界。 | R1 M14；GAP-12/OP5-5/C8；各归属/保留批 |
 | ✅ | T22-27 | Medium／确认 | **修 Markdown语言属性转义**：10-24新增属性上下文escAttr，在原HTML转义后补单双引号实体，仅data-language使用；文本/code渲染保持。DOM专项15项单次通过，含相邻属性注入形状、引号/&/尖括号、空language、c++/c#与未闭合围栏。实际目标浏览器仍属V22-02；不把桩DOM宣称为真实脚本执行验证。 | R1 M15；A2-04保护保留；本日Markdown属性批 |
 | ✅ | T22-28 | Low／确认 | **修 git status 首行 trim**：10-24只去末尾CR/LF，保留首项XY的index空格；CRLF按行计数。旧Git集成断言由错误staged:1/modified:0改为staged:0/modified:1并检查实际前导空格。新真实隔离Git专项9/9（未暂存/已暂存/MM/未跟踪/clean/CRLF/故障）、旧Git集成4/4，Node13均单次。 | R1 L01；DS-4/P2-11原分列保留；本日Git首列记录 |
 | ✅ | T22-29 | Low／确认 | **统一 memory 自动写路径分隔符**：10-24先将relative路径分隔符归一为/再匹配例外；原函数＋实际私有磁盘写入证实反斜杠memory在default模式可自动写，普通source仍需审批，deny/denial/protected-extra不被绕过，外指junction仍拒绝；新路径25/25、旧权限8/8。 | R1 L02；GAP-9；本日路径批记录 |
@@ -1710,6 +1710,8 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 
 ### 2026-10-25 —— 备份闭环复核（R1–R7）确认与修复
 
+> 后续复核更正：下列38/38、22/22为当时真实结果，但 `BACKUP-RECOVERY-RECHECK2-2026-10-25.md` 在基线`baaa8f4`仍确认父级junction越界删除、per-source+global重复淘汰、取消提交边界和无界成员枚举缺口，不能把本节当作R1–R7已全部验收。修复及最新证据见下方“复核（二）直接修复”记录。
+
 - 依据`BACKUP-RECOVERY-RECHECK-2026-10-25.md`（复核HEAD`61508da`）逐项核对，7项全部属实。R2（缩小参数 globalKeep:2/retainTarget:9 下仅剩最新一条）与R6（v1 opendir 注入 EACCES 时详细恢复函数直接抛出）先以独立探针在修复前复现；修复后同探针得到正确结果（R2 保留 sequence 5、6；R6 返回 unknown/index 且目标不变）。R1/R3/R4/R5/R7 以源码核对确认。
 - **R1（High）**：新增删除前完整复核 `reverifyOwnedRecordForDeletion`——重新 lstat/realpath 验证记录目录为普通目录且解析仍在 store 根内、目录成员恰为 data.bak+manifest.json（额外成员在任何破坏性操作前拒绝）、payload 为独占 regular 文件且 identity 与发现时一致、清单 storeId 归属本store且全部字段未变、内容 digest 复核；rename 到 `.deleting-*` 后、unlink 前再次核对被移动对象身份（dev/ino）与成员集，不通过 junction 删除。任何偏差保留原对象并逐条报告。
 - **R2+R3（High+Medium）**：清理改为统一 survivor 计算——计数与字节配额基于同一份“预计剩余”集合；新发布记录与 pin 记录计入配额和字节占用、仅被禁止成为受害者；字节目标因 pin 无法达成时显式报告未达标。单源无 pin 每源恰5份、全局恰 N 份；“发布瞬间 cap+1”消失。
@@ -1719,3 +1721,14 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - **R7（Low）**：legacy 候选排除 nlink>1（与新格式同口径）且 not-found 说明排除原因；legacy 恢复携带“无创建时摘要”警告，受管状态恢复携带“运行态未重载”警告，REPL 以 `[UNDO WARNING]` 打印。
 - 测试：backup-ownership 四处期望随统一配额修正（foreign/全局cap/pin/deleting 计数），场景4按新分配语义重构，并新增配额计入新记录、count+byte 与 byte-only 矩阵（断言具体 sequence）、额外成员原样保留、storeId 中途篡改保留、junction 中途替换（外部与被移走对象均完好）、previous回退+损坏序号、同序歧义、store扫描预算、清理摘要内取消等反例，**38/38**（修复期2次中间跑暴露我方夹具TDZ与受害者时序错误，已改）；backup-restore 新增 legacy hardlink 排除/仅hardlink说明/受管警告/恢复超时不提交，**22/22**。受影响旧套件各单次通过：download-commit **41/41**、text-encoding **46/46**、tool-cancellation **20/20**、runner(A) `RUN_ONLY=backup-cap` **3/3**（a.txt 恰5份的新语义）。未重跑其它场景/完整A–J/test-all；Win7/断电/占用/双实例并发/24–72h 门槛保持开放。
 - 复核方口径更正已落实：上方闭环批三处表述（“完成”、清理承诺、cap+1 依据）已加更正标注；27/27、18/18 是当时事实但不足以证明删除协议安全，本轮38+22为修复后证据。未采纳任何“调大配额掩盖R2”的做法。按授权分产品/测试/文档三段提交，未推送、未重打包。
+
+### 2026-10-25 —— 备份恢复复核（二）直接修复
+
+- 按用户“你直接修复吧”处理 `BACKUP-RECOVERY-RECHECK2-2026-10-25.md` 的F1–F4及测试/反馈缺口；未重写既有备份格式、普通writer或state恢复机制。复核文档保留为`baaa8f4`的历史证据，其“暂不验收”结论只针对该基线，不能冒充本次代码再次复核的结果。
+- **F1／High**：有界发现记录store根真实路径与dev/ino、每条记录目录dev/ino；删除前将路径与固定根比较，重新通过workspace/internalStatePath门，摘要后/rename前及移动后/各破坏步骤前复核根与目录身份，成员变动即保留证据。rename后比较payload/manifest身份，不再拿两个会一起随junction改变的路径互相证明边界。普通路径IO仍没有任意外部writer的OS原子CAS，不宣称覆盖最后检查后的所有竞态。
+- **F2／High**：依次从同一survivor集合执行每源→全局数量→字节裁剪；已按源过期的记录不再占全局名额，避免无必要删除另一源唯一恢复点。新记录和pin占配额、不能成为victim；old pin占位时优先保留pin，再保留其余最新记录；受保护记录自身已超过count/bytes时有明确未达标告警，不调大额度掩盖问题。
+- **F3／Medium**：统一checkBackupOperation入口/块间/短写循环/阶段尾/发布与恢复提交前复核取消和deadline；预取消的空/非空恢复均拒绝。legacy摘要与staging共用从入口开始的5分钟期限，不再重置预算。保持原文件与所属staging/fd回收语义，native单次同步IO仍不可硬中断。
+- **F4／Medium**：删除前后成员检查改opendir迭代，最多两个成员加EOF，第三个/未知成员立即拒绝，finally关闭目录句柄；不再整读数组或把所有陌生文件名拼到日志中。
+- storeId测试改在原清单第二次open（发现已结束、删除复核已进入）修改，并断言该受害者确实调用一次复核与两个open，消除原首次lstat即归类foreign的假覆盖。REPL not-found输出保留hardlink排除原因；成功配置/legacy警告保持。
+- **随包Node13本批首次单次**：backup-ownership **50/50**，含组合source/global/bytes精确序号及其它源undo、v1/backups/.7coder三层在删除rename前/后真实junction替换共6种、成员扫描有界/两阶段句柄关闭、晚期storeId及修正后的pin占位；backup-restore **30/30**，含预取消0/6字节、最终copy/digest/flush/commit取消、legacy累计deadline及原REPL分支显示排除原因。受影响下载 **41/41**、编码 **46/46**、tool-cancellation **20/20**，均本批单次，无失败复跑。Node13三文件语法与git diff检查通过；测试仅操作所属临时目录，真实junction外部目标同属私有夹具。
+- 未运行完整A–J/UI/test-all、其它已通过专项、真实Win7/PS2/网络盘/磁盘满/杀毒占用/断电/双实例/24–72h/打包。现代宿主Node13的局部证据不代替这些发布门槛；T22-26仍为部分完成（其它数据保留、索引、Git对象字节及残留自动回收仍开放）。本项完成后按既有授权提交，不推送，不自动启动新大项。

@@ -324,6 +324,63 @@ async function main() {
       check('restore that outlives its operation budget fails without touching the target',
         outcome.status === 'failed' && /budget/.test(outcome.message) && same(f.file, 'two\n') && restoreResidue(f.cwd).length === 0);
     }
+    // Cancellation must also gate empty payloads and the final commit boundary.
+    for (const bytes of ['', 'BACKUP']) {
+      const f = fixture('pre-cancel-' + bytes.length, bytes), ctx = ctxAt(f.cwd);
+      ctx.backupExistingFile(f.file); fs.writeFileSync(f.file, 'CURRENT');
+      const token = () => true; token.reason = 'already cancelled';
+      const outcome = ctx.restoreLatestBackupDetailed('target.txt', token);
+      check('pre-cancelled restore never commits (' + bytes.length + ' bytes)',
+        outcome.status === 'failed' && outcome.errno === 'EXECUTION_CANCELLED' && same(f.file, 'CURRENT') && restoreResidue(f.cwd).length === 0);
+    }
+    for (const stage of ['copy', 'digest', 'flush', 'commit']) {
+      const f = fixture('late-cancel-' + stage, 'BACKUP'); ctxAt(f.cwd).backupExistingFile(f.file); fs.writeFileSync(f.file, 'CURRENT');
+      let cancelled = false, targetStats = 0;
+      const names = new Map();
+      const token = () => cancelled; token.reason = 'cancel during ' + stage;
+      const ctx = ctxAt(f.cwd, {
+        openSync(file, flags) { const fd = fs.openSync(file, flags); names.set(fd, { file: String(file), flags }); return fd; },
+        closeSync(fd) { names.delete(fd); return fs.closeSync(fd); },
+        readSync(fd, buf, off, len, pos) {
+          const count = fs.readSync(fd, buf, off, len, pos), item = names.get(fd);
+          if (stage === 'digest' && item && item.file.includes('.7coder-restore-') && item.flags === 'r' && count > 0) cancelled = true;
+          return count;
+        },
+        writeSync(fd, buf, off, len) { const count = fs.writeSync(fd, buf, off, len); if (stage === 'copy') cancelled = true; return count; },
+        fsyncSync(fd) { fs.fsyncSync(fd); if (stage === 'flush') cancelled = true; },
+        lstatSync(file) { const st = fs.lstatSync(file); if (stage === 'commit' && file === f.file && ++targetStats === 2) cancelled = true; return st; }
+      });
+      const outcome = ctx.restoreLatestBackupDetailed('target.txt', token);
+      check('cancellation at final ' + stage + ' boundary preserves target and closes staging',
+        cancelled && outcome.status === 'failed' && outcome.errno === 'EXECUTION_CANCELLED' && same(f.file, 'CURRENT') && names.size === 0 && restoreResidue(f.cwd).length === 0);
+    }
+    // Legacy hash and staging share a single deadline rather than resetting it.
+    {
+      const f = fixture('legacy-shared-budget', 'CURRENT');
+      const backup = path.join(f.cwd, '.7coder', 'backups', 'target.txt.2026-01-01T00-00-00-000Z.bak');
+      fs.mkdirSync(path.dirname(backup), { recursive: true }); fs.writeFileSync(backup, 'LEGACY');
+      let clock = Date.now();
+      const names = new Map();
+      const ctx = ctxAt(f.cwd, {
+        openSync(file, flags) { const fd = fs.openSync(file, flags); names.set(fd, String(file)); return fd; },
+        closeSync(fd) { names.delete(fd); return fs.closeSync(fd); },
+        readSync(fd, buf, off, len, pos) { const count = fs.readSync(fd, buf, off, len, pos); if (names.get(fd) === backup && count > 0) clock += 151000; return count; }
+      }, { Date: class extends Date { static now() { return clock; } } });
+      const outcome = ctx.restoreLatestBackupDetailed('target.txt');
+      check('legacy verification and restore share one total deadline', outcome.status === 'failed' && /budget/.test(outcome.message) && same(f.file, 'CURRENT') && names.size === 0 && restoreResidue(f.cwd).length === 0);
+    }
+    // Execute the original /undo branch with the real detailed outcome.
+    {
+      const f = fixture('repl-hardlink-reason', 'CURRENT');
+      const backup = path.join(f.cwd, '.7coder', 'backups', 'target.txt.2026-01-01T00-00-00-000Z.bak');
+      fs.mkdirSync(path.dirname(backup), { recursive: true }); fs.writeFileSync(backup, 'HARD'); fs.linkSync(backup, path.join(f.cwd, 'alias'));
+      const start = source.indexOf("      if (trimmed.startsWith('/undo'))"), end = source.indexOf("      if (trimmed.startsWith('/btw '))", start);
+      assert(start >= 0 && end > start);
+      const run = new Function('trimmed', 'taskRunning', 'console', 'restoreLatestBackupDetailed', 'safePrompt', source.slice(start, end));
+      const lines = []; let prompts = 0;
+      run('/undo target.txt', false, { log: text => lines.push(text) }, ctxAt(f.cwd).restoreLatestBackupDetailed, () => { prompts++; });
+      check('REPL shows why hard-linked legacy candidates were excluded and prompts again', lines.some(t => /No backup found/.test(t) && /hard-linked/.test(t)) && prompts === 1 && same(f.file, 'CURRENT'));
+    }
     console.log('BACKUP/RESTORE: ' + checks + '/' + checks);
   } finally {
     clearTimeout(deadline);
