@@ -2979,6 +2979,73 @@ function executionCancelledError(cancelled) {
   error.code = 'EXECUTION_CANCELLED';
   return error;
 }
+function serializeModelRequest(payload, cancelled, maxBytes = 8 * 1024 * 1024) {
+  let bytes = 0, nodes = 0, chars = 0;
+  const ancestors = new Set();
+  function add(n) { bytes += n; if (bytes > maxBytes) throw new Error('JSON body exceeds ' + maxBytes + ' byte budget'); }
+  function quoted(value) {
+    add(2);
+    for (let i = 0; i < value.length; i++) {
+      if ((++chars & 4095) === 0) checkExecution(cancelled);
+      const ch = value.charCodeAt(i);
+      if (ch === 34 || ch === 92 || ch === 8 || ch === 9 || ch === 10 || ch === 12 || ch === 13) add(2);
+      else if (ch < 32) add(6);
+      else if (ch < 128) add(1);
+      else if (ch < 2048) add(2);
+      else if (ch >= 0xD800 && ch <= 0xDBFF && i + 1 < value.length && value.charCodeAt(i + 1) >= 0xDC00 && value.charCodeAt(i + 1) <= 0xDFFF) { add(4); i++; }
+      else if (ch >= 0xD800 && ch <= 0xDFFF) add(6); // Node13 well-formed JSON.stringify
+      else add(3);
+    }
+  }
+  const omitted = value => value === undefined || typeof value === 'function' || typeof value === 'symbol';
+  function ownValue(value, key) {
+    const d = Object.getOwnPropertyDescriptor(value, key);
+    if (d && !Object.prototype.hasOwnProperty.call(d, 'value')) throw new Error('JSON body contains an accessor');
+    return d ? d.value : undefined;
+  }
+  function walk(value, depth) {
+    checkExecution(cancelled);
+    if (++nodes > 100000) throw new Error('JSON body exceeds 100000 values');
+    if (depth > 64) throw new Error('JSON body exceeds 64 nested levels');
+    if (typeof value === 'string') { quoted(value); return; }
+    if (value === null || omitted(value)) { add(4); return; }
+    if (typeof value === 'number') { add(Number.isFinite(value) ? String(value).length : 4); return; }
+    if (typeof value === 'boolean') { add(value ? 4 : 5); return; }
+    if (typeof value !== 'object') throw new Error('JSON body contains an unsupported value type');
+    if (ancestors.has(value)) throw new Error('JSON body contains a cycle');
+    // Outbound payloads are plain JSON records. Reject executable serializers
+    // rather than running them once in preflight and again in stringify.
+    let proto = value, levels = 0;
+    while (proto) {
+      if (++levels > 64) throw new Error('JSON body has an unsupported prototype chain');
+      if (typeof ownValue(proto, 'toJSON') === 'function') throw new Error('JSON body contains an executable serializer');
+      proto = Object.getPrototypeOf(proto);
+    }
+    ancestors.add(value); add(2); let count = 0;
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) { if (count++) add(1); walk(ownValue(value, String(i)), depth + 1); }
+    } else {
+      for (const key in value) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue;
+        const child = ownValue(value, key);
+        if (omitted(child)) continue;
+        if (count++) add(1); quoted(key); add(1); walk(child, depth + 1);
+      }
+    }
+    ancestors.delete(value);
+  }
+  try {
+    checkExecution(cancelled); walk(payload, 0);
+    const body = JSON.stringify(payload);
+    if (typeof body !== 'string' || Buffer.byteLength(body, 'utf8') !== bytes) throw new Error('JSON body changed during preparation');
+    return body;
+  } catch (error) {
+    if (cancelled && cancelled()) throw error;
+    const rejected = new Error('Model request rejected before sending: ' + error.message);
+    rejected.code = 'MODEL_REQUEST_REJECTED'; rejected.requestNotSent = true;
+    throw rejected;
+  }
+}
 function checkExecution(cancelled) {
   if (cancelled && cancelled()) throw executionCancelledError(cancelled);
 }
@@ -3035,17 +3102,28 @@ function waitForExecution(ms, cancelled) {
 async function executionHttp(config, cancelled, consume) {
   checkExecution(cancelled);
   const source = cancelled ? axios.CancelToken.source() : null;
-  let stream = null;
+  let stream = null, responseRequest = null, completed = false;
+  const closeResponse = () => {
+    // Axios may wrap the raw response in Readable.from(asyncGenerator). On
+    // Node13 destroying that wrapper while its next read is pending need not
+    // close the underlying socket. CancelToken notification is asynchronous
+    // and wrapper 'close' can unsubscribe it first: retain the owned native
+    // response request and destroy it independently, before the wrapper.
+    if (responseRequest && typeof responseRequest.destroy === 'function' && !responseRequest.destroyed) responseRequest.destroy();
+    if (stream && !stream.destroyed) stream.destroy();
+  };
   const detach = watchExecution(cancelled, () => {
     source.cancel((cancelled && cancelled.reason) || 'Execution cancelled.');
-    if (stream) stream.destroy();
+    closeResponse();
   });
   try {
     const response = await axios(Object.assign({}, config, source ? { cancelToken: source.token } : {}));
+    responseRequest = response.request || null;
     stream = config.responseType === 'stream' ? response.data : null;
     checkExecution(cancelled);
     const result = consume ? await consume(response) : response;
     checkExecution(cancelled);
+    completed = true;
     return result;
   } catch (error) {
     checkExecution(cancelled);
@@ -3053,7 +3131,7 @@ async function executionHttp(config, cancelled, consume) {
   } finally {
     // If cancellation landed before the parser attached, no error listener
     // exists yet: destroy without emitting a new, unhandled stream error.
-    if (cancelled && cancelled() && stream && !stream.destroyed) stream.destroy();
+    if (!completed || (cancelled && cancelled())) closeResponse();
     detach();
   }
 }
@@ -3272,15 +3350,18 @@ async function callOpenAI(currentMessages, options = {}) {
 
   if (useTools) payload.tools = tools;
   if (useTools) payload.tool_choice = toolChoice;
+  if (onDelta) { payload.stream = true; payload.stream_options = { include_usage: true }; }
+  // Preflight escaped JSON bytes and structure before allocating the full
+  // serialized body. Retain one immutable body across retry attempts.
+  const requestBody = serializeModelRequest(payload, options.cancel);
 
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     checkExecution(options.cancel);
     try {
       if (onDelta) {
-        payload.stream = true;
-        payload.stream_options = { include_usage: true };
-        const choice = await executionHttp({ method: 'post', url, data: payload,
-          headers: authHeadersFor(mcfg.apiKey),
+        const choice = await executionHttp({ method: 'post', url, data: requestBody,
+          headers: Object.assign({}, authHeadersFor(mcfg.apiKey), { 'Content-Type': 'application/json' }),
+          maxBodyLength: 8 * 1024 * 1024,
           maxContentLength: MODEL_RESPONSE_MAX_BYTES,
           timeout: 420000,
           responseType: 'stream'
@@ -3291,8 +3372,9 @@ async function callOpenAI(currentMessages, options = {}) {
         }
         throw new Error((choice && choice.message.reasoning_only) ? 'empty response: the model emitted only reasoning tokens (reasoning_content) and never produced an answer or tool call - raise MAX_TOKENS or disable thinking' : 'empty streamed response');
       }
-      const response = await executionHttp({ method: 'post', url, data: payload,
-        headers: authHeadersFor(mcfg.apiKey),
+      const response = await executionHttp({ method: 'post', url, data: requestBody,
+        headers: Object.assign({}, authHeadersFor(mcfg.apiKey), { 'Content-Type': 'application/json' }),
+        maxBodyLength: 8 * 1024 * 1024,
         maxContentLength: MODEL_RESPONSE_MAX_BYTES,
         timeout: 420000, // 7 minutes - generous for slow local LLM endpoints
       }, options.cancel);

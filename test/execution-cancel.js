@@ -10,6 +10,7 @@ const S = require('./_shared').create({ suite: 'execution-cancel' });
 const source = fs.readFileSync(S.IDX, 'utf8');
 const sockets = new Set(), requests = [];
 let fixture, app, checks = 0;
+const tail = process.env.CANCEL_PHASE === 'tail';
 const limit = setTimeout(() => { console.error('EXECUTION/CANCEL suite deadline'); S.cleanup(); process.exit(1); }, 60000);
 function check(label, condition) { assert.ok(condition, label); checks++; console.log('PASS ' + label); }
 function cut(from, to) {
@@ -75,7 +76,7 @@ function startChat(port, job, stream) {
     fixture.on('connection', socket => { sockets.add(socket); socket.on('close', () => sockets.delete(socket)); });
     await new Promise(resolve => fixture.listen(0, '127.0.0.1', resolve));
     const endpoint = 'http://127.0.0.1:' + fixture.address().port;
-    const ctx = vm.createContext({ axios, setTimeout, clearTimeout, setInterval, clearInterval, console: { log() {}, warn() {}, error() {} },
+    const ctx = vm.createContext({ axios, Buffer, MODEL_RESPONSE_MAX_BYTES: 8 * 1024 * 1024, setTimeout, clearTimeout, setInterval, clearInterval, console: { log() {}, warn() {}, error() {} },
       EXECUTION_TIMEOUT_MS: 5000, TEMPERATURE: 0, MAX_TOKENS: 100, MAX_RETRIES: 3, tools: [], HEAVY_MODEL: 'fixture',
       LIGHT_MODEL: 'fixture', SUMMARY_MODEL: 'fixture', SUMMARY_MAX_TOKENS: 100, CONTEXT_CHARS: 1000,
       resolveModelConfig: () => ({ endpoint, apiKey: '' }), authHeadersFor: () => ({}), recordUsage: () => {},
@@ -83,6 +84,7 @@ function startChat(port, job, stream) {
     vm.runInContext(cut('function executionCancelledError(', '// ====================== RISK CLASSIFICATION') +
       cut('function createHttpApprovalBridge(', '// One owner of stdin questions.'), ctx);
     function control(ms = 5000) { const token = ctx.createExecutionControl(ms); controls.push(token); return token; }
+    if (!tail) {
     for (const [job, stream] of [['CANCEL_HEADERS', true], ['CANCEL_JSON', false], ['CANCEL_STREAM', true]]) {
       const token = control(), begin = requests.length;
       const result = observed(ctx.callOpenAI([{ role: 'user', content: job }], { cancel: token, onDelta: stream ? () => {} : null }));
@@ -160,6 +162,7 @@ function startChat(port, job, stream) {
     vm.runInNewContext(cut('function createExecutionControl(', 'function waitForExecution('), timersCtx);
     const completed = timersCtx.createExecutionControl(); completed.dispose();
     check('completed execution releases its deadline timer', timers.size === 0 && !completed());
+    }
 
     const probe = http.createServer(); await new Promise(resolve => probe.listen(0, '127.0.0.1', resolve));
     const port = probe.address().port; await new Promise(resolve => probe.close(resolve));
@@ -169,7 +172,7 @@ function startChat(port, job, stream) {
       OPENAI_API_KEY: '', HEAVY_MODEL: 'fixture', LIGHT_MODEL: '', SUMMARY_MODEL: '',
       PERMISSION_MODE: 'default', DREAM_ALLOW: 'false', EXECUTION_TIMEOUT_MS: '1500', MAX_RETRIES: '3'
     }) });
-    app = { child }; let output = '';
+    app = { child }; let output = ''; app.output = () => output;
     child.stdout.on('data', d => output += d.toString()); child.stderr.on('data', d => output += d.toString());
     const api = (method, url, data = null) => S.httpReq(port, method, url, data);
     await until(async () => {
@@ -178,6 +181,7 @@ function startChat(port, job, stream) {
       catch (e) { if (!['ECONNREFUSED', 'ECONNRESET'].includes(e.code)) throw e; return false; }
     }, 'backend ready');
     for (const [job, stream] of [['CANCEL_HEADERS', true], ['CANCEL_JSON', false], ['CANCEL_STREAM', true]]) {
+      if (tail && job !== 'CANCEL_STREAM') continue;
       const begin = requests.length, chat = startChat(port, job, stream);
       await until(() => requests.length > begin, job + ' backend upstream');
       chat.stop();
@@ -205,7 +209,11 @@ function startChat(port, job, stream) {
       summary.body.includes('[DONE]') && requests.some(r => r.job === 'CANCEL_SUMMARY' && String(r.body.messages[0].content).startsWith('Create a short, concise summary')) &&
       afterSummary.status === 200 && !fs.existsSync(path.join(cwd, '7CODER.md')));
     check('server survives all cancellation paths', child.exitCode === null && child.signalCode === null);
-    console.log('EXECUTION/CANCEL: ' + checks + '/' + checks);
+    console.log('EXECUTION/CANCEL: ' + checks + '/' + checks + (tail ? '; selected tail only; first 15 checks NOT RUN' : ''));
+  } catch (error) {
+    console.error('CANCEL diagnostics: ' + JSON.stringify(requests.map(r => ({ job: r.job, stream: r.body.stream, closed: r.closed }))));
+    if (app && app.output) console.error('CANCEL backend: ' + app.output().slice(-8000));
+    throw error;
   } finally {
     clearTimeout(limit);
     for (const token of controls) token.dispose();

@@ -1593,3 +1593,17 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - REPL级pendingReplNotes≤32，横跨current/executing/discarded草稿；/clear取消但不提前清准入账目，直到每项finally真正结束才可重新接纳。不因重置draft创建无界control/timer/闭包。原note时限、顺序、/execute获取draft、clear隔离及session行为保持。单次readline输入行在本层检查前已经分配；旧会话总量、跨HTTP请求heap、模型/日志总磁盘仍开放，不能将本项称全局内存硬限。
 - 新repl-draft-budget Node13首次单次 **17/17**：1MiB精确边界/UTF8/零部分变更、note reservation与摘要替代、超大summary保留后续预留/释放；真实REPL填满draft后拒绝文本及note零模型调用，32note仅首项发送、第33拒绝；同stdin chunk clear＋新note不能绕过global准入，取消关闭transport后新note/任务成功且无旧内容；摘要膨胀拒绝不改BTW文件，随后clear/新任务/bye恢复。
 - 原repl-approval因draft/BTW实际改动在本批首次单次 **26/26**，包含并发审批/EOF、notes顺序与下一draft、重复execute、clear丢弃、过期取消、活动模型与Dream退出；无失败复跑。README/npm/test-all、Node13语法/diff通过。未重跑已通过command13/B2或其它专项、完整A–J/UI/test-all、Win7/真实模型/24–72h/打包；按授权提交、未推送，随后读额度再决定下一项。
+
+### 2026-10-25 —— T22-15模型请求准入与INC-25-08底层流连接所有权
+
+- REPL预算批已提交`0ce9ff4`；完成后五小时used27%/remaining73%，判断可完整覆盖本项准入/定向验证/提交，继续。
+- callOpenAI在retry loop外预检实际JSON转义/UTF8字节≤8MiB、value≤100000、嵌套≤64，再生成一次immutable正文，JSON media type与axios maxBodyLength二次限制。主任务/摘要/风险/审批/压缩/Dream/BTW等同入口覆盖；超限明确MODEL_REQUEST_REJECTED/requestNotSent，不送出不重试、不截断原messages。循环引用/可执行toJSON/accessor明确拒绝，普通undefined/非有限number及Node13 well-formed surrogate编码保持。不是对调用前已存在的payload、所有并发请求或整个heap的硬限；vision独立envelope预算保持。
+- 新model-request-budget首跑前 **13项**通过：全65536 UTF16 code units及controls/emoji/omitted等与实际JSON精确比字节、acyclic共享引用、转义膨胀/UTF8/聚合/深度/value/循环/serializer/accessor的零full-stringify拒绝、预取消、真实HTTP精确8MiB完整发送/多1byte零发送、retry期间caller改动不影响原正文。随后stream夹具失败，根因为计数JSON替身只有stringify、漏parse，解析器未得到choice；补parse后按授权仅tail **3/3**（首13不重跑），包含stream options与实际Agent stream/JSON超限零上游请求、活动归零、下次小请求恢复。输出明确selected tail，非声称修后全16又跑一轮。
+
+| ID | 证据、影响与处理 |
+|---|---|
+| INC-25-08 | **High／已确认连接回收错误路径**：旧execution-cancel本批首跑前15项通过，CANCEL_STREAM真实backend断连后上游res.close超过6秒未发生；仅尾部加诊断再跑同样失败，Agent已经报Client disconnected。读取当前Axios adapter确认stream maxContentLength经Readable.from(asyncGenerator)包装：仅destroy包装层未必关闭pending source，且wrapper finished可能先unsubscribe异步CancelToken。executionHttp现保留response.request，取消时独立destroy本次native request再destroy wrapper，consumer失败/finally也关闭未成功的response；不杀其它请求、不销毁共享Agent。修复后仅剩余tail **5/5**；前15不重跑。不是声称已经实测数周泄漏/OOM，而是确认连接在任务已取消后仍残留。 |
+
+- 静态检查同步发现旧取消VM夹具缺后来新增的Buffer/MODEL_RESPONSE_MAX_BYTES依赖；本批显式补齐，首15项验证了实际headers/JSON/SSE、retry/deadline、四类helper取消、压缩不改原history、审批revocation与后续两类backend恢复。不能把当前依赖修正反推此前每次历史测试均有效。失败诊断保留job/stream/closed及有限backend输出，tail只选未通过的5项。
+- 新transport-ownership Node13首次单次 **8/8**：真实HTTP在响应头已交付后取消plain/redirect/gzip均确认源res.close，consumer拒绝与stream body超限同样关闭生产者，两个并发response仅取消一个且另一个可完成，成功请求保留keepalive socket复用，controls归零。只关闭响应所属句柄，不假称取消一定回滚远端副作用。
+- npm/test-all与README同步，Node13语法/diff通过；未重跑已通过的请求13/其它旧响应预算或完整A–J/UI/test-all，未做Win7/真实网关/代理/TLS/24–72h/打包。剩余全局heap/目录/磁盘/原生进程树仍开放，按授权提交、未推送，收尾后重新检查额度。
