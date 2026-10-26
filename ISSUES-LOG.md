@@ -1854,3 +1854,9 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新webui-memory-budget首跑 **20/20**：JSON准确性含全65536 UTF16/control/Unicode/省略undefined、结构拒绝且getter零执行、超大history零native stringify、发送零部分变更、满activity拒绝、回复/思考/工具累计overflow前缀与id保全、8KiB预留可保存；完整/未终止大行零JSON.parse、comments本轮8MiB且多一chunk零decode、单chunk多行合法、跨delta emoji、审批数量/字节与timer清理、过大恢复不覆盖。native HTTP桥连接实际隔离Agent（非浏览器fetch）：UI限额关闭挂起上游且不重试，磁盘保存failed prefix/显式副作用警告，原Agent下一合法请求成功且activity归零。
 - 受影响旧UI **43/43**、DOM **15/15**、session-continuity **20/20**、approval-lifecycle **21/21**本批各一次通过，无失败复跑。随后新增HTTP错误分支，仅`WEBUI_MEMORY_SCOPE=errors`追加 **3/3**（Unicode诊断/1000字符截限、64KiB拒绝、非JSON503及reader释放）；原20和旧专项未重复，默认完整新专项23项，本批是20＋3，不能伪称23/23单次。测试harness仅新增budget hook，不改变其其它模拟行为；npm/test-all登记、Node13测试与inline script语法/diff检查通过。
 - 未运行完整A–J/UI test-all（仅上述相关专项）、真实Chrome109/Win7布局与内存/长Markdown渲染/物理断网、24–72h或打包。JSON/transport预算不等于整个浏览器/Agent RSS上限，DOM和渲染额外开销仍需目标机验收；其它Web API返回体及全局资源仍独立。数据超限时本轮可成为failed，副作用需结合原Agent/audit查验，未承诺撤销已经完成的工具。T22-15/Win7门槛继续开放。收尾used46%/remaining54%，按授权提交后重新评估下一完整项。
+
+### 2026-10-27 —— 本轮自动执行停点与下一阶段
+
+- 本轮依次完成并提交：`da572b2` MCP输入/schema聚合、`0b65093`诊断追加/轮转归属（含新复现别名写入与丢旧档）、`e0df70c`后台日志自管预算、`5c1d2c9`brief/受管状态取消、`4c6a066`页面采集准入。各批验证与未验收边界见上文，无推送；源码工作区在最后修复提交后干净。
+- 重新读取额度：五小时used48%/remaining52%。下一优先阶段选择仍开放的High T22-07“原生任意进程树所有权”，而非继续叠加零散预算：需要原生组件及Win7能力/嵌套宿主约束评估、命令/task/cron/MCP/debug多入口接入、取消/超时/父异常退出后的所有权、再启动和打包物料共同完成；必须以多级后代心跳/文件占用/端口释放验证，不能以直属close冒充整树已停。
+- 这一步预计需至少约60%的完整窗口覆盖实现、失败排查、各入口必要回归及交付契约核验，当前52%不宜开始。该比例是工程工作量估计，不是平台承诺的token配额。按用户额度规则停止自动开展这一原生大项；剩余配额仍可用于用户另行指定的独立小项，但本轮不将大项切出未经验证的半成品。现有受限模式和T22-03/07、全Agent总预算、其它磁盘保留、真实Win7/浏览器/24–72h/最终包验收均继续开放。
