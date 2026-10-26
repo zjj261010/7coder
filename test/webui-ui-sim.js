@@ -21,7 +21,8 @@ const source = html.match(/<script[^>]*>([\s\S]*?)<\/script>/)[1].replace(/\}\)\
     setSessions: function (s) { sessions = s; }, session: function () { return sessFile; },
     readJSON: readJSON, restore: restoreSession,
     saveState: function () { return { busy: autoSaving, dirty: saveDirty, pending: !!pendingSave }; },
-    activities: function () { return sessionActivities; } });
+    activities: function () { return sessionActivities; },
+    budget: { measure: jsonBytes, session: sessionBytes, limit: UI_SESSION_BYTES, payload: UI_SESSION_BYTES - UI_STATUS_RESERVE } });
 })();`);
 function harness(options) {
   options = options || {};

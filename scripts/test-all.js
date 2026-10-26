@@ -50,6 +50,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'background-log-budget.js', args: [path.join(ROOT, 'test', 'background-log-budget.js')] },
     { name: 'powershell-encoding.js', args: [path.join(ROOT, 'test', 'powershell-encoding.js')] },
     { name: 'session-continuity.js', args: [path.join(ROOT, 'test', 'session-continuity.js')] },
+    { name: 'webui-memory-budget.js', args: [path.join(ROOT, 'test', 'webui-memory-budget.js')] },
     { name: 'approval-lifecycle.js', args: [path.join(ROOT, 'test', 'approval-lifecycle.js')] },
     { name: 'permission-restart.js', args: [path.join(ROOT, 'test', 'permission-restart.js')] },
     { name: 'browser-baseline.js', args: [path.join(ROOT, 'test', 'browser-baseline.js')] },

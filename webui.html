@@ -613,6 +613,56 @@ body.dark .primary-btn { color: #231b16; }
   syncNavigation(); syncComposer();
 
   /* ===== Session persistence ===== */
+  var UI_SESSION_BYTES = 2 * 1024 * 1024, UI_STATUS_RESERVE = 8192;
+  var UI_FRAME_BYTES = 2 * 1024 * 1024, UI_RESPONSE_BYTES = 8 * 1024 * 1024;
+  function jsonBytes(value, limit) {
+    var total = 0, nodes = 0, ancestors = [];
+    function add(n) { total += n; if (total > limit) throw new Error('会话容量不足，请新建会话或整理当前内容。'); }
+    function quoted(text) {
+      add(2);
+      for (var i = 0; i < text.length; i++) {
+        var c = text.charCodeAt(i);
+        if (c === 34 || c === 92 || c === 8 || c === 9 || c === 10 || c === 12 || c === 13) add(2);
+        else if (c < 32) add(6);
+        else if (c < 128) add(1);
+        else if (c < 2048) add(2);
+        else if (c >= 0xd800 && c <= 0xdbff && i + 1 < text.length && text.charCodeAt(i + 1) >= 0xdc00 && text.charCodeAt(i + 1) <= 0xdfff) { add(4); i++; }
+        else add(c >= 0xd800 && c <= 0xdfff ? 6 : 3);
+      }
+    }
+    function walk(v, depth) {
+      if (++nodes > 100000 || depth > 64) throw new Error('会话结构过于复杂，请新建会话。');
+      if (typeof v === 'string') { quoted(v); return; }
+      if (v === null || v === undefined) { add(4); return; }
+      if (typeof v === 'number') { add(isFinite(v) ? String(v).length : 4); return; }
+      if (typeof v === 'boolean') { add(v ? 4 : 5); return; }
+      if (typeof v !== 'object' || ancestors.indexOf(v) >= 0) throw new Error('会话包含不可保存的数据。');
+      ancestors.push(v); add(2);
+      var count = 0;
+      function own(key) { var d = Object.getOwnPropertyDescriptor(v, key); if (d && !Object.prototype.hasOwnProperty.call(d, 'value')) throw new Error('会话包含不可保存的数据。'); return d ? d.value : undefined; }
+      if (Array.isArray(v)) {
+        for (var i = 0; i < v.length; i++) { if (count++) add(1); walk(own(String(i)), depth + 1); }
+      } else {
+        for (var key in v) {
+          if (!Object.prototype.hasOwnProperty.call(v, key)) continue;
+          var child = own(key); if (child === undefined) continue;
+          if (typeof child === 'function' || typeof child === 'symbol') throw new Error('会话包含不可保存的数据。');
+          if (count++) add(1); quoted(key); add(1); walk(child, depth + 1);
+        }
+      }
+      ancestors.pop();
+    }
+    walk(value, 0); return total;
+  }
+  function sessionBytes(messages, activities, limit) {
+    if (activities.length > 2000) throw new Error('活动记录达到 2000 条上限，请新建会话。');
+    return jsonBytes({ messages: messages, activities: activities }, limit);
+  }
+  function validateRestoredSession(j) {
+    if (!j || !Array.isArray(j.messages)) throw new Error('会话格式不正确');
+    if (j.messages.some(function (m) { return !m || (m.role !== 'user' && m.role !== 'assistant') || typeof m.content !== 'string'; })) throw new Error('会话消息格式不正确');
+    sessionBytes(j.messages, Array.isArray(j.activities) ? j.activities : [], UI_SESSION_BYTES);
+  }
   function utf8Size(text) {
     var bytes = 0;
     for (var i = 0; i < text.length; i++) {
@@ -640,6 +690,7 @@ body.dark .primary-btn { color: #231b16; }
     if (saveTimer) clearTimeout(saveTimer);
     saveTimer = null; saveDirty = true; saveRevision++;
     try {
+      sessionBytes(history, Array.isArray(activities) ? activities : sessionActivities, UI_SESSION_BYTES);
       var serialized = JSON.stringify({ messages: history, activities: Array.isArray(activities) ? activities : sessionActivities });
       if (utf8Size(serialized) > 2 * 1024 * 1024) throw new Error('会话超过 2 MiB，当前页面内容尚未保存。请保留页面并整理或复制重要内容。');
       // One immutable latest snapshot replaces any older queued snapshot.
@@ -842,7 +893,7 @@ body.dark .primary-btn { color: #231b16; }
     fetch('/api/sessions/load', { method: 'POST', headers: headers(), body: JSON.stringify({ file: file }) })
       .then(readJSON).then(function (j) {
         if (generation !== sessGen) return;
-        if (!Array.isArray(j.messages)) throw new Error('会话格式不正确');
+        validateRestoredSession(j);
         sessGen++; resetSaveState(); history = j.messages.slice(); sessionActivities = Array.isArray(j.activities) ? j.activities : []; rememberSessFile(file); log.textContent = '';
         renderSavedHistory();
         closeNavigation(false);
@@ -855,14 +906,22 @@ body.dark .primary-btn { color: #231b16; }
   /* ===== Send ===== */
   function send() {
     if (busy || sessionLoading || composing) return;
+    if (ta.value.length > UI_SESSION_BYTES) { toast('输入过大，尚未发送；请保留草稿并缩小内容。', 'err'); return; }
     var text = ta.value.trim();
     if (!text) return;
     var turnId = 'turn-' + Date.now() + '-' + (++turnSeq) + '-' + Math.random().toString(36).slice(2, 8);
+    var userMessage = { role: 'user', content: text, turnId: turnId };
+    var replyMessage = { role: 'assistant', content: '', turnId: turnId, status: 'running' };
+    var retainedBytes;
+    try {
+      if (sessionActivities.length >= 2000) throw new Error('活动记录已满，请新建会话。');
+      retainedBytes = sessionBytes(history.concat([userMessage, replyMessage]), sessionActivities, UI_SESSION_BYTES - UI_STATUS_RESERVE);
+      jsonBytes({ stream: true, model: modelSel.value, messages: history.concat([userMessage]) }, UI_SESSION_BYTES);
+    } catch (e) { toast('尚未发送：' + e.message + ' 草稿和原会话已保留。', 'err'); return; }
     ta.value = ''; ta.style.height = 'auto';
     addMsg('user', esc(text), history.length, text);
-    history.push({ role: 'user', content: text, turnId: turnId });
+    history.push(userMessage);
     var requestMessages = history.slice();
-    var replyMessage = { role: 'assistant', content: '', turnId: turnId, status: 'running' };
     history.push(replyMessage);
     autoSaveSession();
     setBusy(true);
@@ -880,30 +939,66 @@ body.dark .primary-btn { color: #231b16; }
     var acc = '', segmentAcc = '', lastEvent = '', activityRecords = sessionActivities, streamDone = false, approvalItems = [];
     ctrl = new AbortController();
     var requestCtrl = ctrl;
+    var activeReader = null, responseBytes = 0, capacityFailure = null, approvalBytes = 0;
     disposeActiveApprovals = disposeApprovals;
     requestCtrl.signal.addEventListener('abort', function () { disposeApprovals(); });
 
+    function closeReader() {
+      var reader = activeReader; activeReader = null;
+      if (!reader) return;
+      try { if (reader.cancel) { var result = reader.cancel(); if (result && result.catch) result.catch(function () {}); } } catch (e) {}
+      try { if (reader.releaseLock) reader.releaseLock(); } catch (e) {}
+    }
+    function capacityStop(message) {
+      capacityFailure = new Error(message + ' 已停止接收并保留已有内容；工具可能已执行，请核对执行记录后再继续。');
+      try { requestCtrl.abort(); } catch (e) {}
+      closeReader();
+      throw capacityFailure;
+    }
+    function reserveBytes(bytes) {
+      if (retainedBytes + bytes > UI_SESSION_BYTES - UI_STATUS_RESERVE) capacityStop('当前会话已达到接收容量。');
+      retainedBytes += bytes;
+    }
+    function appendBytes(previous, text) {
+      if (typeof text !== 'string') capacityStop('响应正文或思考内容格式不正确。');
+      var pair = previous.length && text.length && previous.charCodeAt(previous.length - 1) >= 0xd800 && previous.charCodeAt(previous.length - 1) <= 0xdbff && text.charCodeAt(0) >= 0xdc00 && text.charCodeAt(0) <= 0xdfff;
+      try { return jsonBytes(text, UI_SESSION_BYTES - UI_STATUS_RESERVE - retainedBytes + 10) - 2 - (pair ? 8 : 0); }
+      catch (e) { capacityStop(e.message); }
+    }
+    function activityBytes(record) {
+      if (activityRecords.length >= 2000) capacityStop('活动记录达到 2000 条上限。最后事件：' + (record.name || record.type) + ' ' + (record.callId || '') + ' ' + (record.status || ''));
+      try { return jsonBytes(record, UI_SESSION_BYTES - UI_STATUS_RESERVE - retainedBytes) + (activityRecords.length ? 1 : 0); }
+      catch (e) { capacityStop('活动记录无法完整接收。最后事件：' + (record.name || record.type) + ' ' + (record.callId || '') + ' ' + (record.status || '')); }
+    }
+
     function appendReasoning(text) {
+      var fresh = !thinkEl || lastEvent !== 'reasoning';
+      var record = fresh ? { type: 'reasoning', text: '', turnId: turnId } : null;
+      var amount = fresh ? activityBytes(record) : 0;
+      amount += appendBytes(fresh ? '' : thinkAcc, text);
+      reserveBytes(amount);
       if (!thinkEl || lastEvent !== 'reasoning') {
         thinkEl = document.createElement('details'); thinkEl.className = 'think'; thinkEl.open = true;
         thinkEl.innerHTML = '<summary>思考阶段</summary><div class="think-body"></div>';
         thinkBody = thinkEl.querySelector('.think-body'); streamEl.appendChild(thinkEl);
         thinkAcc = '';
-        activityRecords.push({ type: 'reasoning', text: '', turnId: turnId });
+        activityRecords.push(record);
       }
-      thinkAcc += text; thinkBody.textContent = thinkAcc;
-      activityRecords[activityRecords.length - 1].text = thinkAcc;
+      thinkAcc += text; activityRecords[activityRecords.length - 1].text = thinkAcc;
+      thinkBody.textContent = thinkAcc;
       touchSession();
       lastEvent = 'reasoning'; log.scrollTop = log.scrollHeight;
     }
     function appendContent(text) {
+      reserveBytes(appendBytes(acc, text));
       if (!contentEl || lastEvent !== 'content') {
         contentEl = document.createElement('div'); contentEl.className = 'stream-content';
         streamEl.appendChild(contentEl);
         segmentAcc = '';
       }
-      segmentAcc += text; acc += text; contentEl.innerHTML = render(segmentAcc) + '<span class="cursor"></span>'; enhancePre(contentEl);
-      replyMessage.content = acc; touchSession();
+      segmentAcc += text; acc += text; replyMessage.content = acc;
+      contentEl.innerHTML = render(segmentAcc) + '<span class="cursor"></span>'; enhancePre(contentEl);
+      touchSession();
       lastEvent = 'content'; log.scrollTop = log.scrollHeight;
     }
     function redactedArgs(args) {
@@ -914,22 +1009,26 @@ body.dark .primary-btn { color: #231b16; }
       return safe;
     }
     function appendToolCall(call) {
-      var tcDiv = document.createElement('div'); tcDiv.className = 'tool-call';
       var name = call.name || 'tool', args = redactedArgs(call.args || {});
+      var record = { type: 'tool_call', callId: call.callId || undefined, name: name, args: args, status: 'requested', turnId: turnId };
+      reserveBytes(activityBytes(record));
+      var tcDiv = document.createElement('div'); tcDiv.className = 'tool-call';
       var title = document.createElement('strong'); title.textContent = '工具请求 · ' + name; tcDiv.appendChild(title);
       var detail = document.createElement('div'); detail.className = 'tool-detail';
       var command = args.command || args.cmd || args.script;
       detail.textContent = command ? String(command) : JSON.stringify(args);
       tcDiv.appendChild(detail); streamEl.appendChild(tcDiv);
-      activityRecords.push({ type: 'tool_call', callId: call.callId || undefined, name: name, args: args, status: 'requested', turnId: turnId }); touchSession();
+      activityRecords.push(record); touchSession();
       lastEvent = 'tool_call'; log.scrollTop = log.scrollHeight;
     }
     function appendToolResult(result) {
       var tr = result || {}, status = tr.status || 'completed';
+      var record = { type: 'tool_result', callId: tr.callId || undefined, name: tr.name || 'tool', status: status, result: String(tr.result == null ? '' : tr.result).substring(0, 12000), turnId: turnId };
+      reserveBytes(activityBytes(record));
       var div = document.createElement('div'); div.className = 'tool-call tool-result ' + status;
       var title = document.createElement('strong'); title.textContent = '工具结果 · ' + (tr.name || 'tool') + ' · ' + status; div.appendChild(title);
       var output = document.createElement('pre'); output.className = 'tool-output'; output.textContent = String(tr.result == null ? '' : tr.result).substring(0, 12000); div.appendChild(output);
-      streamEl.appendChild(div); activityRecords.push({ type: 'tool_result', callId: tr.callId || undefined, name: tr.name || 'tool', status: status, result: output.textContent, turnId: turnId }); touchSession();
+      streamEl.appendChild(div); activityRecords.push(record); touchSession();
       lastEvent = 'tool_result'; log.scrollTop = log.scrollHeight;
     }
 
@@ -938,25 +1037,43 @@ body.dark .primary-btn { color: #231b16; }
       body: JSON.stringify({ stream: true, model: modelSel.value, messages: requestMessages })
     }).then(function (res) {
       if (!res.ok) {
-        return res.json().catch(function () { return null; }).then(function (j) {
+        var errorBody;
+        if (res.body && res.body.getReader) {
+          var errorReader = res.body.getReader(), errorDecoder = new TextDecoder('utf-8'), errorText = '', errorBytes = 0;
+          activeReader = errorReader;
+          function readError() { return errorReader.read().then(function (r) {
+            if (r.done) { try { return JSON.parse(errorText); } catch (e) { return null; } }
+            errorBytes += r.value.byteLength;
+            if (errorBytes > 64 * 1024) capacityStop('HTTP ' + res.status + ' 错误正文超过 64 KiB。');
+            errorText += errorDecoder.decode(r.value, { stream: true });
+            return readError();
+          }); }
+          errorBody = readError();
+        } else errorBody = res.json().catch(function () { return null; });
+        return errorBody.then(function (j) {
           throw new Error((j && j.error && j.error.message) || ('HTTP ' + res.status));
         });
       }
-      var reader = res.body.getReader();
+      var reader = res.body.getReader(); activeReader = reader;
       var dec = new TextDecoder('utf-8');
-      var buf = '';
+      var buf = '', bufBytes = 0;
       function pump() {
         return reader.read().then(function (r) {
           if (r.done) return;
-          buf += dec.decode(r.value, { stream: true });
-          var nl;
-          while ((nl = buf.indexOf('\n')) >= 0) {
-            var line = buf.substring(0, nl).replace(/\r$/, '');
-            buf = buf.substring(nl + 1);
+          responseBytes += r.value.byteLength;
+          if (responseBytes > UI_RESPONSE_BYTES) capacityStop('本轮响应超过 8 MiB。');
+          var decoded = dec.decode(r.value, { stream: true });
+          for (var offset = 0; offset < decoded.length;) {
+            var nl = decoded.indexOf('\n', offset), end = nl < 0 ? decoded.length : nl;
+            var fragment = decoded.substring(offset, end), bytes = utf8Size(fragment);
+            if (bufBytes + bytes > UI_FRAME_BYTES) capacityStop('单条响应数据超过 2 MiB。');
+            buf += fragment; bufBytes += bytes;
+            if (nl < 0) break;
+            var line = buf.replace(/\r$/, ''); buf = ''; bufBytes = 0; offset = nl + 1;
             if (!line.startsWith('data:')) continue;
             var payload = line.substring(5).trim();
             if (!payload) continue;
-            if (payload === '[DONE]') { streamDone = true; continue; }
+            if (payload === '[DONE]') { streamDone = true; closeReader(); return; }
             var j;
             try { j = JSON.parse(payload); } catch (pe) { continue; } // 非法 JSON 行：无害，跳过
             if (j.error) throw new Error(j.error.message || 'upstream error'); // 业务错误：原样上抛给外层 .catch 展示
@@ -982,7 +1099,10 @@ body.dark .primary-btn { color: #231b16; }
       autoSaveSession(activityRecords);
       finish();
     }).catch(function (e) {
+      try { requestCtrl.abort(); } catch (ignored) {}
+      if (capacityFailure) e = capacityFailure;
       var aborted = e.name === 'AbortError';
+      e = { name: e.name, message: String(e.message || e).substring(0, 1000) };
       if (!aborted) { var errorEl = document.createElement('div'); errorEl.className = 'stream-error'; errorEl.textContent = '错误: ' + e.message; streamEl.appendChild(errorEl); addMsg('err', '错误: ' + e.message); }
       else { var stoppedEl = document.createElement('div'); stoppedEl.className = 'stream-stopped'; stoppedEl.textContent = '已停止生成'; streamEl.appendChild(stoppedEl); }
       replyMessage.status = aborted ? 'cancelled' : 'failed'; replyMessage.error = aborted ? '已停止生成' : String(e.message).substring(0, 1000);
@@ -992,6 +1112,7 @@ body.dark .primary-btn { color: #231b16; }
     });
 
     function finish() {
+      closeReader();
       disposeApprovals();
       if (disposeActiveApprovals === disposeApprovals) disposeActiveApprovals = function () {};
       setBusy(false); ctrl = null; statusEl.textContent = ''; refreshSessions(); refreshInfo();
@@ -1005,6 +1126,9 @@ body.dark .primary-btn { color: #231b16; }
 
     // 审批处理: SSE 收到 approval_request 时显示按钮并等待用户操作
     function handleApproval(req) {
+      if (approvalItems.length >= 64) capacityStop('本轮审批数量超过 64 条。');
+      try { approvalBytes += jsonBytes(req, 512 * 1024 - approvalBytes); }
+      catch (e) { capacityStop('本轮审批展示超过 512 KiB。'); }
       if (req.permissionSession && req.permissionSession !== modeSeenSession) {
         disposeApprovals(); modeSeenSession = req.permissionSession; modeSeenRevision = -1;
         modeAppliedObservation = ++modeObservationSeq;
@@ -1153,11 +1277,12 @@ body.dark .primary-btn { color: #231b16; }
       if (!target || generation !== sessGen || busy || sessionLoading || history.length) return;
       return fetch('/api/sessions/load', { method: 'POST', headers: headers(), body: JSON.stringify({ file: target }) }).then(readJSON).then(function (j) {
         if (generation !== sessGen || busy || sessionLoading || history.length || !j.messages || !j.messages.length) return;
+        validateRestoredSession(j);
         resetSaveState(); history = j.messages.slice(); sessionActivities = Array.isArray(j.activities) ? j.activities : []; rememberSessFile(target); log.textContent = '';
         renderSavedHistory();
         renderSessions(); toast('已恢复上次会话', 'ok');
       });
-    }).catch(function () {});
+    }).catch(function (e) { toast('恢复会话失败：' + e.message, 'err'); });
   }
   restoreSession(true);
   if (window.addEventListener) window.addEventListener('beforeunload', function (e) {
