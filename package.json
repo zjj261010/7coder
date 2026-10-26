@@ -43,6 +43,7 @@
     "test:pipe-lifecycle": "node test/pipe-lifecycle.js",
     "test:state-store": "node test/state-store.js",
     "test:state-budget": "node test/state-budget.js",
+    "test:state-cancellation": "node test/state-cancellation.js",
     "test:workspace-lease": "node test/workspace-lease.js",
     "test:execution-cancel": "node test/execution-cancel.js",
     "test:tool-cancellation": "node test/tool-cancellation.js",

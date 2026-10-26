@@ -28,6 +28,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'pipe-lifecycle.js', args: [path.join(ROOT, 'test', 'pipe-lifecycle.js')] },
     { name: 'state-store.js', args: [path.join(ROOT, 'test', 'state-store.js')] },
     { name: 'state-budget.js', args: [path.join(ROOT, 'test', 'state-budget.js')] },
+    { name: 'state-cancellation.js', args: [path.join(ROOT, 'test', 'state-cancellation.js')] },
     { name: 'workspace-lease.js', args: [path.join(ROOT, 'test', 'workspace-lease.js')] },
     { name: 'execution-cancel.js', args: [path.join(ROOT, 'test', 'execution-cancel.js')] },
     { name: 'tool-cancellation.js', args: [path.join(ROOT, 'test', 'tool-cancellation.js')] },

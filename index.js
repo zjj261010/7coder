@@ -1761,30 +1761,36 @@ function fileByteLimitError(label, maxBytes) {
 // Keep this helper hoisted: startup config is read before the state section runs.
 // Both the opened descriptor and the actual bytes are bounded, including growth
 // after fstat. Never use readFileSync here, even after a successful size check.
-function readFileBytesBounded(file, maxBytes, label = 'File') {
+function readFileBytesBounded(file, maxBytes, label = 'File', cancelled = null) {
+  checkExecution(cancelled);
   const fd = fs.openSync(file, 'r');
   try {
+    checkExecution(cancelled);
     const before = fs.fstatSync(fd);
     if (!before.isFile()) throw new Error(label + ' must be a regular file');
     if (before.size > maxBytes) throw fileByteLimitError(label, maxBytes);
     const chunks = [];
     let total = 0;
     while (true) {
+      checkExecution(cancelled);
       const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - total));
       const count = fs.readSync(fd, chunk, 0, chunk.length, total);
+      checkExecution(cancelled);
       if (!count) break;
       total += count;
       if (total > maxBytes) throw fileByteLimitError(label, maxBytes);
       chunks.push(chunk.slice(0, count));
     }
+    checkExecution(cancelled);
     const after = fs.fstatSync(fd), named = fs.statSync(file);
     const same = stat => ['dev', 'ino', 'size', 'mtimeMs', 'ctimeMs'].every(k => stat[k] === before[k]);
     if (!same(after) || !same(named) || total !== before.size) throw new Error(label + ' changed during read; retry before using it');
+    checkExecution(cancelled);
     return Buffer.concat(chunks, total);
   } finally { fs.closeSync(fd); }
 }
 function stateFileByteLimit() { return 8 * 1024 * 1024; }
-function readStateBytes(file, maxBytes = stateFileByteLimit()) { return readFileBytesBounded(file, Math.min(stateFileByteLimit(), maxBytes), 'State file ' + file); }
+function readStateBytes(file, maxBytes = stateFileByteLimit(), cancelled = null) { return readFileBytesBounded(file, Math.min(stateFileByteLimit(), maxBytes), 'State file ' + file, cancelled); }
 function readOptionalJsonConfig(file, label) {
   let bytes;
   try { bytes = readFileBytesBounded(file, 1024 * 1024, label + ' ' + file); }
@@ -1857,22 +1863,28 @@ function guardStateFile(file, owner = file) {
   } catch (e) { if (e.code !== 'ENOENT') throw e; }
   return file;
 }
-function replaceStateBytes(file, bytes, owner = file) {
+function replaceStateBytes(file, bytes, owner = file, cancelled = null) {
+  checkExecution(cancelled);
   file = guardStateFile(file, owner);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   const parent = captureTempParent(file, stateFileAllowedRoot(owner));
   const staging = file + '.7coder-tmp-' + process.pid + '-' + crypto.randomBytes(12).toString('hex');
   let fd = null, owned = false, creation = null;
   try {
+    checkExecution(cancelled);
     guardStateFile(staging, owner);
     verifyTempParent(parent);
     fd = fs.openSync(staging, 'wx', 0o600); owned = true;
     creation = captureOwnedTempFile(staging, fd, parent);
+    checkExecution(cancelled);
     fs.writeFileSync(fd, bytes);
+    checkExecution(cancelled);
     fs.fsyncSync(fd);
     fs.closeSync(fd); fd = null;
+    checkExecution(cancelled);
     guardStateFile(file, owner);
     verifyOwnedTempFile(creation);
+    checkExecution(cancelled);
     fs.renameSync(staging, file);
     owned = false;
   } finally {
@@ -1945,13 +1957,15 @@ function parseSessionState(text) {
   }
   return j;
 }
-function quarantineState(file, bytes, owner = file, maxBytes = stateFileByteLimit()) {
+function quarantineState(file, bytes, owner = file, maxBytes = stateFileByteLimit(), cancelled = null) {
+  checkExecution(cancelled);
   const evidence = guardStateFile(file + '.7coder-corrupt-' + crypto.createHash('sha256').update(bytes).digest('hex'), owner);
   let existing;
-  try { existing = readStateBytes(evidence, Math.min(bytes.length, maxBytes)); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { existing = readStateBytes(evidence, Math.min(bytes.length, maxBytes), cancelled); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (existing) {
     if (!existing.equals(bytes)) throw new Error('state corruption evidence collision: ' + evidence);
-  } else replaceStateBytes(evidence, bytes, owner);
+  } else replaceStateBytes(evidence, bytes, owner, cancelled);
+  checkExecution(cancelled);
   console.warn('[STATE] invalid state preserved: ' + evidence);
 }
 function sharedInstallState(file) {
@@ -1959,48 +1973,58 @@ function sharedInstallState(file) {
   const normalize = p => process.platform === 'win32' ? path.normalize(p).toLowerCase() : p;
   return normalize(fs.realpathSync(appDir)) !== normalize(getLaunchDirReal());
 }
-function readStateRecord(file, parse = parseStateText, readOnly = false, maxBytes = stateFileByteLimit()) {
+function readStateRecord(file, parse = parseStateText, readOnly = false, maxBytes = stateFileByteLimit(), cancelled = null) {
+  checkExecution(cancelled);
   file = guardStateFile(file);
   let bytes, invalid = false;
-  try { bytes = readStateBytes(file, maxBytes); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+  try { bytes = readStateBytes(file, maxBytes, cancelled); } catch (e) { if (e.code !== 'ENOENT') throw e; }
   if (bytes !== undefined) {
-    try { return { bytes, value: parse(decodeUtf8Text(bytes)) }; }
+    try { const value = parse(decodeUtf8Text(bytes)); checkExecution(cancelled); return { bytes, value }; }
     catch (e) {
+      checkExecution(cancelled);
+      if (e.code === 'EXECUTION_CANCELLED') throw e;
       invalid = true;
       if (readOnly) console.warn('[STATE] invalid shared install config retained in place: ' + file);
-      else quarantineState(file, bytes, file, maxBytes);
+      else quarantineState(file, bytes, file, maxBytes, cancelled);
     }
   }
   const previous = guardStateFile(file + '.7coder-prev', file);
   let saved;
-  try { saved = readStateBytes(previous, maxBytes); }
+  try { saved = readStateBytes(previous, maxBytes, cancelled); }
   catch (e) {
     if (e.code !== 'ENOENT') throw e;
     if (!invalid) return null;
     throw new Error('Invalid state has no valid previous version; repair before retrying: ' + file);
   }
   let value;
-  try { value = parse(decodeUtf8Text(saved)); }
+  try { value = parse(decodeUtf8Text(saved)); checkExecution(cancelled); }
   catch (e) {
-    if (!readOnly) quarantineState(previous, saved, file, maxBytes);
+    checkExecution(cancelled);
+    if (e.code === 'EXECUTION_CANCELLED') throw e;
+    if (!readOnly) quarantineState(previous, saved, file, maxBytes, cancelled);
     throw new Error('Previous state is also invalid; repair before retrying: ' + file);
   }
   // Restore without copying the corrupt primary over the valid previous copy.
-  if (!readOnly) replaceStateBytes(file, saved);
+  checkExecution(cancelled);
+  if (!readOnly) replaceStateBytes(file, saved, file, cancelled);
   console.warn('[STATE] ' + (readOnly ? 'using validated previous shared config without modifying installation: ' : 'restored ') + file +
     ' from ' + previous + (invalid ? '; invalid bytes retained' : '; primary was missing'));
   return { bytes: saved, value };
 }
-function writeStateFile(file, text, parse = parseStateText, expectedCurrent = undefined) {
+function writeStateFile(file, text, parse = parseStateText, expectedCurrent = undefined, cancelled = null) {
+  checkExecution(cancelled);
   if (typeof text === 'string' && Buffer.byteLength(text, 'utf8') > stateFileByteLimit()) throw fileByteLimitError('Proposed state', stateFileByteLimit());
   const bytes = Buffer.from(normalizeUtf8Input(text), 'utf8');
   parse(decodeUtf8Text(bytes)); // validate proposed data before changing anything
-  const current = readStateRecord(file, parse);
+  checkExecution(cancelled);
+  const current = readStateRecord(file, parse, false, stateFileByteLimit(), cancelled);
+  checkExecution(cancelled);
   if (expectedCurrent !== undefined && (expectedCurrent === null ? current !== null :
       !current || !Buffer.isBuffer(expectedCurrent) || !current.bytes.equals(expectedCurrent))) throw new Error('State changed before commit: ' + file);
   if (current && current.bytes.equals(bytes)) return;
-  if (current) replaceStateBytes(file + '.7coder-prev', current.bytes, file);
-  replaceStateBytes(file, bytes);
+  if (current) replaceStateBytes(file + '.7coder-prev', current.bytes, file, cancelled);
+  checkExecution(cancelled);
+  replaceStateBytes(file, bytes, file, cancelled);
 }
 function deleteStateFile(file) {
   file = guardStateFile(file);
@@ -4307,19 +4331,25 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
 
   if (name === 'brief_tool') {
     try {
+      checkExecution(cancelled);
       const folderRel = sanitizePath(args.folder);
       const summaryPath = internalStatePath('.7coder/summaries', folderRel + '.summary');
-      const files = recursiveReaddir(args.folder, '', { skipHeavy: true, maxDepth: 12, maxEntries: 1000 });
+      const files = recursiveReaddir(args.folder, '', { skipHeavy: true, maxDepth: 12, maxEntries: 1000, deadlineAt: cancelled && cancelled.deadlineAt, cancelled });
+      checkExecution(cancelled);
       const cap = 2000;
       let body = files.join('\n');
       if (files.length > cap) {
         body = files.slice(0, cap).join('\n') + '\n...(truncated, ' + (files.length - cap) + ' more files)';
       }
       const summary = `Summary of ${args.folder} (${files.length} files):\n${body}\n\nGenerated at ${new Date().toISOString()}`;
+      checkExecution(cancelled);
       fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
-      writeStateFile(summaryPath, summary);
+      writeStateFile(summaryPath, summary, parseStateText, undefined, cancelled);
       return makeToolResult('ok', `Summary written to ${summaryPath}`);
-    } catch (e) { return makeToolResult('error', `Brief error: ${e.message}`); }
+    } catch (e) {
+      if (e.code === 'EXECUTION_CANCELLED' || (cancelled && cancelled())) return makeToolResult('cancelled', '[aborted: summary generation cancelled; check already completed state changes]');
+      return makeToolResult('error', `Brief error: ${e.message}`);
+    }
   }
 
   if (name === 'task_create_tool') {
