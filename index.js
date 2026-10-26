@@ -772,10 +772,75 @@ function sanitizeAuditLine(text) {
     .replace(/sk-[A-Za-z0-9]{8,}/g, 'sk-***');
 }
 
+// Append one bounded diagnostic record through a verified descriptor. Logs
+// have no transactional rollback: preserve a torn tail and refuse the next
+// append, rather than concatenating another record onto damaged evidence.
+function appendDiagnosticRecord(file, old, bytes, limit, label, onSize) {
+  if (!Buffer.isBuffer(bytes) || bytes.length > limit) throw new Error(label + ' record exceeds file budget');
+  if (path.resolve(file) === path.resolve(old) || path.dirname(path.resolve(file)) !== path.dirname(path.resolve(old))) throw new Error(label + ' archive must be a distinct sibling log');
+  const ownership = message => Object.assign(new Error(label + ' log ownership changed: ' + message), { code: 'ELOGOWNERSHIP' });
+  let parent;
+  try { parent = captureTempParent(file); } catch (e) { throw ownership(e.message); }
+  function verifyParent() { try { verifyTempParent(parent); } catch (e) { throw ownership(e.message); } }
+  function regular(name) {
+    verifyParent();
+    try { const stat = fs.lstatSync(name); if (!stat.isFile() || stat.nlink !== 1) throw new Error(label + ' log must be an unaliased regular file: ' + name); return stat; }
+    catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  }
+  function same(a, b, renamed = false) { return a && b && a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && (renamed || a.ctimeMs === b.ctimeMs); }
+  function verifyName(name, expected, renamed = false) {
+    const current = regular(name);
+    if (expected ? !same(current, expected, renamed) : current !== null) throw ownership('named file changed before IO');
+    verifyParent();
+  }
+  let before = regular(file), fd;
+  if (onSize) onSize(before ? before.size : 0);
+  if (before && before.size > limit) throw new Error('Existing ' + label.toLowerCase() + ' log exceeds ' + (limit / (1024 * 1024)) + ' MiB; move or repair it before retrying');
+  if (before && before.size + bytes.length > limit) {
+    const previous = regular(old);
+    verifyName(file, before); verifyName(old, previous);
+    // Replace the known archive in one rename. Never unlink it first: rename
+    // can fail on Windows sharing/ACL errors while that archive is still useful.
+    fs.renameSync(file, old);
+    // Windows rename changes ctime. The moved inode/content metadata must
+    // still match, but that expected change is not evidence of replacement.
+    verifyName(old, before, true);
+    before = null;
+    if (onSize) onSize(0);
+  }
+  try {
+    verifyName(file, before);
+    fd = fs.openSync(file, before ? 'a+' : 'ax+');
+    let stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || (before ? !same(stat, before) : stat.size !== 0)) throw ownership('opened descriptor does not match expected file');
+    verifyName(file, stat);
+    if (stat.size + bytes.length > limit) throw new Error(label + ' append refused: file changed or exceeds byte budget');
+    if (onSize) onSize(stat.size);
+    if (stat.size) {
+      const last = Buffer.alloc(1);
+      if (fs.readSync(fd, last, 0, 1, stat.size - 1) !== 1 || last[0] !== 10) throw new Error(label + ' tail is incomplete; repair or move the log before retrying');
+    }
+    const originalSize = stat.size, identity = stat;
+    let written = 0;
+    while (written < bytes.length) {
+      stat = fs.fstatSync(fd);
+      if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== identity.dev || stat.ino !== identity.ino || stat.size !== originalSize + written) throw ownership('descriptor or length changed during append');
+      verifyName(file, stat);
+      const n = fs.writeSync(fd, bytes, written, bytes.length - written, null);
+      if (!n) throw new Error(label + ' write made no progress');
+      written += n;
+    }
+    stat = fs.fstatSync(fd);
+    if (stat.dev !== identity.dev || stat.ino !== identity.ino || stat.size !== originalSize + written) throw ownership('descriptor changed at append completion');
+    verifyName(file, stat);
+    if (onSize) onSize(originalSize + written);
+    fs.closeSync(fd); fd = undefined;
+    return originalSize + written;
+  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch (e) {} } }
+}
 function audit(entry) {
   if (!AUDIT_ENABLED) return false;
   const stats = audit.stats || (audit.stats = { written: 0, dropped: 0, compacted: 0, currentBytes: null, lastSuccess: null, lastError: null });
-  let fd;
   try {
     const safeAuditPath = internalStatePath('.7coder', 'audit.jsonl');
     if (!auditDirReady) { fs.mkdirSync(path.dirname(safeAuditPath), { recursive: true }); auditDirReady = true; }
@@ -789,30 +854,9 @@ function audit(entry) {
       for (const key of ['prompt', 'completion', 'total', 'durationMs']) if (Number.isFinite(entry[key])) compact[key] = entry[key];
       json = JSON.stringify(compact); stats.compacted = Math.min(Number.MAX_SAFE_INTEGER, stats.compacted + 1);
     }
-    const bytes = Buffer.from(json + '\n', 'utf8'), limit = 5 * 1024 * 1024;
-    const regular = file => {
-      try { const st = fs.lstatSync(file); if (!st.isFile() || st.nlink > 1) throw new Error('Audit log must be an unaliased regular file: ' + file); return st; }
-      catch (e) { if (e.code === 'ENOENT') return null; throw e; }
-    };
-    const before = regular(safeAuditPath);
-    stats.currentBytes = before ? before.size : 0;
-    if (before && before.size > limit) throw new Error('Existing audit log exceeds 5 MiB; move or repair it before retrying');
-    if (before && before.size + bytes.length > limit) {
-      const old = internalStatePath('.7coder', 'audit.old.jsonl'); regular(old);
-      fs.renameSync(safeAuditPath, old); // failed rotation must never authorize append
-    }
-    fd = fs.openSync(safeAuditPath, 'a+');
-    const stat = fs.fstatSync(fd);
-    if (!stat.isFile() || stat.nlink > 1 || stat.size + bytes.length > limit) throw new Error('Audit append refused: file changed or exceeds 5 MiB');
-    stats.currentBytes = stat.size;
-    if (stat.size) {
-      const last = Buffer.alloc(1);
-      if (fs.readSync(fd, last, 0, 1, stat.size - 1) !== 1 || last[0] !== 10) throw new Error('Audit tail is incomplete; repair or move the log before retrying');
-    }
-    let written = 0;
-    while (written < bytes.length) { const n = fs.writeSync(fd, bytes, written, bytes.length - written, null); if (!n) throw new Error('Audit write made no progress'); written += n; }
-    fs.closeSync(fd); fd = undefined;
-    stats.currentBytes += bytes.length; stats.written = Math.min(Number.MAX_SAFE_INTEGER, stats.written + 1);
+    const bytes = Buffer.from(json + '\n', 'utf8');
+    appendDiagnosticRecord(safeAuditPath, internalStatePath('.7coder', 'audit.old.jsonl'), bytes, 5 * 1024 * 1024, 'Audit', size => { stats.currentBytes = size; });
+    stats.written = Math.min(Number.MAX_SAFE_INTEGER, stats.written + 1);
     stats.lastSuccess = new Date().toISOString(); stats.lastError = null;
     return true;
   } catch (e) {
@@ -821,7 +865,7 @@ function audit(entry) {
     const now = Date.now();
     if (audit.warnAt === undefined || now < audit.warnAt || now - audit.warnAt >= 60000) { audit.warnAt = now; console.warn('[AUDIT] Log unavailable: ' + stats.lastError.code + ' ' + stats.lastError.message); }
     return false;
-  } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch (e) {} } }
+  }
 }
 function auditSnapshot() {
   const out = Object.assign({ enabled: AUDIT_ENABLED, fileLimit: 5 * 1024 * 1024, recordLimit: 16 * 1024 }, audit.stats ||
@@ -857,16 +901,7 @@ function recordRuntimeEvent(scope, status, details = {}) {
     const file = internalStatePath('.7coder', 'runtime.jsonl');
     const old = internalStatePath('.7coder', 'runtime.old.jsonl');
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    const line = JSON.stringify(event) + '\n';
-    let size = 0;
-    try { size = fs.statSync(file).size; } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    if (size + Buffer.byteLength(line, 'utf8') > RUNTIME_LOG_LIMIT) {
-      // If rotation fails, skip this write. Appending after failed rotation
-      // would turn a diagnostic aid into an unbounded disk consumer.
-      try { fs.unlinkSync(old); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-      fs.renameSync(file, old);
-    }
-    fs.appendFileSync(file, line, 'utf8');
+    appendDiagnosticRecord(file, old, Buffer.from(JSON.stringify(event) + '\n', 'utf8'), RUNTIME_LOG_LIMIT, 'Runtime');
     runtimeDiagnostics.loggingError = null;
   } catch (error) {
     runtimeDiagnostics.loggingError = { ts: new Date().toISOString(), code: runtimeText(error.code, 40), message: runtimeText(error.message) };

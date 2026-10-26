@@ -1,5 +1,6 @@
 const assert = require('assert'), fs = require('fs'), path = require('path'), vm = require('vm'), http = require('http');
 const S = require('./_shared').create({ suite: 'runtime-diagnostics' });
+const { loadContext } = require('./download-commit');
 const source = fs.readFileSync(S.IDX, 'utf8'), sockets = new Set();
 let checks = 0, fixture, app, releaseHold, cancelSeen = false;
 const deadline = setTimeout(() => { console.error('RUNTIME/DIAGNOSTICS deadline'); S.cleanup(); process.exit(1); }, 45000);
@@ -7,9 +8,8 @@ function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' 
 function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, a); assert.ok(a >= 0 && b > a, from); return source.slice(a, b); }
 function context(name, overrides = {}) {
   const cwd = S.freshCwd(name), warnings = [];
-  const ctx = vm.createContext({ Buffer, Date, process, setTimeout, clearTimeout, console: { warn: msg => warnings.push(msg) },
-    fs: Object.assign({}, fs, overrides), path, internalStatePath: (...parts) => path.join(cwd, ...parts) });
-  vm.runInContext(cut('// Bounded operating diagnostics:', '// No-key is a valid setup') +
+  const ctx = loadContext(source, cwd, overrides, { Buffer, Date, process, console: { warn: msg => warnings.push(msg) } });
+  vm.runInContext(cut('function appendDiagnosticRecord(', 'function audit(') + cut('// Bounded operating diagnostics:', '// No-key is a valid setup') +
     cut('const ownedChildStates =', 'async function stopBackgroundTask(') + 'this.limit=RUNTIME_LOG_LIMIT;', ctx);
   return { ctx, cwd, warnings, file: path.join(cwd, '.7coder', 'runtime.jsonl'), old: path.join(cwd, '.7coder', 'runtime.old.jsonl') };
 }
@@ -44,10 +44,10 @@ function reply(res, body, text) {
     fs.mkdirSync(path.dirname(f.file), { recursive: true }); fs.writeFileSync(f.file, Buffer.alloc(c.limit - 1, 32));
     c.recordRuntimeEvent('test', 'error'); c.recordRuntimeEvent('test', 'error');
     check('failed rotation never falls through to append or repeated warning spam', fs.statSync(f.file).size === c.limit - 1 && c.runtimeSnapshot().loggingError.code === 'EACCES' && f.warnings.length === 1);
-    f = context('disk-full', { appendFileSync() { throw Object.assign(Error('fixture full'), { code: 'ENOSPC' }); } }); c = f.ctx;
+    f = context('disk-full', { writeSync() { throw Object.assign(Error('fixture full'), { code: 'ENOSPC' }); } }); c = f.ctx;
     c.beginRuntimeOperation('cli-task')('ok');
     check('disk-full leaves operation successful, counters released and logging fault visible', c.runtimeSnapshot().lastSuccess.status === 'ok' && c.runtimeSnapshot().activeTasks === 0 && c.runtimeSnapshot().loggingError.code === 'ENOSPC');
-    c.fs.appendFileSync = fs.appendFileSync; c.recordRuntimeEvent('recovered', 'ok');
+    c.fs.writeSync = fs.writeSync; c.recordRuntimeEvent('recovered', 'ok');
     check('next successful log write clears the logging fault', c.runtimeSnapshot().loggingError === null && fs.existsSync(f.file));
     const child = S.spawn(S.NODE_BIN, ['-e', 'process.exit(7)'], { stdio: 'ignore' }); c.observeOwnedChild(child, 'background-child', 'owned-fixture');
     await new Promise(r => child.once('close', r));
