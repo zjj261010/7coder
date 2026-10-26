@@ -422,8 +422,10 @@ function createMcpStdioClient(name, cfg) {
     nextId: 1,
     pending: new Map(), // id -> { resolve, reject, timer }
     queuedBytes: 0, // encoded writes whose callbacks have not completed
+    incomingBytes: 0, // incomplete frame, charged before concatenation
     toolsCache: null,
     toolsCacheBytes: 0,
+    schemaBytes: 0, // discovery accumulator or complete cache (one owner)
     listingTools: false,
     stderrTail: '',
     stderrBytes: 0,
@@ -437,14 +439,24 @@ function createMcpStdioClient(name, cfg) {
   };
   const queuedReleases = new Set();
   let buf = '';
+  function clearIncoming() {
+    resources.incomingBytes -= client.incomingBytes;
+    client.incomingBytes = 0;
+    buf = '';
+  }
+  function clearSchemas() {
+    resources.schemaBytes -= client.schemaBytes;
+    client.schemaBytes = 0;
+    client.toolsCache = null;
+    client.toolsCacheBytes = 0;
+  }
   function die(err) {
     if (client.dead) return;
     client.dead = true;
     client.deadErr = String(err);
     client.initialized = false;
-    client.toolsCache = null;
-    client.toolsCacheBytes = 0;
-    buf = '';
+    clearSchemas();
+    clearIncoming();
     client.queuedBytes = 0;
     for (const p of client.pending.values()) {
       clearTimeout(p.timer);
@@ -543,12 +555,23 @@ function createMcpStdioClient(name, cfg) {
   child.stdout.setEncoding('utf8');
   child.stdout.on('data', d => {
     if (client.dead) return;
-    buf += d;
-    let nl;
-    while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.substring(0, nl).replace(/\r$/, '');
-      buf = buf.substring(nl + 1);
-      if (Buffer.byteLength(line, 'utf8') > MCP_MAX_FRAME_BYTES) { die('incoming frame exceeds 4 MB'); return; }
+    // A chunk may hold many complete frames. Admit one fragment at a time
+    // rather than concatenating the entire chunk and only then checking it.
+    for (let offset = 0; offset < d.length;) {
+      const nl = d.indexOf('\n', offset), end = nl < 0 ? d.length : nl;
+      const fragment = d.slice(offset, end), bytes = Buffer.byteLength(fragment, 'utf8');
+      const crlf = nl >= 0 && fragment.endsWith('\r') ? 1 : 0;
+      if (client.incomingBytes + bytes > MCP_MAX_FRAME_BYTES + crlf) {
+        die(nl < 0 ? 'unterminated incoming frame exceeds 4 MB' : 'incoming frame exceeds 4 MB'); return;
+      }
+      if (resources.incomingBytes + bytes > resources.incomingBytesLimit) { die('aggregate incoming frame buffers exceed 16 MiB'); return; }
+      resources.incomingBytes += bytes;
+      client.incomingBytes += bytes;
+      buf += fragment;
+      if (nl < 0) break;
+      const line = buf.replace(/\r$/, '');
+      clearIncoming();
+      offset = nl + 1;
       if (!line.trim()) continue;
       let msg;
       try { msg = JSON.parse(line); } catch (e) { continue; }
@@ -572,7 +595,6 @@ function createMcpStdioClient(name, cfg) {
       }
       // server notifications (logging etc): ignored
     }
-    if (Buffer.byteLength(buf, 'utf8') > MCP_MAX_FRAME_BYTES) die('unterminated incoming frame exceeds 4 MB');
   });
   child.stderr.setEncoding('utf8');
   child.stderr.on('data', d => {
@@ -636,8 +658,16 @@ function createMcpStdioClient(name, cfg) {
     if (client.toolsCache && !force) return client.toolsCache;
     if (client.listingTools) throw new Error('MCP tool discovery already running; request not sent');
     client.listingTools = true;
-    if (force) { client.toolsCache = null; client.toolsCacheBytes = 0; }
+    if (force) clearSchemas();
+    let published = false;
+    function reserveSchemas(added) {
+      if (client.dead) throw new Error('MCP server closed during tool discovery');
+      if (resources.schemaBytes + added > resources.schemaBytesLimit) throw new Error('MCP aggregate tool schemas exceed 4MiB budget; no complete list cached');
+      resources.schemaBytes += added;
+      client.schemaBytes += added;
+    }
     try {
+      reserveSchemas(2); // JSON array envelope, including empty complete caches
       await client.ensureInit(cancelled);
       const tools = [], names = new Set(), cursors = new Set();
       let cursor, bytes = 2;
@@ -650,6 +680,7 @@ function createMcpStdioClient(name, cfg) {
         if (tools.length + res.tools.length > 256) throw new Error('MCP tool discovery exceeds 256 tools; no complete list cached');
         const added = Buffer.byteLength(JSON.stringify(res.tools), 'utf8') - 2 + (tools.length && res.tools.length ? 1 : 0);
         if (bytes + added > 1024 * 1024) throw new Error('MCP tool discovery exceeds 1MiB cache budget; no complete list cached');
+        reserveSchemas(added);
         for (const tool of res.tools) {
           if (!tool || typeof tool !== 'object' || Array.isArray(tool) || typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 256 || names.has(tool.name)) throw new Error('MCP tools/list has invalid or duplicate tool names');
           names.add(tool.name); tools.push(tool);
@@ -657,13 +688,14 @@ function createMcpStdioClient(name, cfg) {
         bytes += added;
         if (res.nextCursor === undefined || res.nextCursor === null || res.nextCursor === '') {
           client.toolsCache = tools; client.toolsCacheBytes = bytes;
+          published = true;
           return client.toolsCache;
         }
         if (typeof res.nextCursor !== 'string' || res.nextCursor.length > 1024 || cursors.has(res.nextCursor)) throw new Error('MCP tool discovery has invalid or repeated cursor');
         cursors.add(res.nextCursor); cursor = res.nextCursor;
       }
       throw new Error('MCP tool discovery exceeds 8 pages; no complete list cached');
-    } finally { client.listingTools = false; }
+    } finally { if (!published) clearSchemas(); client.listingTools = false; }
   };
   client.callTool = async function (toolName, toolArgs, cancelled) {
     await client.ensureInit(cancelled);
@@ -678,7 +710,9 @@ function createMcpStdioClient(name, cfg) {
 }
 function mcpResourceBudget() {
   return createMcpStdioClient.resources || (createMcpStdioClient.resources = {
-    pending: 0, pendingLimit: 128, queuedBytes: 0, queuedBytesLimit: 16 * 1024 * 1024
+    pending: 0, pendingLimit: 128, queuedBytes: 0, queuedBytesLimit: 16 * 1024 * 1024,
+    incomingBytes: 0, incomingBytesLimit: 16 * 1024 * 1024,
+    schemaBytes: 0, schemaBytesLimit: 4 * 1024 * 1024
   });
 }
 function mcpBudgetSnapshot() {
@@ -706,8 +740,9 @@ function mcpDiagnosticsSnapshot() {
   return Object.keys(mcpClients).slice(0, 32).map(name => {
     const c = mcpClients[name];
     return { name: String(name).slice(0, 80), pid: c.child && c.child.pid || null,
-      initialized: !!c.initialized, pending: c.pending.size, queuedBytes: c.queuedBytes,
+      initialized: !!c.initialized, pending: c.pending.size, queuedBytes: c.queuedBytes, incomingBytes: c.incomingBytes,
       tools: c.toolsCache ? c.toolsCache.length : null, toolsCacheBytes: c.toolsCacheBytes, discovering: !!c.listingTools,
+      schemaBytes: c.schemaBytes,
       stderr: { receivedBytes: c.stderrBytes, tailBytes: Buffer.byteLength(c.stderrTail, 'utf8'),
         loggedBytes: c.stderrLogBytes, logBudgetRemaining: Math.max(0, 64 * 1024 - c.stderrLogBytes), suppressedChunks: c.stderrSuppressedChunks } };
   });
