@@ -9,6 +9,7 @@ const { pipeline, Transform } = require('stream');
 const crypto = require('crypto');
 const net = require('net');
 const vm = require('vm');
+const { StringDecoder } = require('string_decoder');
 
 // ====================== CLI ARGUMENT PARSING (Node 13 safe) =====================
 // Two-pass parsing so flags work in any order: flags are consumed first, then
@@ -99,6 +100,7 @@ function flushExit(code) {
 const launchDir = process.cwd();
 const appDir = require.main ? path.dirname(require.main.filename) : __dirname;
 let workspaceLease = null;
+var backgroundLog = null;
 // Only the launcher can supply this before .env is loaded. It authorizes a
 // bounded wait for that exact parent's handoff, never bypasses OS exclusion.
 const leaseHandoffText = process.env._7CODER_LEASE_HANDOFF || '';
@@ -206,6 +208,16 @@ async function acquireWorkspaceLease(directory, handoff) {
 // setup/recovery, not just main() or HTTP listen. --help stays outside the gate.
 async function initializeAgent() {
 workspaceLease = await acquireWorkspaceLease(launchDir, leaseHandoff);
+if (leaseHandoff) {
+  backgroundLog = createBackgroundLogger();
+  for (const channel of ['stdout', 'stderr']) {
+    // Native pre-initialization writes used the launcher's bounded pipes.
+    // Late pipe errors after handoff must not crash the self-logging worker.
+    process[channel].on('error', () => {});
+    process[channel].write = (chunk, encoding, callback) => backgroundLog.write(channel, chunk, encoding, callback);
+  }
+  process.once('exit', () => backgroundLog.close());
+}
 try {
   loadEnvState(path.join(appDir, '.env'), false);
   // Per-project overrides (D7): a .env in the workspace wins over the
@@ -775,7 +787,7 @@ function sanitizeAuditLine(text) {
 // Append one bounded diagnostic record through a verified descriptor. Logs
 // have no transactional rollback: preserve a torn tail and refuse the next
 // append, rather than concatenating another record onto damaged evidence.
-function appendDiagnosticRecord(file, old, bytes, limit, label, onSize) {
+function appendDiagnosticRecord(file, old, bytes, limit, label, onSize, allowPartialTail = false) {
   if (!Buffer.isBuffer(bytes) || bytes.length > limit) throw new Error(label + ' record exceeds file budget');
   if (path.resolve(file) === path.resolve(old) || path.dirname(path.resolve(file)) !== path.dirname(path.resolve(old))) throw new Error(label + ' archive must be a distinct sibling log');
   const ownership = message => Object.assign(new Error(label + ' log ownership changed: ' + message), { code: 'ELOGOWNERSHIP' });
@@ -816,7 +828,7 @@ function appendDiagnosticRecord(file, old, bytes, limit, label, onSize) {
     verifyName(file, stat);
     if (stat.size + bytes.length > limit) throw new Error(label + ' append refused: file changed or exceeds byte budget');
     if (onSize) onSize(stat.size);
-    if (stat.size) {
+    if (stat.size && !allowPartialTail) {
       const last = Buffer.alloc(1);
       if (fs.readSync(fd, last, 0, 1, stat.size - 1) !== 1 || last[0] !== 10) throw new Error(label + ' tail is incomplete; repair or move the log before retrying');
     }
@@ -837,6 +849,77 @@ function appendDiagnosticRecord(file, old, bytes, limit, label, onSize) {
     fs.closeSync(fd); fd = undefined;
     return originalSize + written;
   } finally { if (fd !== undefined) { try { fs.closeSync(fd); } catch (e) {} } }
+}
+// The background worker owns its output after OS-lease handoff. No log fd is
+// inherited by descendants; completed writes hold no open file handles.
+function createBackgroundLogger(options = {}) {
+  const limit = Math.min(1024 * 1024, options.limit || 1024 * 1024);
+  const batchLimit = Math.min(64 * 1024, options.batchLimit || 64 * 1024, limit);
+  const file = internalStatePath('.7coder', 'background.log'), old = internalStatePath('.7coder', 'background.old.log');
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const stats = { enabled: true, fileLimit: limit, batchLimit, pendingBytes: 0, writtenBytes: 0,
+    droppedBytes: 0, lastError: null, currentBytes: null };
+  const decoders = { stdout: new StringDecoder('utf8'), stderr: new StringDecoder('utf8') };
+  let parts = [], timer = null, flushing = false, closed = false, reporter = null, reportAt = null, unreported = 0;
+  function size(value) { stats.currentBytes = value; }
+  appendDiagnosticRecord(file, old, Buffer.from('\n[' + new Date().toISOString() + '] background worker PID ' + process.pid + '\n'), limit, 'Background', size, true);
+  function flush() {
+    if (timer) { clearTimeout(timer); timer = null; }
+    if (!stats.pendingBytes || flushing) return;
+    const bytes = Buffer.concat(parts, stats.pendingBytes); parts = []; stats.pendingBytes = 0;
+    const notice = unreported ? Buffer.from('\n[BACKGROUND] prior output dropped: ' + unreported + ' bytes\n') : null;
+    flushing = true;
+    try {
+      // Write a loss marker separately so even a full-size batch fits the cap.
+      if (notice) appendDiagnosticRecord(file, old, notice, limit, 'Background', size, true);
+      appendDiagnosticRecord(file, old, bytes, limit, 'Background', size, true);
+      stats.writtenBytes += bytes.length; stats.lastError = null; unreported = 0;
+    } catch (e) {
+      stats.droppedBytes += bytes.length; unreported += bytes.length;
+      stats.lastError = { code: runtimeText(e.code, 40), message: runtimeText(e.message, 1000) };
+      const now = Date.now();
+      if (reporter && (reportAt === null || now < reportAt || now - reportAt >= 60000)) {
+        reportAt = now;
+        try { reporter(stats.lastError); } catch (ignored) {}
+      }
+    } finally { flushing = false; }
+  }
+  function appendText(text) {
+    for (let offset = 0; offset < text.length;) {
+      let end = Math.min(offset + Math.max(1, Math.floor(batchLimit / 3)), text.length);
+      if (end < text.length && text.charCodeAt(end - 1) >= 0xD800 && text.charCodeAt(end - 1) <= 0xDBFF) end--;
+      if (end === offset) end = Math.min(offset + 2, text.length);
+      const bytes = Buffer.from(text.slice(offset, end), 'utf8'); offset = end;
+      if (stats.pendingBytes + bytes.length > batchLimit) flush();
+      parts.push(bytes); stats.pendingBytes += bytes.length;
+      if (stats.pendingBytes >= batchLimit || bytes.includes(10)) flush();
+    }
+    if (stats.pendingBytes && !timer) { timer = setTimeout(flush, 100); if (timer.unref) timer.unref(); }
+  }
+  function write(channel, chunk, encoding, callback) {
+    if (typeof encoding === 'function') { callback = encoding; encoding = undefined; }
+    if (typeof chunk !== 'string' && !Buffer.isBuffer(chunk) && !(chunk instanceof Uint8Array)) throw new TypeError('background output must be string or bytes');
+    if (closed || flushing) {
+      const n = typeof chunk === 'string' ? Buffer.byteLength(chunk, encoding || 'utf8') : chunk.byteLength;
+      stats.droppedBytes += n; unreported += n;
+    } else if (typeof chunk === 'string') {
+      appendText(decoders[channel].end());
+      if (encoding && !/^utf-?8$/i.test(encoding)) {
+        // Normal console/Agent writes are UTF8. Other encodings are decoded
+        // in bounded slices instead of creating a second full-size buffer.
+        for (let i = 0; i < chunk.length; i += 16384) appendText(Buffer.from(chunk.slice(i, i + 16384), encoding).toString('utf8'));
+      } else appendText(chunk);
+    } else {
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+      for (let i = 0; i < bytes.length; i += 16384) appendText(decoders[channel].write(bytes.slice(i, i + 16384)));
+    }
+    // Diagnostics never impose backpressure or propagate a disk failure into
+    // task execution. Loss stays visible in counters, runtime events/markers.
+    if (typeof callback === 'function') process.nextTick(callback);
+    return true;
+  }
+  return { write, flush, setReporter(fn) { reporter = fn; }, snapshot: () => Object.assign({}, stats, { lastError: stats.lastError && Object.assign({}, stats.lastError) }),
+    close() { if (closed) return; closed = true; for (const channel of ['stdout', 'stderr']) appendText(decoders[channel].end()); flush(); } };
 }
 function audit(entry) {
   if (!AUDIT_ENABLED) return false;
@@ -8013,6 +8096,7 @@ function startHttpServer() {
       runtime: runtimeSnapshot(),
       sessionHistory: sessionHistoryPager.stats(),
       audit: auditSnapshot(),
+      backgroundLog: backgroundLog ? backgroundLog.snapshot() : { enabled: false },
       ui: { available: !!webuiHtml, fileLimit: 2 * 1024 * 1024, error: webuiError },
       mcp: mcpDiagnosticsSnapshot(),
       mcpBudget: mcpBudgetSnapshot(),
@@ -8555,12 +8639,13 @@ let messages = [{ role: 'system', content: systemPrompt }];
 
 // ====================== MAIN ======================
 async function main() {
+  if (backgroundLog) backgroundLog.setReporter(error => recordRuntimeEvent('background-log', 'error', error));
   migrateWorkspaceRootFiles(); // P2-1: legacy root files -> .7coder/ (one-time)
   if (leaseHandoff && process.connected) {
     // Parent reports acceptance only after this child owns the workspace and
     // synchronous config/setup succeeded. This is not task completion.
     await new Promise((resolve, reject) => process.send({ kind: '7coder-background-owned',
-      handoffToken: leaseHandoff.token, owner: workspaceLease.identity }, e => e ? reject(e) : resolve()));
+      handoffToken: leaseHandoff.token, owner: workspaceLease.identity, logReady: !!backgroundLog }, e => e ? reject(e) : resolve()));
     process.disconnect();
   }
   if (backgroundMode && promptArg) {
@@ -8570,22 +8655,26 @@ async function main() {
     const logDir = internalStatePath('.7coder');
     fs.mkdirSync(logDir, { recursive: true });
     const logPath = internalStatePath('.7coder', 'background.log');
-    const logFd = fs.openSync(logPath, 'a');
-    let child;
-    try {
-      fs.writeSync(logFd, '\n[' + new Date().toISOString() + '] background run: ' + process.argv.slice(1).join(' ') + '\n');
-      child = child_process.spawn(process.execPath, process.argv.slice(1).filter(a => a !== '--background'), {
-        detached: true, stdio: ['ignore', logFd, logFd, 'ipc'], cwd: launchDir,
-        env: Object.assign({}, process.env, { _7CODER_LEASE_HANDOFF: JSON.stringify({ token: workspaceLease.identity.token, pid: process.pid }) })
-      });
-    } finally { fs.closeSync(logFd); }
+    appendDiagnosticRecord(logPath, internalStatePath('.7coder', 'background.old.log'),
+      Buffer.from('\n[' + new Date().toISOString() + '] background launch PID ' + process.pid + '\n'), 1024 * 1024, 'Background', undefined, true);
+    const child = child_process.spawn(process.execPath, process.argv.slice(1).filter(a => a !== '--background'), {
+      detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: launchDir,
+      env: Object.assign({}, process.env, { _7CODER_LEASE_HANDOFF: JSON.stringify({ token: workspaceLease.identity.token, pid: process.pid }) })
+    });
+    let bootstrap = '';
+    for (const stream of [child.stdout, child.stderr].filter(Boolean)) {
+      stream.setEncoding('utf8');
+      stream.on('error', () => {});
+      stream.on('data', text => { bootstrap = (bootstrap + text.slice(-8192)).slice(-8192); });
+    }
     let timer;
     const ready = new Promise((resolve, reject) => {
       timer = setTimeout(() => reject(new Error('Background child did not acknowledge workspace ownership within 15s; inspect ' + logPath)), 15000);
       child.once('error', reject);
-      child.once('exit', code => reject(new Error('Background child exited before ownership acknowledgement (exit ' + code + '); inspect ' + logPath)));
+      child.once('close', code => reject(new Error('Background child exited before ownership acknowledgement (exit ' + code + '); inspect ' + logPath +
+        (bootstrap ? '; bootstrap: ' + runtimeText(bootstrap.slice(-2000), 2000) : ''))));
       child.on('message', j => {
-        if (j && j.kind === '7coder-background-owned' && j.handoffToken === workspaceLease.identity.token && j.owner &&
+        if (j && j.kind === '7coder-background-owned' && j.logReady === true && j.handoffToken === workspaceLease.identity.token && j.owner &&
             j.owner.pid === child.pid && j.owner.key === workspaceLease.address.key && /^[a-f0-9]{48}$/.test(j.owner.token)) resolve();
       });
     });

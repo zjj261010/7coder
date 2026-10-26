@@ -62,6 +62,7 @@
     "test:cron-identity": "node test/cron-identity.js",
     "test:runtime-diagnostics": "node test/runtime-diagnostics.js",
     "test:diagnostic-log-ownership": "node test/diagnostic-log-ownership.js",
+    "test:background-log-budget": "node test/background-log-budget.js",
     "test:powershell-encoding": "node test/powershell-encoding.js",
     "test:session-continuity": "node test/session-continuity.js",
     "test:approval-lifecycle": "node test/approval-lifecycle.js",
