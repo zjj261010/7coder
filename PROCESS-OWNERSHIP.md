@@ -1,6 +1,6 @@
 # Windows 进程所有权与验收边界
 
-2026-10-27：本批接管 Windows 异步命令、task、cron、MCP、持久 Bash 和 debug。当前同步 Git/截图等入口仍待处理；不是 Win7 实机验收通过声明。
+2026-10-27：接管 Windows 异步命令、task、cron、MCP、持久 Bash 和 debug；后续批将截图/桌面输入也迁入异步托管。同步 Git/发现等仍待处理；不是 Win7 实机验收通过声明。
 
 ## 运行物料
 
@@ -28,7 +28,7 @@
 |---|---|
 | 接管的 Windows 异步入口 | `child.pid` 是托管程序 PID；`ownedTree.targetPid` 仅作诊断，不能事后据此 kill |
 | 编辑器/目录打开、后台 Agent 启动交接 | 显式外部生命周期，保留原始 spawn，避免启动器退出就杀编辑器或后台 Agent |
-| 同步 execSync/execFileSync：Git、截图、桌面辅助、发现命令等 | 本批未接管，不能据异步路径通过宣称这些后代已归属 |
+| 同步 execSync/execFileSync：Git、worktree、发现命令等 | 尚未接管，不能据异步路径通过宣称这些后代已归属；截图/桌面输入已另批迁入 |
 | process_kill_tool | 仍按用户提供 PID 操作外部进程，与 task/cron 所属句柄停止不同 |
 | Win7 外层已有非 breakaway Job | Win7 不支持嵌套；目标已在外层 Job 时可能绑定失败，明确拒绝。需实测任务计划/服务/远程宿主 |
 | 目标需要自己的 Job / 主动 breakaway | Win7 可能功能冲突或创建失败，不保证任意程序兼容；不以允许逃逸来伪装兼容 |
@@ -43,3 +43,9 @@
 `test:process-owner` 覆盖参数、中文/空格、stdio、创建失败、三代树（中间层先退、叶子 detached/忽略 stdio）、自然结束、Agent/托管程序强杀及再启动；用叶子端口和心跳判断清理。集成专项覆盖实际隔离 Agent 的命令/PowerShell/task/cron/MCP，以及原函数 VM 下实际 native debug/Bash。故障专项覆盖物料、暂停边界、超时/输出上限、未知终态及共享准入。分段续测及实测结果见 ISSUES-LOG.md。
 
 发布前仍须干净 Win7 SP1 x64、普通用户、实际 CLR2/选定 CLR4、缺 CLR、中文/空格安装和工作区、默认 PS2、真实 Git/Python/MCP、外层 Job、任务计划/服务、关窗口/Ctrl+C/强杀/注销/关机后再次启动。验证三代心跳、独占文件、端口，以及 24/72 小时 helper/句柄/内存变化。现代 Windows 的成功不能替代这些门槛。
+
+## 桌面辅助后续批
+
+截图与输入使用异步 runner、30 秒期限和 stdout/stderr 各 64 KiB 上限，取消后等待受管调用结算。输入脚本独占创建随机文件，UTF8 BOM/PS2 编码前缀、严格错误、完整写入/关闭后才执行；只删除归属仍匹配的文件，替换/未知残留保留并记录诊断。旧 `input.ps1` 不再写入或自动删除。输入文本限 16 KiB UTF8、脚本限 64 KiB、按键说明限 128 字符，超限明确拒绝。输入文件BOM保证脚本文字解码；控制台UTF8设置失败只告警，不阻断输入，Win7原生诊断仍可能使用系统代码页。
+
+截图使用 try/finally 释放 Graphics/Bitmap，跨异步边界复核输出父目录，取消不再启动 vision。已经截图/输入的副作用不回滚；失败/取消要核对现场，成功也只表示系统 API 调用完成，未验证前台窗口/焦点正确。截图磁盘保留和 native 文件路径最后检查后的外部竞态仍开放。测试仅用捕获调用、Node 替身及真实文本 PowerShell，不操作桌面，不当作真实 Win7/GDI/SendKeys 验收。

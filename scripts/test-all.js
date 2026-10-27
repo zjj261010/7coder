@@ -103,7 +103,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
 if (process.platform === 'win32') {
-  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js']) {
+  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js','desktop-lifecycle.js','desktop-integration.js']) {
     targets.push({name:file,args:[path.join(ROOT,'test',file)]});
   }
 }

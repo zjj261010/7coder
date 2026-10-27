@@ -7,11 +7,12 @@ let checks = 0;
 function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
 function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, a); assert.ok(a >= 0 && b > a, from); return source.slice(a, b); }
 const cwd = S.freshCwd('中文 空格 % ! & 单\'引号');
-const ctx = vm.createContext({ Buffer, fs, path, process, crypto: require('crypto'), console: { log() {} }, DANGER_MODE: false,
+const ctx = require('./download-commit').loadContext(source,cwd,{}, { Buffer, path, process, crypto: require('crypto'), console: { log() {} }, DANGER_MODE: false,
   effectivePermissionMode: () => 'default', checkExecution() {}, VISION_MODEL: '', launchDir: cwd,
   internalStatePath: (...p) => path.join(cwd, ...p), makeToolResult: (status, text, data) => ({ status, text, data }),
   child_process: { execSync() { throw Error('shell dispatch is forbidden in fixture'); }, execFileSync(file, args, opts) { calls.push({ file, args, opts }); } },
-  runCommandAsync: spec => { calls.push(spec); return spec; }, awaitCommandCancellable: async () => ctx.outcome });
+  recordRuntimeEvent(){},
+  runCommandAsync: (spec,opts) => { const call=Object.assign({},spec,{opts});const file=spec.args&&spec.args[spec.args.indexOf('-File')+1];if(spec.args&&spec.args.includes('-File'))call.bytes=fs.readFileSync(file);calls.push(call); return spec; }, awaitCommandCancellable: async () => ctx.outcome });
 vm.runInContext(cut('function powerShellExecutable()', '// AST-09: async child-process runner') +
   'async function tool(name,args,cancelled=null,modelContext={}) {\n' + cut("  if (name === 'powershell_tool') {", "  if (name === 'glob_tool') {") +
   cut("  if (name === 'computer_use') {", "  if (name === 'workflow_tool') {") + '\n}', ctx);
@@ -42,9 +43,10 @@ function native(spec) {
     const result = await ctx.tool('powershell_tool', { command: input });
     check('tool uses original argv helper and retains explicit success/exit status', result.status === 'ok' && result.data.exitCode === 0 && decoded(calls.pop()).startsWith(input + '\r\n'));
     await ctx.tool('computer_use', { action: 'type_text', text: "中文'a{b}\r\n" });
-    let called = calls.pop(), bytes = fs.readFileSync(path.join(cwd, '.7coder', 'input.ps1'));
+    let called = calls.pop(), bytes = called.bytes;
     check('captured SendKeys script is UTF-8 BOM and preserves escaped Unicode text', bytes.slice(0, 3).equals(Buffer.from([239, 187, 191])) && bytes.toString('utf8').includes("中文''a{{}b{}}{ENTER}"));
-    check('input helper passes Chinese/space/shell-metachar path as one argv item', called.file === spec.file && called.args[called.args.indexOf('-File') + 1] === path.join(cwd, '.7coder', 'input.ps1') && called.opts.windowsHide && called.opts.timeout === 30000);
+    const script=called.args[called.args.indexOf('-File')+1];
+    check('input helper passes owned unique Chinese/space/shell-metachar path as one argv item and removes it', called.file === spec.file && path.dirname(script)===path.join(cwd,'.7coder') && /^input-\d+-[a-f0-9]{24}\.ps1$/.test(path.basename(script)) && !fs.existsSync(script) && called.opts.windowsHide && called.opts.timeout === 30000);
     await ctx.tool('computer_use', { action: 'screenshot' }); called = calls.pop();
     check('captured screenshot uses Base64 bootstrap and literal single-quoted path', called.file === spec.file && decoded(called).includes(cwd.replace(/'/g, "''")) && called.opts.windowsHide);
     check('desktop branches were captured, never sent to native PowerShell', children.length === 0 && calls.length === 0);

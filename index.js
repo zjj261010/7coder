@@ -4737,32 +4737,56 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'computer_use') {
+    checkExecution(cancelled);
     const action = args.action;
     console.log(`[SCREEN] Computer use: ${action}`);
+    const desktopFailure = (label, error, data) => {
+      if (error.code === 'EXECUTION_CANCELLED' || (cancelled && cancelled())) return makeToolResult('cancelled',
+        '[aborted: ' + label + ' cancelled; desktop/file side effects may already have occurred. Check before retrying.]', data);
+      return makeToolResult('error', label + ' error: ' + error.message, data);
+    };
+    const runDesktopCommand = async spec => {
+      checkExecution(cancelled);
+      const { r, aborted } = await awaitCommandCancellable(runCommandAsync(spec,
+        { timeout: 30000, maxBuffer: 64 * 1024, windowsHide: true }), cancelled);
+      checkExecution(cancelled);
+      if (aborted) throw executionCancelledError(cancelled);
+      if (r.error) throw new Error('Desktop process failed; side effects may already have occurred. Check before retrying.\n' +
+        r.error.message + (r.stderr ? '\n' + String(r.stderr).slice(-2000) : ''));
+      return r;
+    };
     if (action === 'screenshot') {
       // P2-13: screenshots go under .7coder/screenshots/ instead of littering
       // the workspace root (shots are one-off, so no migration is needed).
       const shotsDir = internalStatePath('.7coder/screenshots');
-      try { fs.mkdirSync(shotsDir, { recursive: true }); } catch (e) {}
       const shotPath = path.join(shotsDir, `screenshot_${Date.now()}_${crypto.randomBytes(8).toString('hex')}.png`);
+      let shotParent;
       try {
+        checkExecution(cancelled);
+        fs.mkdirSync(shotsDir, { recursive: true });
+        shotParent = captureTempParent(shotPath);
         if (process.platform === 'darwin') {
-          child_process.execSync(`screencapture -x "${shotPath}"`);
+          await runDesktopCommand({ file: 'screencapture', args: ['-x', shotPath] });
         } else if (process.platform === 'win32') {
           // Single-quoted PS strings treat backslashes literally; only ' needs doubling.
           const psPath = shotPath.replace(/'/g, "''");
           const ps = powerShellSpec(
-            `Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; ` +
+            `$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.Drawing; Add-Type -AssemblyName System.Windows.Forms; ` +
+            `$bmp = $null; $gfx = $null; try { ` +
             `$bmp = New-Object System.Drawing.Bitmap([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width, [System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Height); ` +
             `$gfx = [System.Drawing.Graphics]::FromImage($bmp); $gfx.CopyFromScreen(0,0,0,0,$bmp.Size); ` +
-            `$bmp.Save('${psPath}', [System.Drawing.Imaging.ImageFormat]::Png)`
+            `$bmp.Save('${psPath}', [System.Drawing.Imaging.ImageFormat]::Png) } finally { ` +
+            `if ($gfx) { $gfx.Dispose() }; if ($bmp) { $bmp.Dispose() } }`
           );
-          child_process.execFileSync(ps.file, ps.args, { stdio: 'ignore', timeout: 30000, windowsHide: true });
+          await runDesktopCommand(ps);
         } else {
-          child_process.execSync(`import -window root "${shotPath}" || scrot "${shotPath}"`, { stdio: 'ignore' });
+          try { await runDesktopCommand({ file: 'import', args: ['-window', 'root', shotPath] }); }
+          catch (e) { checkExecution(cancelled); await runDesktopCommand({ file: 'scrot', args: [shotPath] }); }
         }
+        checkExecution(cancelled);
+        verifyTempParent(shotParent);
       } catch (e) {
-        return makeToolResult('error', `Screenshot failed: ${e.message}`);
+        return desktopFailure('Screenshot', e, { screenshotPath: shotPath });
       }
       if (fs.existsSync(shotPath)) {
         // GAP-4 visual loop: with VISION_MODEL configured, feed the fresh
@@ -4772,11 +4796,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         // stays path-only (the previous behavior).
         if (VISION_MODEL) {
           try {
+            checkExecution(cancelled); verifyTempParent(shotParent);
             const dataUrl = screenshotToDataUrl(shotPath, true);
             const desc = await describeWithVision(dataUrl, modelContext, cancelled);
+            checkExecution(cancelled);
             return makeToolResult(toolResultStatus(desc), `Screenshot saved to ${shotPath}.\nVision: ${toolResultText(desc)}`, { screenshotPath: shotPath });
           } catch (e) {
-            if (cancelled && cancelled()) throw e;
+            if (e.code === 'EXECUTION_CANCELLED' || (cancelled && cancelled())) return desktopFailure('Screenshot vision', e, { screenshotPath: shotPath });
             return makeToolResult('error', `Screenshot saved to ${shotPath}.\nVision unavailable: ${e.message}`, { screenshotPath: shotPath });
           }
         }
@@ -4787,12 +4813,44 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // Real input injection (Windows): a temp .ps1 avoids triple-quoted command
     // strings; user32 mouse_event drives clicks, SendKeys drives typing/keys.
     const inputDir = internalStatePath('.7coder');
-    const runPsInput = (ps) => {
-      try { fs.mkdirSync(inputDir, { recursive: true }); } catch (e) {}
-      const file = path.join(inputDir, 'input.ps1');
-      fs.writeFileSync(file, '\ufeff' + ps, 'utf8'); // PS2 otherwise treats BOM-less scripts as ANSI
-      child_process.execFileSync(powerShellExecutable(), ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file],
-        { stdio: 'ignore', timeout: 30000, windowsHide: true });
+    let inputCleanupWarning = '';
+    const inputSuccess = text => makeToolResult('ok', text + (inputCleanupWarning ? '\n[WARN] ' + inputCleanupWarning : ''),
+      inputCleanupWarning ? { cleanupWarning: inputCleanupWarning } : undefined);
+    const runPsInput = async (ps) => {
+      checkExecution(cancelled);
+      const bytes = Buffer.from("\ufeff$ErrorActionPreference = 'Stop'; $OutputEncoding = New-Object System.Text.UTF8Encoding; try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Warning 'UTF-8 console encoding unavailable; native diagnostics may use the system code page.' };\r\n" + ps, 'utf8');
+      if (bytes.length > 64 * 1024) throw new Error('Desktop script exceeds 64 KiB; split the operation. No input was sent.');
+      fs.mkdirSync(inputDir, { recursive: true });
+      const file = path.join(inputDir, 'input-' + process.pid + '-' + crypto.randomBytes(12).toString('hex') + '.ps1');
+      const parent = captureTempParent(file);
+      let fd = null, owned = null, created = false;
+      try {
+        checkExecution(cancelled); verifyTempParent(parent);
+        fd = fs.openSync(file, 'wx', 0o600); created = true;
+        owned = captureOwnedTempFile(file, fd, parent);
+        let offset = 0;
+        while (offset < bytes.length) {
+          checkExecution(cancelled); verifyOwnedTempFile(owned);
+          const count = fs.writeSync(fd, bytes, offset, bytes.length - offset, null);
+          if (count <= 0) throw new Error('Desktop script write made no progress.');
+          offset += count;
+        }
+        const closing = fd; fd = null; fs.closeSync(closing);
+        checkExecution(cancelled); verifyOwnedTempFile(owned);
+        await runDesktopCommand({ file: powerShellExecutable(), args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', file] });
+      } finally {
+        if (fd !== null) { const closing = fd; fd = null; try { fs.closeSync(closing); } catch (e) {
+          inputCleanupWarning = 'Temporary input script close unconfirmed; inspect diagnostics.';
+          recordRuntimeEvent('desktop-script-cleanup', 'error', { path: file, code: e.code, message: e.message });
+        } }
+        try {
+          if (owned) removeOwnedTempFile(owned);
+          else if (created) throw tempOwnershipError('input script identity was not captured; preserved for inspection');
+        } catch (e) {
+          inputCleanupWarning = 'Temporary input script cleanup unconfirmed; preserved for inspection.';
+          recordRuntimeEvent('desktop-script-cleanup', 'error', { path: file, code: e.code, message: e.message });
+        }
+      }
     };
     const escapeSendKeys = (text) => {
       // Single pass, in order: \r\n and \r and \n -> {ENTER} (CRLF collapses to
@@ -4830,29 +4888,31 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         ? '[Win7Input]::mouse_event(2,0,0,0,[UIntPtr]::Zero); [Win7Input]::mouse_event(4,0,0,0,[UIntPtr]::Zero); '
         : '';
       try {
-        runPsInput(
+        await runPsInput(
           'Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing;\n' +
           "Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class Win7Input { [DllImport(\"user32.dll\")] public static extern void mouse_event(uint f, uint dx, uint dy, uint d, UIntPtr e); }'\n" +
           `[System.Windows.Forms.Cursor]::Position = New-Object System.Drawing.Point(${x}, ${y})\n` +
           clickPart +
           'Write-Output done\n'
         );
-        return makeToolResult('ok', `[OK] ${action === 'click' ? 'Clicked' : 'Cursor moved'} at ${x},${y}`);
-      } catch (e) { return makeToolResult('error', `Input error: ${e.message}`); }
+        return inputSuccess(`[OK] ${action === 'click' ? 'Clicked' : 'Cursor moved'} at ${x},${y}`);
+      } catch (e) { return desktopFailure('Input', e); }
     }
     if (action === 'type_text' && args.text) {
       if (process.platform !== 'win32') return makeToolResult('error', `[WARN] type_text is Windows-only in this build (got ${process.platform}).`);
       try {
-        runPsInput(
+        if (Buffer.byteLength(String(args.text), 'utf8') > 16 * 1024) throw new Error('Desktop text exceeds 16 KiB; split the operation. No input was sent.');
+        await runPsInput(
           'Add-Type -AssemblyName System.Windows.Forms;\n' +
           `[System.Windows.Forms.SendKeys]::SendWait('${escapeSendKeys(args.text).replace(/'/g, "''")}')\n` +
           'Write-Output done\n'
         );
-        return makeToolResult('ok', `[OK] Typed ${String(args.text).length} character(s) via SendKeys`);
-      } catch (e) { return makeToolResult('error', `Input error: ${e.message}`); }
+        return inputSuccess(`[OK] Typed ${String(args.text).length} character(s) via SendKeys`);
+      } catch (e) { return desktopFailure('Input', e); }
     }
     if (action === 'press_key' && args.key) {
       if (process.platform !== 'win32') return makeToolResult('error', `[WARN] press_key is Windows-only in this build (got ${process.platform}).`);
+      if (String(args.key).length > 128) return makeToolResult('error', 'Input error: key description exceeds 128 characters; no input was sent.');
       const keyMap = { enter: '{ENTER}', tab: '{TAB}', esc: '{ESC}', escape: '{ESC}', backspace: '{BACKSPACE}', delete: '{DELETE}', del: '{DELETE}', up: '{UP}', down: '{DOWN}', left: '{LEFT}', right: '{RIGHT}', home: '{HOME}', end: '{END}', pageup: '{PGUP}', pagedown: '{PGDN}', space: ' ', win: '{LWIN}' };
       const k = String(args.key).trim().toLowerCase();
       const keys = k.split('+').map(part => {
@@ -4863,13 +4923,13 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
         return '{' + part.toUpperCase() + '}';
       }).join('');
       try {
-        runPsInput(
+        await runPsInput(
           'Add-Type -AssemblyName System.Windows.Forms;\n' +
           `[System.Windows.Forms.SendKeys]::SendWait('${keys.replace(/'/g, "''")}')\n` +
           'Write-Output done\n'
         );
-        return makeToolResult('ok', `[OK] Pressed key: ${args.key}`);
-      } catch (e) { return makeToolResult('error', `Input error: ${e.message}`); }
+        return inputSuccess(`[OK] Pressed key: ${args.key}`);
+      } catch (e) { return desktopFailure('Input', e); }
     }
     return makeToolResult('error', `[WARN] Unknown computer_use action "${action}". Available: screenshot, mouse_move, click, type_text, press_key.`);
   }
