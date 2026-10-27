@@ -36,7 +36,7 @@
 | 超长命令 | Base64 UTF16 传输使可用容量小于直接启动的 32767 字符；检查展开长度，超限要求脚本文件，不截断参数 |
 | macOS/Linux | 保留原 child_process，不声称获得 Windows Job 语义 |
 
-**未覆盖的创建窗口（高可信待验证风险）**：Main中的CreateProcessW(CREATE_SUSPENDED)和AssignProcessToJobObject是分开的调用。若broker在两者之间被不可捕获终止，目标可能尚未属于本次Job；不能由“Job最后句柄关闭”推导它必被清理。目标应尚未恢复，但可能残留挂起进程、句柄或映像占用。当前强杀测试在后代已就绪后进行，未注入此窗口，不能据普通强杀用例通过判断窗口已验收。需进一步设计Win7创建阶段的所有权/监督/回收，再以受控句柄和出生身份验收；不直接套用Win8嵌套Job或更高系统的原子创建能力。此疑点与Win7外层Job/真实工具验收继续阻止关闭T22-07。
+**创建窗口（INC-JOB-02，High，受保护注入确认／尚未修复）**：Main 中 CreateProcessW(CREATE_SUSPENDED) 与 AssignProcessToJobObject 分离。10-28 在隔离源码副本暂停于两者之间，确认目标不属于 broker 本次 Job；通过已持有句柄强制结束 broker 后目标仍活着，外层 guardian 随后归零清理。另一路 guardian 强杀也以目标/broker 稳定句柄确认退出。此实验刻意有外层保护，未制造无归属遗留，也不是 Win7 实机复现；生产 exe/源码/config 散列保持不变。既有就绪后强杀用例不能覆盖此窗口。机制、边界与实施顺序见 [创建阶段恢复计划](PROCESS-CREATION-RECOVERY-PLAN-2026-10-28.md)；不能把诊断中的嵌套 Job 直接部署到 Win7。T22-07 继续开放。
 
 依据：[Microsoft Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[AssignProcessToJobObject 的 Win7/PCA 限制](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)。随包 Node13.14 使用 libuv1.37.0，其[原始 spawn 实现](https://raw.githubusercontent.com/libuv/libuv/v1.37.0/src/win/process.c)允许后代 silent breakaway，不能代替本批整组归属。
 
@@ -53,3 +53,8 @@
 截图与输入使用异步 runner、30 秒期限和 stdout/stderr 各 64 KiB 上限，取消后等待受管调用结算。输入脚本独占创建随机文件，UTF8 BOM/PS2 编码前缀、严格错误、完整写入/关闭后才执行；只删除归属仍匹配的文件，替换/未知残留保留并记录诊断。旧 `input.ps1` 不再写入或自动删除。输入文本限 16 KiB UTF8、脚本限 64 KiB、按键说明限 128 字符，超限明确拒绝。输入文件BOM保证脚本文字解码；控制台UTF8设置失败只告警，不阻断输入，Win7原生诊断仍可能使用系统代码页。
 
 截图使用 try/finally 释放 Graphics/Bitmap，跨异步边界复核输出父目录，取消不再启动 vision。已经截图/输入的副作用不回滚；失败/取消要核对现场，成功也只表示系统 API 调用完成，未验证前台窗口/焦点正确。截图磁盘保留和 native 文件路径最后检查后的外部竞态仍开放。测试仅用捕获调用、Node 替身及真实文本 PowerShell，不操作桌面，不当作真实 Win7/GDI/SendKeys 验收。
+
+
+## 手动创建窗口诊断（2026-10-28）
+
+`npm run diagnostic:creation-window` 需要 Windows 与开发机 .NET 3.5 编译器，仅编译私有副本，不加入 test-all，也不要求目标机装编译器。默认完整诊断 14 项；`CREATION_WINDOW_SCOPE=tail` 为故障后的 12 项续测，输出明确标识计数并拒绝未知 scope。此次前 2 项首跑通过，夹具误判 conhost 成员数后修正，仅失败/未跑尾部 12/12 通过，不记为单次 14/14。目标始终由外层 Job 兜底，操作固定句柄与出生身份，显式清理查询活动数为零；guardian 强杀路径验证目标和 broker 均退出，不冒称拿到了未发送的零成员证明。临时隔离目录/manifest/证据保留，不代表全局临时文件清空。
