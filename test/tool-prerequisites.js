@@ -8,9 +8,9 @@ function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, 
     const cwd = S.freshCwd('tools 中文 空格'); let failure, lastOptions;
     const c = vm.createContext({ process, launchDir: cwd, checkExecution() {}, child_process: { execFileSync(file, args, options) { lastOptions = options; throw failure; } } });
     vm.runInContext(cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
-      cut('function git(argsArr, opts)', "  if (name === 'git_status_tool') {") +
+      cut('async function inGitRepoRead(', "  if (name === 'git_status_tool') {") +
       'async function tool(name,args={},cancelled=null) {\n' + cut("  if (name === 'git_status_tool') {", "  if (name === 'synthetic_output_tool') {") + '\n}', c);
-    c.gitRead=async (args,options)=>c.git(args,options);
+    c.runGitCommandAsync=async (args,options)=>{lastOptions=options;throw failure;};
     failure = Object.assign(Error('spawn git ENOENT'), { code: 'ENOENT' });
     for (const name of ['git_status_tool', 'git_diff_tool', 'git_commit_tool']) {
       const r = await c.tool(name); check(name + ' reports missing Git rather than a normal non-repository', r.status === 'error' && r.text.includes('Git executable not found') && r.text.includes('ENOENT'));
@@ -23,7 +23,7 @@ function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, 
     check('actual non-repository retains read-info and commit-error contracts', (await c.tool('git_status_tool')).status === 'ok' && (await c.tool('git_diff_tool')).status === 'ok' && (await c.tool('git_commit_tool')).status === 'error');
     check('only the repo probe pins its own diagnostic locale', lastOptions.env.LC_ALL === 'C' && lastOptions.env.LANG === 'C' && lastOptions.env !== process.env);
     const env = Object.assign({}, process.env); for (const key of Object.keys(env)) if (/^path$/i.test(key)) delete env[key]; env.PATH = '';
-    c.child_process.execFileSync = (file, args, options) => cp.execFileSync(file, args, Object.assign({}, options, { env }));
+    c.runGitCommandAsync = async (args, options) => cp.execFileSync('git', args, Object.assign({cwd,encoding:'utf8',timeout:10000}, options, { env }));
     check('real stripped-PATH Git lookup fails explicitly without spawning another tool', (await c.tool('git_status_tool')).status === 'error');
 
     let runtimeEnv = env;

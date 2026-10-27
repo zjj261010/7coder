@@ -4,9 +4,9 @@ function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' 
 function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, a); assert.ok(a >= 0 && b > a, from); return source.slice(a, b); }
 function context(name, overrides, extra) { const cwd = S.freshCwd(name), file = path.join(cwd, '.7coder', 'audit.jsonl'), warnings = []; fs.mkdirSync(path.dirname(file));
   const c = loadContext(source, cwd, overrides, Object.assign({ Buffer, appDir: path.dirname(S.IDX), TOOL_METADATA: { read_file: {}, write_file: {}, git_status_tool: {}, sleep_tool: {} }, console: { warn: s => warnings.push(s) } }, extra));
-  vm.runInContext(cut('function runtimeText(', 'function recordRuntimeEvent(') + cut('function auditCommitMessage(', 'function git(argsArr, opts)'), c); return { cwd, file, c, warnings }; }
+  vm.runInContext(cut('function runtimeText(', 'function recordRuntimeEvent(') + cut('function auditCommitMessage(', 'async function inGitRepoRead('), c); return { cwd, file, c, warnings }; }
 const record = tool => JSON.stringify({ type: 'tool', tool }) + '\n';
-try {
+(async()=>{try {
   let f = context('normal'); check('missing log retains no-activity message without creating a file', f.c.auditCommitMessage() === 'chore: session changes (no tool activity)' && !fs.existsSync(f.file));
   fs.writeFileSync(f.file, record('read_file') + record('write_file') + record('read_file') + record('git_status_tool') + record('sleep_tool'));
   check('valid known tools retain frequency order and top-three hints', f.c.auditCommitMessage() === 'chore: session changes (tools: read_file, write_file, git_status_tool)');
@@ -28,14 +28,14 @@ try {
   const git = argv => cp.execFileSync('git', argv, { cwd: f.cwd, env, encoding: 'utf8', timeout: 10000, windowsHide: true });
   git(['init']); git(['config', 'user.name', 'fixture']); git(['config', 'user.email', 'fixture@example.invalid']); git(['config', 'commit.gpgsign', 'false']);
   const tracked = path.join(f.cwd, 'tracked.txt'); fs.writeFileSync(tracked, 'initial'); git(['add', 'tracked.txt']); git(['commit', '-m', 'initial']);
-  Object.assign(f.c, { git, inGitRepo: () => true, recordOwnedGitSnapshot: () => '' });
-  vm.runInContext('function commit(args,cancelled){const name="git_commit_tool";' + cut("  if (name === 'git_commit_tool') {", "  if (name === 'synthetic_output_tool') {") + '}', f.c);
-  fs.writeFileSync(f.file, record('write_file')); fs.writeFileSync(tracked, 'first change'); let committed = f.c.commit({});
+  Object.assign(f.c, { runGitCommandAsync: async argv=>git(argv), inGitRepoRead: async () => true, recordOwnedGitSnapshotAsync: async () => '' });
+  vm.runInContext('async function commit(args,cancelled){const name="git_commit_tool";' + cut("  if (name === 'git_commit_tool') {", "  if (name === 'synthetic_output_tool') {") + '}', f.c);
+  fs.writeFileSync(f.file, record('write_file')); fs.writeFileSync(tracked, 'first change'); let committed = await f.c.commit({});
   check('actual private Git commit uses valid audit hints and keeps internal audit untracked', committed.status === 'ok' && git(['log', '-1', '--format=%s']).trim() === 'chore: session changes (tools: write_file)' && !git(['ls-files']).includes('.7coder'));
-  const huge = fs.openSync(f.file, 'w'); fs.ftruncateSync(huge, 100 * 1024 * 1024); fs.closeSync(huge); fs.writeFileSync(tracked, 'second change'); committed = f.c.commit({});
+  const huge = fs.openSync(f.file, 'w'); fs.ftruncateSync(huge, 100 * 1024 * 1024); fs.closeSync(huge); fs.writeFileSync(tracked, 'second change'); committed = await f.c.commit({});
   check('unavailable hints still allow intended commit with bounded warning and source intact', committed.status === 'ok' && git(['log', '-1', '--format=%s']).trim() === 'chore: session changes' && f.warnings.some(s => s.includes('hints unavailable')) && fs.statSync(f.file).size === 100 * 1024 * 1024);
-  const head = git(['rev-parse', 'HEAD']).trim(); fs.writeFileSync(tracked, 'must not commit after cancel'); assert.throws(() => f.c.commit({}, () => true), e => e.code === 'EXECUTION_CANCELLED');
+  const head = git(['rev-parse', 'HEAD']).trim(); fs.writeFileSync(tracked, 'must not commit after cancel'); const cancelledResult=await f.c.commit({}, () => true);assert.strictEqual(cancelledResult.status,'cancelled');
   check('cancelled hint generation cannot fall through into a Git commit', git(['rev-parse', 'HEAD']).trim() === head);
-  committed = f.c.commit({ message: 'explicit user message' }); check('explicit message bypasses broken hints without changing requested title', committed.status === 'ok' && git(['log', '-1', '--format=%s']).trim() === 'explicit user message');
+  committed = await f.c.commit({ message: 'explicit user message' }); check('explicit message bypasses broken hints without changing requested title', committed.status === 'ok' && git(['log', '-1', '--format=%s']).trim() === 'explicit user message');
   console.log('AUDIT/COMMIT/BUDGET ' + checks + '/' + checks + ' passed; SKIP 0; snapshot helper stubbed, retention protocol not retested');
-} finally { S.cleanup(); }
+} finally { S.cleanup(); }})().catch(error=>{console.error(error.stack);process.exitCode=1;});

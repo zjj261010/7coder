@@ -72,6 +72,7 @@
     "test:git-status-columns": "node test/git-status-columns.js",
     "test:git-read-cancellation": "node test/git-read-cancellation.js",
     "test:checkpoint-cancellation": "node test/checkpoint-cancellation.js",
+    "test:git-commit-cancellation": "node test/git-commit-cancellation.js",
     "test:path-boundaries": "node test/path-boundaries.js",
     "test:scan-budget": "node test/scan-budget.js",
     "test:cron-identity": "node test/cron-identity.js",

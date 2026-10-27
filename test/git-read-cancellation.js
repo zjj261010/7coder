@@ -13,14 +13,14 @@ function ping(port){return new Promise(resolve=>{const req=http.get({host:'127.0
 async function units(S){
  const source=fs.readFileSync(S.IDX,'utf8'),calls=[];
  const c=vm.createContext({process,setTimeout,clearTimeout,setInterval,clearInterval,launchDir:S.runDir});
- vm.runInContext(cut(source,'function executionCancelledError(','function serializeModelRequest(')+cut(source,'function checkExecution(','function cancelActiveExecutions(')+cut(source,'async function awaitCommandCancellable(','// ====================== PERSISTENT SHELL')+cut(source,'// OPT-13: pilot tools carry authoritative status','// Central choke point')+cut(source,'function git(argsArr, opts)',"  if (name === 'git_status_tool') {")+'async function tool(name,args={},cancelled=null){\n'+cut(source,"  if (name === 'git_status_tool') {","  if (name === 'git_commit_tool') {")+'\n}',c);
+ vm.runInContext(cut(source,'function executionCancelledError(','function serializeModelRequest(')+cut(source,'function checkExecution(','function cancelActiveExecutions(')+cut(source,'async function awaitCommandCancellable(','// ====================== PERSISTENT SHELL')+cut(source,'// OPT-13: pilot tools carry authoritative status','// Central choke point')+cut(source,'async function inGitRepoRead(',"  if (name === 'git_status_tool') {")+'async function tool(name,args={},cancelled=null){\n'+cut(source,"  if (name === 'git_status_tool') {","  if (name === 'git_commit_tool') {")+'\n}',c);
  c.runCommandAsync=(spec,options)=>{calls.push({spec,options});return {promise:Promise.resolve({error:null,stdout:'COMPLETE',stderr:'',exitCode:0}),kill(){}};};
- const expired=c.createExecutionControl(5000);expired.cancel('already cancelled');await assert.rejects(c.gitRead(['status'],{},expired),e=>e.code==='EXECUTION_CANCELLED');expired.dispose();
+ const expired=c.createExecutionControl(5000);expired.cancel('already cancelled');await assert.rejects(c.runGitCommandAsync(['status'],{},expired),e=>e.code==='EXECUTION_CANCELLED');expired.dispose();
  check('pre-cancelled Git read starts no process',calls.length===0);
- const args=['diff','--','literal & name'],text=await c.gitRead(args,{deadlineAt:Date.now()+1234},null),first=calls[0];
+ const args=['diff','--','literal & name'],text=await c.runGitCommandAsync(args,{deadlineAt:Date.now()+1234},null),first=calls[0];
  check('read preserves argv/no-shell, one MiB output cap and remaining deadline',text==='COMPLETE'&&first.spec.file==='git'&&first.spec.args===args&&!first.options.shell&&first.options.maxBuffer===1024*1024&&first.options.timeout>0&&first.options.timeout<=1234&&!('deadlineAt'in first.options));
  let settle,kills=0;const token=c.createExecutionControl(5000);c.runCommandAsync=()=>({promise:new Promise(r=>{settle=r;}),kill(){kills++;}});
- const late=c.gitRead(['status'],{},token);token.cancel('late cancellation');settle({error:null,stdout:'LATE',stderr:'',exitCode:0});await assert.rejects(late,e=>e.code==='EXECUTION_CANCELLED');token.dispose();
+ const late=c.runGitCommandAsync(['status'],{},token);token.cancel('late cancellation');settle({error:null,stdout:'LATE',stderr:'',exitCode:0});await assert.rejects(late,e=>e.code==='EXECUTION_CANCELLED');token.dispose();
  check('late successful callback cannot overwrite cancellation and stop is requested once',kills===1);
  c.runCommandAsync=()=>({promise:Promise.resolve({error:Object.assign(Error('fixture timeout'),{code:'ETIMEDOUT'}),stdout:'PARTIAL',stderr:'',exitCode:null}),kill(){}});
  const failed=await c.tool('git_diff_tool');check('partial Git failure cannot become no-changes or a successful diff',failed.status==='error'&&failed.text.includes('fixture timeout')&&!failed.text.includes('PARTIAL')&&!failed.text.includes('[GIT]'));

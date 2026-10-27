@@ -18,7 +18,7 @@ function cut(from, to) {
     const execFile = (file,args,options,callback) => { const child=cp.execFile(file,args,Object.assign({},options,{cwd,env}),callback);children.push(child);return child; };
     const ctx = vm.createContext({ process, launchDir: cwd, checkExecution() {}, child_process: { execFileSync, execFile } });
     vm.runInContext(cut('function runCommandAsync(', '// ====================== PERSISTENT SHELL') + cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
-      cut('function git(argsArr, opts)', "  if (name === 'git_status_tool') {") +
+      cut('async function inGitRepoRead(', "  if (name === 'git_status_tool') {") +
       'async function status(){const name="git_status_tool",cancelled=null;\n' + cut("  if (name === 'git_status_tool') {", "  if (name === 'git_diff_tool') {") + '\n}', ctx);
     const git = args => execFileSync('git', args, { encoding: 'utf8', timeout: 10000, stdio: ['ignore', 'pipe', 'pipe'] });
     git(['init']); git(['config', 'core.autocrlf', 'false']); git(['config', 'core.quotepath', 'false']);
@@ -39,10 +39,10 @@ function cut(from, to) {
     check('untracked-only first entry remains distinct from tracked changes', result.text.includes('staged:0 modified:0 untracked:1'));
     fs.unlinkSync(extra); result = await ctx.status();
     check('returning to clean repository adds no phantom empty status line', result.text.includes('staged:0 modified:0 untracked:0') && !result.text.includes('\n'));
-    ctx.gitRead = args => args[0] === 'status' ? ' M first.txt\r\nM  second.txt\r\n' : 'fixture';
+    ctx.runGitCommandAsync = args => args[0] === 'status' ? ' M first.txt\r\nM  second.txt\r\n' : 'fixture';
     result = await ctx.status();
     check('CRLF status output preserves column positions without a trailing empty record', result.text.includes('staged:1 modified:1 untracked:0') && result.text.includes('\n M first.txt') && !result.text.endsWith('\r\n'));
-    ctx.gitRead = args => { if (args[0] === 'status') throw Error('Git fixture failure'); return 'fixture'; };
+    ctx.runGitCommandAsync = args => { if (args[0] === 'status') throw Error('Git fixture failure'); return 'fixture'; };
     result = await ctx.status();
     check('status failure inside a known repository remains an explicit error', result.status === 'error' && result.text.includes('Git fixture failure'));
     console.log('GIT/STATUS-COLUMNS ' + checks + '/' + checks);

@@ -1396,7 +1396,7 @@ const TOOL_METADATA = Object.freeze(Object.assign(Object.create(null), {
   }),
   enter_worktree_tool: toolMetadata({
     explain: (a) => `Create git worktree at ${a.path}`, risk: "MEDIUM",
-    execution: "command", cancellation: "boundary",
+    execution: "command", cancellation: "active-command",
     resources: { git: 'write', workspace: 'write' }
   }),
   schedule_cron_tool: toolMetadata({
@@ -1495,7 +1495,7 @@ const TOOL_METADATA = Object.freeze(Object.assign(Object.create(null), {
   }),
   git_commit_tool: toolMetadata({
     explain: (a) => `Stage all and commit${a.message ? ': ' + String(a.message).substring(0, 60) : ' (auto message)'} (snapshot taken)`, risk: "HIGH", trackChanges: true,
-    execution: "command", cancellation: "boundary",
+    execution: "command", cancellation: "active-command",
     resources: { git: 'write', workspace: 'readwrite' }
   }),
   auto_approval_return: toolMetadata({
@@ -2406,6 +2406,32 @@ async function awaitCommandCancellable(runner, cancelled) {
     const r = await runner.promise;
     return { r, aborted: cancelled() };
   } finally { detach(); }
+}
+
+// Git commands use argv, a bounded output buffer and one caller-owned budget.
+async function runGitCommandAsync(argsArr, opts, cancelled) {
+  checkExecution(cancelled);
+  const options = Object.assign({ encoding: 'utf8', cwd: launchDir, windowsHide: true, maxBuffer: 1024 * 1024 }, opts || {});
+  const deadlineAt = Math.min(Number.isFinite(options.deadlineAt) ? options.deadlineAt : Date.now() + 30000,
+    cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt : Infinity);
+  delete options.deadlineAt;
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error('Git command deadline exceeded; no complete result available.');
+  options.timeout = Math.max(1, Math.min(30000, remaining));
+  const runner = runCommandAsync({ file: 'git', args: argsArr }, options);
+  const { r, aborted } = await awaitCommandCancellable(runner, cancelled);
+  if (aborted) throw executionCancelledError(cancelled);
+  checkExecution(cancelled); // A late callback cannot publish a cancelled result.
+  if (runner.ownedTree && runner.ownedTree.bound && !runner.ownedTree.closed) {
+    throw Object.assign(new Error('Git command cleanup unconfirmed; inspect repository state before retrying.'), { code: 'EOWNERUNKNOWN' });
+  }
+  if (r.error) {
+    r.error.stdout = r.stdout; r.error.stderr = r.stderr;
+    if (Number.isInteger(r.exitCode)) r.error.status = r.exitCode;
+    throw r.error;
+  }
+  if (Date.now() >= deadlineAt) throw new Error('Git command deadline exceeded; no confirmed result available.');
+  return r.stdout;
 }
 
 // ====================== PERSISTENT SHELL (GAP-2) ======================
@@ -5202,46 +5228,9 @@ function auditCommitMessage(cancelled) {
   return 'chore: session changes (' + (top.length ? 'tools: ' + top.join(', ') : 'no tool activity') + (incomplete ? '; partial audit' : '') + ')';
 }
 
-function git(argsArr, opts) {
-  return child_process.execFileSync('git', argsArr, Object.assign({ encoding: "utf8", cwd: launchDir, timeout: 30000 }, opts || {}));
-}
-function inGitRepo() {
-  try {
-    git(["rev-parse", "--is-inside-work-tree"], { stdio: "pipe", env: Object.assign({}, process.env, { LC_ALL: 'C', LANG: 'C' }) });
-    return true;
-  } catch (e) {
-    // Only the actual non-repository diagnosis is an ordinary empty result.
-    // Missing/broken Git, ACL/config errors and loader failures are faults.
-    if (e.status === 128 && /not a git repository/i.test(String(e.stderr || ''))) return false;
-    if (e.code === 'ENOENT') throw new Error('Git executable not found on PATH (ENOENT); prepare a Win7-compatible Git before using Git tools.');
-    throw e;
-  }
-}
-
-// Read-only Git tools share a 30s wall-clock budget across their commands.
-// Wait asynchronously so HTTP disconnect/deadline and other requests can run.
-async function gitRead(argsArr, opts, cancelled) {
-  checkExecution(cancelled);
-  const options = Object.assign({ encoding: 'utf8', cwd: launchDir, windowsHide: true, maxBuffer: 1024 * 1024 }, opts || {});
-  const deadlineAt = Math.min(Number.isFinite(options.deadlineAt) ? options.deadlineAt : Date.now() + 30000,
-    cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt : Infinity);
-  delete options.deadlineAt;
-  const remaining = deadlineAt - Date.now();
-  if (remaining <= 0) throw new Error('Git read deadline exceeded; no complete result available.');
-  options.timeout = Math.max(1, Math.min(30000, remaining));
-  const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: 'git', args: argsArr }, options), cancelled);
-  if (aborted) throw executionCancelledError(cancelled);
-  checkExecution(cancelled); // A late callback cannot publish a cancelled result.
-  if (r.error) {
-    r.error.stdout = r.stdout; r.error.stderr = r.stderr;
-    if (Number.isInteger(r.exitCode)) r.error.status = r.exitCode;
-    throw r.error;
-  }
-  return r.stdout;
-}
 async function inGitRepoRead(cancelled, deadlineAt) {
   try {
-    await gitRead(['rev-parse', '--is-inside-work-tree'], { deadlineAt,
+    await runGitCommandAsync(['rev-parse', '--is-inside-work-tree'], { deadlineAt,
       env: Object.assign({}, process.env, { LC_ALL: 'C', LANG: 'C' }) }, cancelled);
     return true;
   } catch (e) {
@@ -5256,10 +5245,10 @@ async function inGitRepoRead(cancelled, deadlineAt) {
     try {
       const readOpts = { deadlineAt: Date.now() + 30000 };
       if (!await inGitRepoRead(cancelled, readOpts.deadlineAt)) return makeToolResult('ok', "Not a git repository (no .git found in the workspace).");
-      const branch = (await gitRead(["rev-parse", "--abbrev-ref", "HEAD"], readOpts, cancelled)).trim();
-      const last = (await gitRead(["log", "-1", "--oneline"], readOpts, cancelled)).trim();
+      const branch = (await runGitCommandAsync(["rev-parse", "--abbrev-ref", "HEAD"], readOpts, cancelled)).trim();
+      const last = (await runGitCommandAsync(["log", "-1", "--oneline"], readOpts, cancelled)).trim();
       // The leading space is the index column of XY, not presentation padding.
-      const status = (await gitRead(["status", "--short"], readOpts, cancelled)).replace(/(?:\r?\n)+$/, '');
+      const status = (await runGitCommandAsync(["status", "--short"], readOpts, cancelled)).replace(/(?:\r?\n)+$/, '');
       const linesN = status ? status.split(/\r?\n/) : [];
       const counts = { staged: 0, modified: 0, untracked: 0 };
       for (const l of linesN) {
@@ -5285,7 +5274,7 @@ async function inGitRepoRead(cancelled, deadlineAt) {
       if (args.staged) diffArgs.push("--cached");
       const hasPath = typeof args.path === "string" && args.path.trim();
       if (hasPath) { diffArgs.push("--", sanitizePath(args.path)); } // path is ONE argv entry - never shell-parsed
-      const diff = (await gitRead(diffArgs, readOpts, cancelled)).trim();
+      const diff = (await runGitCommandAsync(diffArgs, readOpts, cancelled)).trim();
       if (!diff) return makeToolResult('ok', "[GIT] no changes" + (args.staged ? " (staged)" : "") + (hasPath ? " for " + args.path : "") + ".");
       return makeToolResult('ok', "[GIT] diff" + (args.staged ? " (staged)" : "") + ":\n" + diff.substring(0, 8000));
     } catch (e) {
@@ -5295,30 +5284,50 @@ async function inGitRepoRead(cancelled, deadlineAt) {
   }
 
   if (name === 'git_commit_tool') {
-    try { if (!inGitRepo()) return makeToolResult('error', "Not a git repository."); }
-    catch (e) { return makeToolResult('error', 'Git prerequisite error: ' + e.message); }
-    let message = (typeof args.message === "string" && args.message.trim()) ? args.message.trim() : "";
-    if (!message) {
-      // Generate from the session audit log (most common tool verbs of this session)
-      try {
-        message = auditCommitMessage(cancelled);
-      } catch (e) { checkExecution(cancelled); console.warn('[GIT] Automatic message hints unavailable: ' + runtimeText(e.message)); message = "chore: session changes"; }
-    }
+    const budget = { deadlineAt: Date.now() + 120000 };
+    const commitGit = (argv, opts) => runGitCommandAsync(argv, Object.assign({}, budget, opts || {}), cancelled);
+    let phase = 'repository check', snapshot = '', writeStarted = false;
     try {
-      // Pre-commit snapshot for recovery: stash create keeps it retrievable without touching the tree
-      let snapshot = "";
-      try { snapshot = recordOwnedGitSnapshot(git, 'commit'); } catch (e) { console.warn('[WARN] pre-commit snapshot failed: ' + e.message); }
-      // AST-04: .7coder/ holds secrets (models.json apiKeys, audit log).
-      // Keep it out of commits via pathspec exclusion - we never edit the
-      // user's .gitignore and never untrack files they committed on purpose;
-      // add -A just cannot sweep .7coder/ in anymore.
-      if (args.stage_all !== false) git(["add", "-A", "--", ":(exclude).7coder/", ":(exclude,glob)**/*.7coder-*"]);
-      const staged = git(["diff", "--cached", "--name-only"]).trim();
-      if (!staged) return makeToolResult('ok', "[GIT] nothing to commit (no staged changes).");
-      git(["commit", "-m", message]); // message is ONE argv entry - no shell quoting at all
-      const last = git(["log", "-1", "--oneline"]).trim();
-      return makeToolResult('ok', "[OK] committed: " + last + (snapshot ? "\n(snapshot " + snapshot.substring(0, 12) + " recorded for recovery)" : ""));
-    } catch (e) { return makeToolResult('error', "Git commit error: " + e.message); }
+      checkExecution(cancelled);
+      if (!await inGitRepoRead(cancelled, budget.deadlineAt)) return makeToolResult('error', 'Not a git repository.');
+      let message = typeof args.message === 'string' && args.message.trim() ? args.message.trim() : '';
+      if (!message) {
+        try { message = auditCommitMessage(cancelled); }
+        catch (e) { checkExecution(cancelled); console.warn('[GIT] Automatic message hints unavailable: ' + runtimeText(e.message)); message = 'chore: session changes'; }
+      }
+      phase = 'recovery snapshot';
+      try { snapshot = await recordOwnedGitSnapshotAsync(commitGit, 'commit', cancelled); }
+      catch (e) {
+        checkExecution(cancelled);
+        if (e.code === 'EOWNERUNKNOWN' || e.code === 'EXECUTION_CANCELLED') throw e;
+        console.warn('[WARN] pre-commit snapshot failed: ' + e.message);
+      }
+      checkExecution(cancelled);
+      // Keep internal secrets/artifacts out of add -A; do not edit ignore rules
+      // or untrack anything previously committed by the user.
+      phase = 'staging';
+      if (args.stage_all !== false) {
+        writeStarted = true;
+        await commitGit(['add', '-A', '--', ':(exclude).7coder/', ':(exclude,glob)**/*.7coder-*']);
+      }
+      phase = 'staged changes';
+      const staged = (await commitGit(['diff', '--cached', '--name-only'])).trim();
+      if (!staged) return makeToolResult('ok', '[GIT] nothing to commit (no staged changes).');
+      checkExecution(cancelled);
+      phase = 'commit'; writeStarted = true;
+      await commitGit(['commit', '-m', message]); // Message remains one literal argv entry.
+      phase = 'post-commit inspection';
+      const last = (await commitGit(['log', '-1', '--oneline'])).trim();
+      checkExecution(cancelled);
+      return makeToolResult('ok', '[OK] committed: ' + last + (snapshot ? '\n(snapshot ' + snapshot.substring(0, 12) + ' recorded for recovery)' : ''));
+    } catch (e) {
+      const hint = writeStarted ? ' Staging, hooks or a commit may have completed; inspect git status/log before retrying.' :
+        phase === 'recovery snapshot' ? ' A recovery ref may already exist; it is retained.' : ' No staging/commit was started by this call.';
+      const status = e.code === 'EXECUTION_CANCELLED' || cancelled && cancelled() ? 'cancelled' : 'error';
+      const data = { phase, snapshot: snapshot || null, sideEffectsPossible: writeStarted };
+      return makeToolResult(status, 'Git commit ' + (status === 'cancelled' ? 'cancelled' : 'error') + ' (' + phase + ')' +
+        (snapshot ? '; snapshot ' + snapshot.substring(0, 12) : '') + ': ' + e.message + hint, data);
+    }
   }
 
   if (name === 'synthetic_output_tool') {
@@ -6263,9 +6272,6 @@ function ownedGitSnapshotPolicy(kind) {
 function snapshotListArgs(policy) {
   return ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(contents:subject)', policy.prefix];
 }
-function readOwnedGitSnapshots(gitCommand, policy) {
-  return parseOwnedGitSnapshots(gitCommand(snapshotListArgs(policy)), policy);
-}
 function parseOwnedGitSnapshots(text, policy) {
   const owned = [];
   for (const line of String(text).split(/\r?\n/)) {
@@ -6307,19 +6313,6 @@ function* ownedGitSnapshotSteps(kind) {
   return sha;
 }
 
-// The same command plan preserves ownership/CAS rules for synchronous
-// commit snapshots and asynchronous request checkpoints. No duplicate policy.
-function recordOwnedGitSnapshot(gitCommand, kind) {
-  const plan = ownedGitSnapshotSteps(kind);
-  let step = plan.next();
-  while (!step.done) {
-    let value;
-    try { value = gitCommand(step.value[0], step.value[1]); }
-    catch (error) { step = plan.throw(error); continue; }
-    step = plan.next(value);
-  }
-  return step.value;
-}
 async function recordOwnedGitSnapshotAsync(gitCommand, kind, cancelled) {
   checkExecution(cancelled);
   const plan = ownedGitSnapshotSteps(kind);
@@ -6350,26 +6343,7 @@ async function recordOwnedGitSnapshotAsync(gitCommand, kind, cancelled) {
 async function createTaskGitCheckpoint(cancelled = null) {
   checkExecution(cancelled);
   const deadlineAt = Math.min(Date.now() + 30000, cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt : Infinity);
-  const gitTask = async (args, opts) => {
-    checkExecution(cancelled);
-    const remaining = deadlineAt - Date.now();
-    if (remaining <= 0) throw new Error('Task Git checkpoint deadline exceeded.');
-    const runner = runCommandAsync({ file: 'git', args }, Object.assign({ encoding: 'utf8', cwd: launchDir, windowsHide: true,
-      timeout: Math.max(1, remaining), maxBuffer: 1024 * 1024 }, opts || {}));
-    const { r, aborted } = await awaitCommandCancellable(runner, cancelled);
-    if (aborted) throw executionCancelledError(cancelled);
-    checkExecution(cancelled);
-    if (runner.ownedTree && runner.ownedTree.bound && !runner.ownedTree.closed) {
-      throw Object.assign(new Error('Task Git checkpoint cleanup unconfirmed; no model request was started.'), { code: 'EOWNERUNKNOWN' });
-    }
-    if (r.error) {
-      r.error.stdout = r.stdout; r.error.stderr = r.stderr;
-      if (Number.isInteger(r.exitCode)) r.error.status = r.exitCode;
-      throw r.error;
-    }
-    if (Date.now() >= deadlineAt) throw new Error('Task Git checkpoint deadline exceeded.');
-    return r.stdout;
-  };
+  const gitTask = (args, opts) => runGitCommandAsync(args, Object.assign({ deadlineAt }, opts || {}), cancelled);
   try {
     if ((await gitTask(['rev-parse', '--is-inside-work-tree'], { env: Object.assign({}, process.env, { LC_ALL: 'C', LANG: 'C' }) })).trim() !== 'true') return '';
   } catch (e) {

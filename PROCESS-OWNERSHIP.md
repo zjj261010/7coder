@@ -89,3 +89,14 @@ createTaskGitCheckpoint现为异步，CLI和两种HTTP入口都await并在模型
 同步commit快照和异步task检查点驱动同一个generator命令计划；归属/namespace/50条保留、CAS/--no-deref、时间回拨/多worktree策略未复制或改变。runner只新增只读ownedTree getter用于明确区分清理未知。
 
 本批首跑：新checkpoint-cancellation19/19（含6个边界、两种HTTP各5、CLI3）、旧Git快照11/11、实际Git/提交8/8、审计提交预算13/13，共51。真实fsmonitor在首个模型前暂停时HTTP可响应，取消后模型零调用/无新ref，CLI自身期限也能停止；正常后续快照保留working/index而不改HEAD/原文件。没有重复上批Git读17/状态列/依赖或native/桌面专项和全套，也未做Win7/系统关闭/24–72h。之前请求前检查点的同步阻塞代码已修；提交、worktree和发现等待及native IO仍开放。
+
+
+## Git 提交异步等待与副作用（2026-10-28）
+
+Git提交的repo探针、恢复快照、stage、staged检查、commit、最后log现均异步受管，整次命令预算120秒、单命令最多30秒/1MiB并服从调用方截止。与读取/检查点共享runGitCommandAsync，绑定后清理未知不继续。取消、native退出、超量/预算到期与迟到成功都不被包装成提交成功。
+
+错误/取消结果携带phase、snapshot、sideEffectsPossible及可见的短快照ID。stage/钩子/commit可能已执行时提示检查status/log；提交后log失败仍为error，不自动重试或回滚真实提交。保留快照及钩子副作用，不自动删除Git锁；后续状态检查可用不代表下一次提交一定成功，可能需要现场核查锁/钩子。
+
+同步Git传输/probe和无生产调用方的同步快照包装已移除，原归属generator策略由唯一异步驱动消费。共享传输和快照消费者有实质变化，本批各一次验证：新提交21、检查点19、读取17、快照11、状态列9、依赖12、审计提示13、实际Git8，共110；无失败复跑。前后hook均真实私有Git：pre取消HEAD不变，post取消HEAD已变化，均保持恢复ref、逐callId取消审计/无重放、端口心跳清理、HTTP响应与后续status。实际快照保留测试改为异步驱动，测试内Git命令仍是同步fixture，不冒充其本身验证Agent调度。
+
+未重复native/创建窗口/桌面套件或完整A–J/UI/test-all；未做Win7/系统关闭/24–72h。worktree、where/bash发现、显式外部PID工具以及native IO仍有同步等待，T22-06继续开放。收尾仅更新deadline/测试说明及fixture提交标题，静态检查，未因此重复已通过专项。
