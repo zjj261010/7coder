@@ -15,7 +15,7 @@ const timeout=setTimeout(()=>{console.error('PROCESS/FAULTS deadline');for(const
  const manifest=api.validateInstallation(root),exe=path.join(root,'native','process-owner.exe'),image=fs.readFileSync(exe);
  const pe=image.readUInt32LE(0x3c),optional=pe+24;
  const osMajor=image.readUInt16LE(optional+48),osMinor=image.readUInt16LE(optional+50);
- check('delivery helper is pinned PE32 AnyCPU with Windows subsystem baseline at most 6.1',manifest.protocol===1&&image.toString('ascii',pe,pe+4)==='PE\0\0'&&image.readUInt16LE(optional)===0x10b&&(osMajor<6||osMajor===6&&osMinor<=1));
+ check('delivery helper is pinned PE32 AnyCPU with Windows subsystem baseline at most 6.1',manifest.protocol===2&&image.toString('ascii',pe,pe+4)==='PE\0\0'&&image.readUInt16LE(optional)===0x10b&&(osMajor<6||osMajor===6&&osMinor<=1));
  const config=fs.readFileSync(exe+'.config','utf8');
  check('shipped runtime config prefers CLR2 and permits already installed CLR4 without download',config.indexOf('v2.0.50727')>=0&&config.indexOf('v2.0.50727')<config.indexOf('v4.0'));
  let nativeCalls=0;
@@ -34,7 +34,7 @@ const timeout=setTimeout(()=>{console.error('PROCESS/FAULTS deadline');for(const
  for(const stage of ['hello','ready']){
    const pipe='\\\\.\\pipe\\7coder-fault-'+require('crypto').randomBytes(16).toString('hex'),token=require('crypto').randomBytes(24).toString('hex');
    let ready=false;
-   const server=net.createServer(socket=>{let b='';socket.on('error',()=>{});socket.on('data',s=>{b+=s;let p;while((p=b.indexOf('\n'))>=0){const line=b.slice(0,p);b=b.slice(p+1);if(line.startsWith('HELLO ')){if(stage==='hello')socket.end('STOP\n');else socket.write('START\n');}else if(line.startsWith('READY ')){ready=true;socket.destroy();}}});});servers.push(server);await new Promise(r=>server.listen(pipe,r));
+   const server=net.createServer(socket=>{let b='';socket.on('error',()=>{});socket.on('data',s=>{b+=s;let p;while((p=b.indexOf('\n'))>=0){const line=b.slice(0,p);b=b.slice(p+1);if(line.startsWith('HELLO2 ')){if(stage==='hello')socket.end('STOP\n');else socket.write('START\n');}else if(line.startsWith('READY ')){ready=true;socket.destroy();}}});});servers.push(server);await new Promise(r=>server.listen(pipe,r));
    const file=Buffer.from(S.NODE_BIN,'utf16le').toString('base64'),line=Buffer.from(api.quote(S.NODE_BIN)+' -e '+api.quote('require("fs").writeFileSync('+JSON.stringify(marker)+',"WRONG")'),'utf16le').toString('base64');
    const broker=remember(cp.spawn(exe,[pipe,token,file,line,'hidden'],{windowsHide:true}));const result=await broker.done;
    check('owner disconnect at '+stage+' cannot resume target',result.code!==0&&!fs.existsSync(marker)&&(stage!=='ready'||ready),broker.err);

@@ -52,7 +52,7 @@ const deadline=setTimeout(()=>{console.error('PROCESS/OWNER deadline');for(const
   if(scope==='all'||scope==='basic'||scope==='basic-tail') {
     if(scope!=='basic-tail') {
     const probe=cp.spawnSync(path.join(root,'native','process-owner.exe'),['--probe'],{encoding:'utf8',windowsHide:true,timeout:10000});
-    check('prebuilt AnyCPU CLR2 helper loads without compiler or shell',probe.status===0&&probe.stdout.includes('7coder-process-owner-v1 CLR='),probe.stderr);
+    check('prebuilt AnyCPU CLR2 helper loads without compiler or shell',probe.status===0&&probe.stdout.includes('7coder-process-owner-v2 CLR='),probe.stderr);
     }
     const cwd=S.freshCwd('cwd 中文 空格'), script=path.join(cwd,'argv 中文.js');
     fs.writeFileSync(script,`let input='';process.stdin.setEncoding('utf8');process.stdin.on('data',s=>input+=s);process.stdin.on('end',()=>{console.log(JSON.stringify({args:process.argv.slice(2),cwd:process.cwd(),env:process.env.OWNED_FIXTURE,input}));process.stderr.write('ERR中文');});`);
@@ -63,7 +63,7 @@ const deadline=setTimeout(()=>{console.error('PROCESS/OWNER deadline');for(const
     const value=JSON.parse(child.output);
     check('argv quoting preserves empty/Unicode/metacharacters/quotes/backslashes',done.code===0&&JSON.stringify(value.args)===JSON.stringify(args),child.errors);
     check('stdio/cwd/environment preserve native child behavior',value.cwd===cwd&&value.env==='值😀'&&value.input==='INPUT中文😀'&&child.errors==='ERR中文');
-    check('normal callback is acknowledged only after whole job empties',child.ownedTree.bound&&child.ownedTree.closed&&!child.ownedTree.error&&child.ownedTree.exitCode===0);
+    check('normal callback is acknowledged only after target group empties',child.ownedTree.bound&&child.ownedTree.closed&&!child.ownedTree.error&&child.ownedTree.exitCode===0);
     const env=Object.assign({},process.env,{PATH:''});
     const absolute=await call(S.NODE_BIN,['-e','process.stdout.write("ABSOLUTE")'],{env});
     check('absolute bundled runtime works with empty PATH',!absolute.error&&absolute.stdout==='ABSOLUTE'&&absolute.child.ownedTree.closed,absolute.stderr);
@@ -86,7 +86,7 @@ const deadline=setTimeout(()=>{console.error('PROCESS/OWNER deadline');for(const
     let t=await tree();
     check('three-generation leaf remains alive after middle parent exits',await request(t.info.port));
     t.child.kill();const code=await t.child.done;
-    check('handle-bound stop observes empty job and closes broker',t.child.ownedTree.closed&&t.child.ownedTree.stopped&&code.code!==0);
+    check('handle-bound stop observes empty target group and closes broker',t.child.ownedTree.closed&&t.child.ownedTree.stopped&&code.code!==0);
     check('stop removes reparented leaf listener and heartbeat',await stopped(t.info));
     t=await tree('natural');const natural=await t.child.done;
     check('natural root exit preserves exit code seven and empties descendants',natural.code===7&&t.child.ownedTree.closed&&t.child.ownedTree.exitCode===7);

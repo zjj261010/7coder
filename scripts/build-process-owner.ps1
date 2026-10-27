@@ -15,6 +15,6 @@ try {
     $configDigest = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes((Join-Path $nativeRoot 'process-owner.exe.config')))).Replace('-', '').ToLowerInvariant()
     $manifestDigest = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes((Join-Path $nativeRoot 'process-owner.manifest')))).Replace('-', '').ToLowerInvariant()
 } finally { $sha.Dispose() }
-$manifest = '{"protocol":1,"file":"process-owner.exe","target":"Windows 7 SP1; CLR 2.0 or CLR 4","sha256":"' + $digest + '","sourceSha256":"' + $sourceDigest + '","configSha256":"' + $configDigest + '","manifestSha256":"' + $manifestDigest + '"}'
+$manifest = '{"protocol":2,"file":"process-owner.exe","target":"Windows 7 SP1; CLR 2.0 or CLR 4","sha256":"' + $digest + '","sourceSha256":"' + $sourceDigest + '","configSha256":"' + $configDigest + '","manifestSha256":"' + $manifestDigest + '"}'
 [IO.File]::WriteAllText((Join-Path $nativeRoot 'process-owner.json'), $manifest + "`n", (New-Object Text.UTF8Encoding($false)))
 Write-Output ('Built CLR 2.0 process owner: ' + $digest)

@@ -208,11 +208,13 @@ internal static class CreationGuard {
                     bool inside;Need(IsProcessInJob(target,job,out inside)&&inside,"target-not-in-guard");
                     IntPtr remote;Need(DuplicateHandle(GetCurrentProcess(),target,parent,out remote,0,false,2),"export-target-handle");
                     Accounting a=Count();Console.WriteLine("TARGET "+pid+" "+remote.ToInt64()+" "+Birth(target)+" "+a.active+" "+a.total);Console.WriteLine("MEMBERS "+Members());Console.Out.Flush();
-                } else if(line=="KILL") {
+                } else if(line=="KILL"||line=="KILL_WAIT_TARGET") {
+                    bool awaitTarget=line=="KILL_WAIT_TARGET";
                     Need(target!=IntPtr.Zero,"target-not-captured");
                     Need(TerminateProcess(broker.process,193),"kill-broker-handle");Need(WaitForSingleObject(broker.process,5000)==0,"broker-wait");
+                    if(awaitTarget)Need(WaitForSingleObject(target,5000)==0,"target-not-cleaned-by-broker-death");
                     System.Diagnostics.Stopwatch clock=System.Diagnostics.Stopwatch.StartNew();Accounting a;
-                    do { a=Count();if(a.active<=1)break;Thread.Sleep(10); }while(clock.ElapsedMilliseconds<5000);
+                    do { a=Count();if(a.active<=(awaitTarget?0u:1u))break;Thread.Sleep(10); }while(clock.ElapsedMilliseconds<5000);
                     Console.WriteLine("AFTER "+a.active+" "+a.total);Console.WriteLine("AFTERMEMBERS "+Members());Console.Out.Flush();
                 } else if(line=="CLEANUP") { Empty();Console.WriteLine("EMPTY 0");Console.Out.Flush();return 0; }
                 else throw new Exception("guard-command");

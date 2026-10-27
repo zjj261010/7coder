@@ -51,14 +51,14 @@ else{fs.writeFileSync(heart,'');const c=cp.spawn(process.execPath,[__filename,'m
     }
     r=await chat('task-create');taskId=(r.content.match(/task-\d+-\d+/)||[])[0];assert.ok(taskId,r.content);const taskInfo=await info(taskFile);leaves.push(taskInfo);
     if(scope!=='http-tail')check('actual task starts three generations before stop',await ping(taskInfo.port));
-    r=await chat('task-stop');check('actual task_stop reports confirmed owned job and removes all leaf resources',r.content.includes('no remaining members')&&await empty(taskInfo),JSON.stringify({r,trace}));
+    r=await chat('task-stop');check('actual task_stop reports confirmed owned job and removes all leaf resources',r.content.includes('target group is empty; broker closed')&&await empty(taskInfo),JSON.stringify({r,trace}));
     r=await chat('cron-create');cronId=(r.content.match(/cron-\d+-\d+/)||[])[0];assert.ok(cronId,r.content);const cronInfo=await info(cronFile);leaves.push(cronInfo);
     check('actual scheduled cron fires owned command once while busy',await ping(cronInfo.port));
-    r=await chat('cron-delete');check('actual cron delete waits for owned tree cleanup',r.content.includes('no remaining members')&&await empty(cronInfo),r.content);
+    r=await chat('cron-delete');check('actual cron delete waits for owned tree cleanup',r.content.includes('target group is empty; broker closed')&&await empty(cronInfo),r.content);
     r=await chat('mcp');const mcpInfo=await info(mcpFile);leaves.push(mcpInfo);
     check('actual MCP JSON-RPC initializes/lists/calls through owned bidirectional pipes',r.content.includes('MCP_OWNED_中文')&&await ping(mcpInfo.port));
     const status=JSON.parse((await H.api('/api/info')).body);
-    check('Agent diagnostics show only one persistent MCP owner after other routes close',status.processOwner.mode==='windows-job-v1'&&status.processOwner.active===1&&status.processOwner.pending===0);
+    check('Agent diagnostics show only one persistent MCP owner after other routes close',status.processOwner.mode==='windows-job-v2'&&status.processOwner.proofScope==='targets-empty-before-broker-close'&&status.processOwner.active===1&&status.processOwner.pending===0);
     await H.stop();check('forced Agent stop removes MCP grandchildren without dispose callbacks',await empty(mcpInfo));
     await H.start(cwd);const restarted=JSON.parse((await H.api('/api/info')).body);
     check('same workspace restarts without stale native owner or lease',restarted.processOwner.active===0&&restarted.runtime.activeTasks===0);

@@ -2834,7 +2834,7 @@ function observeOwnedChild(child, scope = 'child', id = '') {
     recordRuntimeEvent(scope, code === 0 && !state.error && (!child.ownedTree || child.ownedTree.closed) ? 'ok' : 'error', { id, pid: child.pid, exitCode: code, signal,
       code: state.error && state.error.code, path: state.error && state.error.path, syscall: state.error && state.error.syscall,
       message: state.error ? state.error.message : (child.ownedTree && child.ownedTree.closed ?
-        'Owned Windows job has no remaining members.' : 'Direct child closed; descendant state is unverified.') });
+        'Owned Windows target group is empty; broker closed.' : 'Direct child closed; descendant state is unverified.') });
     for (const notify of Array.from(state.waiters)) notify();
     state.waiters.clear();
   };
@@ -2853,7 +2853,7 @@ function stopOwnedChild(child, timeoutMs = 5000) {
   if (!child) return Promise.resolve({ closed: true, message: 'No active direct child.' });
   const state = observeOwnedChild(child);
   if (state.closed) return Promise.resolve({ closed: !child.ownedTree || child.ownedTree.closed, treeClosed: !!(child.ownedTree && child.ownedTree.closed),
-    message: child.ownedTree && child.ownedTree.closed ? 'Owned Windows job already empty.' : 'Direct child already closed; descendant state is unverified.' });
+    message: child.ownedTree && child.ownedTree.closed ? 'Owned Windows target group already empty; broker closed.' : 'Direct child already closed; descendant state is unverified.' });
   if (state.stopping) return state.stopping;
   let settle, timer, killError = '';
   const promise = new Promise(resolve => { settle = resolve; });
@@ -2863,7 +2863,7 @@ function stopOwnedChild(child, timeoutMs = 5000) {
     state.waiters.delete(finish);
     state.stopping = null;
     const treeClosed = !!(child.ownedTree && child.ownedTree.closed);
-    settle({ closed: state.closed && (!child.ownedTree || treeClosed), treeClosed, message: treeClosed ? 'Owned Windows job has no remaining members.' : state.closed ?
+    settle({ closed: state.closed && (!child.ownedTree || treeClosed), treeClosed, message: treeClosed ? 'Owned Windows target group is empty; broker closed.' : state.closed ?
       'Direct child closed; descendant state is unverified.' :
       'Direct child close unconfirmed; result unknown. ' + (killError || 'Close deadline exceeded.') });
   };
