@@ -16,6 +16,7 @@ if (process.env.REAL_TEST === '1') suites.push('runner-k.js', 'runner-r.js');
 const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)] }))
   .concat([
     { name: 'stream-context.js', args: [path.join(ROOT, 'test', 'stream-context.js')] },
+    { name: 'process-capture.js', args: [path.join(ROOT, 'test', 'process-capture.js')] },
     { name: 'selection-guards.js', args: [path.join(ROOT, 'test', 'selection-guards.js')] },
     { name: 'context-budget.js', args: [path.join(ROOT, 'test', 'context-budget.js')] },
     { name: 'repl-approval.js', args: [path.join(ROOT, 'test', 'repl-approval.js')] },

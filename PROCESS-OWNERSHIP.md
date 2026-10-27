@@ -13,7 +13,7 @@
 
 ## 生命周期
 
-1. 每个Agent懒启动一个Node13内置worker_threads控制线程（最多5秒启动/注册等待），独立维护随机命名管道，避免主线程同步调用阻塞握手/ACK。每次启动另有nonce；异步路径先复核ChildProcess PID，才允许运行。同步路径返回前没有PID，以注册nonce授权，返回后必须复核对端PID与spawnSync返回PID相同，才接受成功。控制消息不混入标准输入输出。
+1. 内部broker以detached=true跳过Node13 libuv自动child Job，但保留进程/stdio引用、不unref、不请求CREATE_BREAKAWAY_FROM_JOB；实际宿主Job仍可能继承，用户目标的detached/IPC仍拒绝。Node13 execFile不透传该标志，回调通过受限spawn采集器实现；spawnSync传同一内部标志。每个Agent懒启动一个Node13内置worker_threads控制线程（最多5秒启动/注册等待），独立维护随机命名管道，避免主线程同步调用阻塞握手/ACK。每次启动另有nonce；异步路径先复核ChildProcess PID，才允许运行。同步路径返回前没有PID，以注册nonce授权，返回后必须复核对端PID与spawnSync返回PID相同，才接受成功。控制消息不混入标准输入输出。
 2. 创建不允许 breakaway 的匿名 Job，设置 `KILL_ON_JOB_CLOSE`，**先把 broker 自身加入 Job**。Job 句柄不继承、不复制给其它进程；Win7 宿主已有不兼容 Job 时，在任何用户目标出现前拒绝。
 3. 用 `CREATE_SUSPENDED` 创建目标，目标从出生继承同一个严格 Job；查询归属成功才报告 READY，收到 GO 才恢复。不再存在“用户目标已创建、尚待首次 Assign”这一步。
 4. STOP/根目标自然退出后，broker 查询当前内核 Job 成员（最多4096个，超过明确失败），打开稳定句柄并再次验证属于本 Job 后终止其它成员。最多5秒清理，反复查询直到成员表仅有 broker 且活动数为1；**不是外部 PID 树或旧 PID 扫描**。查询/权限/预算/期限失败不报告成功，OS进程退出关闭唯一Job句柄兜底，结果仍标记未知。
@@ -129,3 +129,16 @@ Windows发现改由受管的随包Node子进程运行lib/bash-discovery.js，扫
 lib目录已有打包/隔离复制覆盖新文件；INSTALL修正v2 probe和依赖说明，packer补入其引用的所有权/创建计划文档，仅静态检查未生成ZIP。新helper增加冷发现时的Node内存/启动成本，Win7需实测。
 
 **边界**：index.js已无execSync/execFileSync/spawnSync调用，不代表同步fs/native API可硬中断。子进程若卡在无法及时终止的驱动IO，仍可能无法取得关闭证明/回调结算；此类未知终态对全局后续请求的隔离、文件操作副作用与Win7关机/再启动需下一独立阶段处理。现代Node替身可终止不证明真实Win7驱动可终止，T22-06/07与发布门槛继续开放。
+
+
+## Node13 libuv Job 复核修正（2026-10-28）
+
+**INC-JOB-03 / High，兼容性逻辑已确认并修复，Win7实机未验收**：libuv1.37将普通spawn子进程显式加入自动child Job；v2 broker再加入严格Job，Win7的单Job规则会使普通Node启动也失败，并非仅特殊服务宿主。现代嵌套掩盖这一回归，早期preexistingJob不能全归因外部宿主。候选包必须包含本节修正，不能单独采用6d46a47至d528e33期间的v2版本。
+
+内部broker跳过uv自动分配，控制管道与进程/stdio引用仍在，目标依旧继承严格Job。Node13 execFile内置源码不传detached，新增lib/process-capture.js，以spawn实现UTF8/Buffer、各自输出上限、单一超时/合法信号；超限/超时/IO错误停止后等close回调，无PID的EMFILE可先结算，超时后exit0也为error。收尾仅兼容null timeout及按所选编码显示有界stderr，静态检查未再跑正向套件。
+
+实际Job对照：普通探针flags15360且不含父Node，detached/新collector探针flags10240且含父Node（真实宿主Job），受管异步/同步目标flags8192，无silent-breakaway且有完成证明。不能把这说成宿主无Job或Win7实测。依据：[libuv1.37源码](https://raw.githubusercontent.com/libuv/libuv/v1.37.0/src/win/process.c)、[Node13同步flags源码](https://raw.githubusercontent.com/nodejs/node/v13.14.0/src/spawn_sync.cc)、[Win7 Assign限制](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)。execFile另以随包Node内置源码核对。
+
+本批collector9、手动Job探针6、owner19/sync17/faults21、native集成14、桌面集成14、Git读取17/检查点19/提交21/实际Git8、Bash18、PID仅HTTP8、worktree仅HTTP9，共200个有效检查。探针首跑因夹具C#同名变量CS0136在0断言编译失败，修正后仅未完成探针6/6；其它通过项不重复。启动和全部execFile采集机制实质改变，旧测试不能替代本次；未重跑纯状态/审计/快照策略和全套。真实桌面/系统目标结束仍未执行。
+
+**极早期边界仍开放**：跳过uv Job后，broker在CLR进入Main/连接控制管道前若永久卡死，父Agent退出没有uv自动回收保证，可能有极早期helper残留。普通进入Main有连接期限且用户目标尚不能创建，但不构成CLR加载器硬期限证明。不能据就绪后强杀或Job探针宣称“所有进程从出生均受管”。它与native IO/未结算stdio的全局未知终态需后续架构/Win7验证；T22-07仍开放，不批准无人值守发布。

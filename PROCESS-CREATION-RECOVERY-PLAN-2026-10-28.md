@@ -90,3 +90,10 @@ Win7无外层Job、Win7宿主提前拒绝/真实工具、CLR矩阵、系统注�
 
 
 收尾追加私有native清理入口异常注入6/6，验证失败125、阶段诊断、无目标组空证明，但OS关闭唯一Job句柄仍清理已监听的detached叶子及心跳。对应手动`diagnostic:cleanup-failure`，生产物料不改；本批合计132个有效检查。该故障注入不代表真实ACL/内核错误矩阵全部覆盖。
+
+
+## 9. libuv 自动 Job 与极早期 broker 的复核修正
+
+v2最初遗漏Node13/libuv自动child Job，Win7再自加入Job会失败。现内部broker用detached标志跳过该层，仍持有句柄/stdio引用与控制管道，不允许用户目标breakaway；真正宿主Job按原规则拒绝。Node13 execFile不转发detached，改受限spawn采集器；spawnSync由固定版本源码确认支持。实际Job对照6项及受影响专项共200项完成，详见所有权说明/问题日志，Win7仍未实测。
+
+第2节“所有helper创建前均有归属”的强不变量**尚未全部满足**：broker在CLR进入Main/连管道前若永久卡死，Node已不自动回收它，可能有极早期helper残留，用户目标尚不能创建。普通进入Main可失联超时退出，不能据此证明CLR加载/驱动不会永久卡住。需要研究入口监督/原生bootstrap或整体Agent Job及代价；不能重新加uv Job来伪装修复，也不能把尚未验证风险写成已制造孤儿。T22-07继续开放。

@@ -77,7 +77,7 @@ const timeout=setTimeout(()=>{console.error('PROCESS/FAULTS deadline');for(const
    vm.runInContext(source.slice(a,b),context);const result=await context.runDebugCycle('fixture.js','fixture.js','cli',1);
    check('debug '+(bound?'unconfirmed bound tree':'unstarted target')+' cannot enter automatic repair after broker close',bound?result.cleanupFailed:result.spawnFailed);
  }
- const callbackOwner=api.create(Object.assign({},cp,{execFile(file,args,opts,callback){const child=new EventEmitter();child.pid=52002;child.exitCode=null;child.signalCode=null;child.kill=()=>true;process.nextTick(()=>{child.exitCode=0;callback(null,'fake success','');child.emit('close',0,null);});return child;}}),root);
+ const callbackOwner=api.create(Object.assign({},cp,{spawn(file,args,opts){const child=new EventEmitter();child.pid=52002;child.exitCode=null;child.signalCode=null;child.kill=()=>true;process.nextTick(()=>{child.exitCode=0;child.emit('close',0,null);});return child;}}),root);
  const unconfirmed=await new Promise(resolve=>callbackOwner.execFile(S.NODE_BIN,[],{},error=>resolve(error)));
  check('unconfirmed zero broker exit cannot become successful command callback',unconfirmed&&unconfirmed.code==='EOWNERUNKNOWN'&&callbackOwner.processOwnerInfo().active===0);
  }

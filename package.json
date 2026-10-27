@@ -52,6 +52,8 @@
     "test:task-lifecycle": "node test/task-lifecycle.js",
     "test:task-windows": "node test/task-windows.js",
     "test:process-owner": "node test/process-owner.js",
+    "test:process-capture": "node test/process-capture.js",
+    "diagnostic:libuv-job": "node test/libuv-job-compat.js --run",
     "test:process-owner-integration": "node test/process-owner-integration.js",
     "test:process-owner-faults": "node test/process-owner-faults.js",
     "test:process-owner-sync": "node test/process-owner-sync.js",

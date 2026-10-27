@@ -25,6 +25,7 @@ internal static class CreationGuard {
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool SetInformationJobObject(IntPtr job,int type,ref Limits info,int size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool QueryInformationJobObject(IntPtr job,int type,out Accounting info,int size,IntPtr returned);
     [DllImport("kernel32.dll",EntryPoint="QueryInformationJobObject",SetLastError=true)] static extern bool QueryList(IntPtr job,int type,IntPtr info,int size,IntPtr returned);
+    [DllImport("kernel32.dll",EntryPoint="QueryInformationJobObject",SetLastError=true)] static extern bool QueryLimits(IntPtr job,int type,out Limits info,int size,IntPtr returned);
     [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)] static extern bool QueryFullProcessImageNameW(IntPtr process,uint flags,StringBuilder name,ref uint size);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool AssignProcessToJobObject(IntPtr job,IntPtr process);
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool IsProcessInJob(IntPtr process,IntPtr job,out bool inside);
@@ -177,6 +178,14 @@ internal static class CreationGuard {
         }
     }
     static int Main(string[] args) {
+        if(args.Length==2&&args[0]=="job-probe") {
+            bool inside;Need(IsProcessInJob(GetCurrentProcess(),IntPtr.Zero,out inside),"probe-job");uint flags=0;bool probeParent=false;
+            if(inside) {
+                Limits limits;Need(QueryLimits(IntPtr.Zero,9,out limits,Marshal.SizeOf(typeof(Limits)),IntPtr.Zero),"probe-limits");flags=limits.basic.flags;
+                foreach(uint pid in MemberIds())if(pid==uint.Parse(args[1]))probeParent=true;
+            }
+            Console.WriteLine("JOB "+(inside?"1":"0")+" "+flags+" "+(probeParent?"1":"0"));return 0;
+        }
         if(args.Length>0&&args[0]=="self")return Self(args);
         IntPtr parent=IntPtr.Zero,target=IntPtr.Zero;Info broker=new Info();Timer deadline=null;
         try {
