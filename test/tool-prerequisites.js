@@ -6,24 +6,25 @@ function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, 
 (async () => {
   try {
     const cwd = S.freshCwd('tools 中文 空格'); let failure, lastOptions;
-    const c = vm.createContext({ process, launchDir: cwd, child_process: { execFileSync(file, args, options) { lastOptions = options; throw failure; } } });
+    const c = vm.createContext({ process, launchDir: cwd, checkExecution() {}, child_process: { execFileSync(file, args, options) { lastOptions = options; throw failure; } } });
     vm.runInContext(cut('// OPT-13: pilot tools carry authoritative status', '// Central choke point') +
       cut('function git(argsArr, opts)', "  if (name === 'git_status_tool') {") +
-      'function tool(name,args={}) {\n' + cut("  if (name === 'git_status_tool') {", "  if (name === 'synthetic_output_tool') {") + '\n}', c);
+      'async function tool(name,args={},cancelled=null) {\n' + cut("  if (name === 'git_status_tool') {", "  if (name === 'synthetic_output_tool') {") + '\n}', c);
+    c.gitRead=async (args,options)=>c.git(args,options);
     failure = Object.assign(Error('spawn git ENOENT'), { code: 'ENOENT' });
     for (const name of ['git_status_tool', 'git_diff_tool', 'git_commit_tool']) {
-      const r = c.tool(name); check(name + ' reports missing Git rather than a normal non-repository', r.status === 'error' && r.text.includes('Git executable not found') && r.text.includes('ENOENT'));
+      const r = await c.tool(name); check(name + ' reports missing Git rather than a normal non-repository', r.status === 'error' && r.text.includes('Git executable not found') && r.text.includes('ENOENT'));
     }
     failure = Object.assign(Error('fatal: cannot read config'), { status: 128, stderr: Buffer.from('fatal: cannot read config: Permission denied') });
-    check('Git ACL/config failure is not silently classified as non-repository', c.tool('git_status_tool').status === 'error');
+    check('Git ACL/config failure is not silently classified as non-repository', (await c.tool('git_status_tool')).status === 'error');
     failure = Object.assign(Error('fatal: unsafe ownership'), { status: 128, stderr: Buffer.from('fatal: detected dubious ownership in repository') });
-    check('Git unsafe-ownership failure is visible', c.tool('git_diff_tool').status === 'error');
+    check('Git unsafe-ownership failure is visible', (await c.tool('git_diff_tool')).status === 'error');
     failure = Object.assign(Error('fatal: not a git repository'), { status: 128, stderr: Buffer.from('fatal: not a git repository (or any of the parent directories): .git') });
-    check('actual non-repository retains read-info and commit-error contracts', c.tool('git_status_tool').status === 'ok' && c.tool('git_diff_tool').status === 'ok' && c.tool('git_commit_tool').status === 'error');
+    check('actual non-repository retains read-info and commit-error contracts', (await c.tool('git_status_tool')).status === 'ok' && (await c.tool('git_diff_tool')).status === 'ok' && (await c.tool('git_commit_tool')).status === 'error');
     check('only the repo probe pins its own diagnostic locale', lastOptions.env.LC_ALL === 'C' && lastOptions.env.LANG === 'C' && lastOptions.env !== process.env);
     const env = Object.assign({}, process.env); for (const key of Object.keys(env)) if (/^path$/i.test(key)) delete env[key]; env.PATH = '';
     c.child_process.execFileSync = (file, args, options) => cp.execFileSync(file, args, Object.assign({}, options, { env }));
-    check('real stripped-PATH Git lookup fails explicitly without spawning another tool', c.tool('git_status_tool').status === 'error');
+    check('real stripped-PATH Git lookup fails explicitly without spawning another tool', (await c.tool('git_status_tool')).status === 'error');
 
     let runtimeEnv = env;
     const raw = vm.createContext({ fs, path, Buffer, process: { platform: process.platform, env: runtimeEnv, versions: process.versions, execPath: process.execPath }, launchDir: cwd, setTimeout, clearTimeout, setInterval, clearInterval, console: { log() {} },

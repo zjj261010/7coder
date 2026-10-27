@@ -71,3 +71,12 @@ native/协议实质变化后，受影响旧专项各执行一次：owner19、syn
 
 
 追加`diagnostic:cleanup-failure`首次6/6：私有native源码在根退出后的清理入口抛错，确认125/阶段诊断、拒绝完成证明，同时OS关闭broker的唯一Job句柄仍清理真实detached叶子端口和心跳。合计本批132项有效检查，仍不等于实机或完整套件。该诊断同样需要开发机编译器，不加入默认test-all。
+
+
+## Git 读取等待（2026-10-28 后续批）
+
+Git status/diff及其repo探针已改为异步受管execFile，各工具共用30秒命令预算与1MiB输出上限；调用方取消主动STOP并等回调结算，迟到成功拒绝，非仓库/缺Git/ACL错误仍区分。读取期间可处理HTTP请求，任务整体截止和回收等待仍不是native IO硬中断保证。
+
+**剩余跨阶段阻塞**：HTTP和CLI请求开始前的createTaskGitCheckpoint仍用同步Git；提交/快照/保留策略、worktree和发现也仍可能阻塞。新读取专项在模型fixture响应（检查点之后）才启用私有fsmonitor/diff驱动，准确验证工具等待，不把它写成整条HTTP请求已无同步阻塞。首次将fsmonitor提前配置时，检查点阶段实际阻塞并使health超时，这个现场路径保持开放。
+
+新专项5个确定性预算/取消断言＋12个真实HTTP/Git断言分段通过；status列9、前置依赖12、实际Git/提交8各一次，合计46个有效检查。真实驱动等待时HTTP可读，断开后端口/心跳、owner/tool归零，逐callId审计cancelled且不重放，同Agent下一读取成功。未重跑native owner/创建窗口/其它旧专项、完整A–J/UI/test-all或Win7/24–72h。

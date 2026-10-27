@@ -70,6 +70,7 @@
     "test:shell-deadline": "node test/shell-deadline.js",
     "test:test-runtime": "node test/test-runtime.js",
     "test:git-status-columns": "node test/git-status-columns.js",
+    "test:git-read-cancellation": "node test/git-read-cancellation.js",
     "test:path-boundaries": "node test/path-boundaries.js",
     "test:scan-budget": "node test/scan-budget.js",
     "test:cron-identity": "node test/cron-identity.js",

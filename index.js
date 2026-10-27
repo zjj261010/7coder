@@ -1485,12 +1485,12 @@ const TOOL_METADATA = Object.freeze(Object.assign(Object.create(null), {
   }),
   git_status_tool: toolMetadata({
     explain: () => 'Show git working tree status (read-only)', risk: "LOW", autoSafe: true, parallelRead: true,
-    execution: "command", cancellation: "boundary",
+    execution: "command", cancellation: "active-command",
     resources: { git: 'read', workspace: 'read' }
   }),
   git_diff_tool: toolMetadata({
     explain: (a) => `Show git diff${a.staged ? ' (staged)' : ''}${a.path ? ' for ' + a.path : ''} (read-only)`, risk: "LOW", autoSafe: true, parallelRead: true,
-    execution: "command", cancellation: "boundary",
+    execution: "command", cancellation: "active-command",
     resources: { git: 'read', workspace: 'read' }
   }),
   git_commit_tool: toolMetadata({
@@ -5218,13 +5218,48 @@ function inGitRepo() {
   }
 }
 
+// Read-only Git tools share a 30s wall-clock budget across their commands.
+// Wait asynchronously so HTTP disconnect/deadline and other requests can run.
+async function gitRead(argsArr, opts, cancelled) {
+  checkExecution(cancelled);
+  const options = Object.assign({ encoding: 'utf8', cwd: launchDir, windowsHide: true, maxBuffer: 1024 * 1024 }, opts || {});
+  const deadlineAt = Math.min(Number.isFinite(options.deadlineAt) ? options.deadlineAt : Date.now() + 30000,
+    cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt : Infinity);
+  delete options.deadlineAt;
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new Error('Git read deadline exceeded; no complete result available.');
+  options.timeout = Math.max(1, Math.min(30000, remaining));
+  const { r, aborted } = await awaitCommandCancellable(runCommandAsync({ file: 'git', args: argsArr }, options), cancelled);
+  if (aborted) throw executionCancelledError(cancelled);
+  checkExecution(cancelled); // A late callback cannot publish a cancelled result.
+  if (r.error) {
+    r.error.stdout = r.stdout; r.error.stderr = r.stderr;
+    if (Number.isInteger(r.exitCode)) r.error.status = r.exitCode;
+    throw r.error;
+  }
+  return r.stdout;
+}
+async function inGitRepoRead(cancelled, deadlineAt) {
+  try {
+    await gitRead(['rev-parse', '--is-inside-work-tree'], { deadlineAt,
+      env: Object.assign({}, process.env, { LC_ALL: 'C', LANG: 'C' }) }, cancelled);
+    return true;
+  } catch (e) {
+    checkExecution(cancelled);
+    if (e.status === 128 && /not a git repository/i.test(String(e.stderr || ''))) return false;
+    if (e.code === 'ENOENT') throw new Error('Git executable not found on PATH (ENOENT); prepare a Win7-compatible Git before using Git tools.');
+    throw e;
+  }
+}
+
   if (name === 'git_status_tool') {
     try {
-      if (!inGitRepo()) return makeToolResult('ok', "Not a git repository (no .git found in the workspace).");
-      const branch = git(["rev-parse", "--abbrev-ref", "HEAD"]).trim();
-      const last = git(["log", "-1", "--oneline"]).trim();
+      const readOpts = { deadlineAt: Date.now() + 30000 };
+      if (!await inGitRepoRead(cancelled, readOpts.deadlineAt)) return makeToolResult('ok', "Not a git repository (no .git found in the workspace).");
+      const branch = (await gitRead(["rev-parse", "--abbrev-ref", "HEAD"], readOpts, cancelled)).trim();
+      const last = (await gitRead(["log", "-1", "--oneline"], readOpts, cancelled)).trim();
       // The leading space is the index column of XY, not presentation padding.
-      const status = git(["status", "--short"]).replace(/(?:\r?\n)+$/, '');
+      const status = (await gitRead(["status", "--short"], readOpts, cancelled)).replace(/(?:\r?\n)+$/, '');
       const linesN = status ? status.split(/\r?\n/) : [];
       const counts = { staged: 0, modified: 0, untracked: 0 };
       for (const l of linesN) {
@@ -5236,20 +5271,27 @@ function inGitRepo() {
       let out = "[GIT] branch " + branch + " | last: " + last + " | staged:" + counts.staged + " modified:" + counts.modified + " untracked:" + counts.untracked;
       if (status) out += "\n" + status.substring(0, 4000);
       return makeToolResult('ok', out);
-    } catch (e) { return makeToolResult('error', "Git status error: " + e.message); }
+    } catch (e) {
+      if (e.code === 'EXECUTION_CANCELLED' || cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: Git status cancelled]');
+      return makeToolResult('error', "Git status error: " + e.message);
+    }
   }
 
   if (name === 'git_diff_tool') {
     try {
-      if (!inGitRepo()) return makeToolResult('ok', "Not a git repository.");
+      const readOpts = { deadlineAt: Date.now() + 30000 };
+      if (!await inGitRepoRead(cancelled, readOpts.deadlineAt)) return makeToolResult('ok', "Not a git repository.");
       const diffArgs = ["diff"];
       if (args.staged) diffArgs.push("--cached");
       const hasPath = typeof args.path === "string" && args.path.trim();
       if (hasPath) { diffArgs.push("--", sanitizePath(args.path)); } // path is ONE argv entry - never shell-parsed
-      const diff = git(diffArgs).trim();
+      const diff = (await gitRead(diffArgs, readOpts, cancelled)).trim();
       if (!diff) return makeToolResult('ok', "[GIT] no changes" + (args.staged ? " (staged)" : "") + (hasPath ? " for " + args.path : "") + ".");
       return makeToolResult('ok', "[GIT] diff" + (args.staged ? " (staged)" : "") + ":\n" + diff.substring(0, 8000));
-    } catch (e) { return makeToolResult('error', "Git diff error: " + e.message); }
+    } catch (e) {
+      if (e.code === 'EXECUTION_CANCELLED' || cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: Git diff cancelled]');
+      return makeToolResult('error', "Git diff error: " + e.message);
+    }
   }
 
   if (name === 'git_commit_tool') {

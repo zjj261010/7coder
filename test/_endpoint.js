@@ -62,7 +62,7 @@ function create(options) {
     }
     throw Error('Agent readiness deadline: '+output);
   }
-  return {S,start,stop,api:(route,body=null,timeout)=>request(port,route,body,timeout),request:(body,timeout)=>request(port,'/v1/chat/completions',body,timeout),
+  return {S,start,stop,get port(){return port;},api:(route,body=null,timeout)=>request(port,route,body,timeout),request:(body,timeout)=>request(port,'/v1/chat/completions',body,timeout),
     chat:async(messages,timeout,model)=>parseSSE((await request(port,'/v1/chat/completions',Object.assign({stream:true,messages},model?{model}:{}),timeout)).body)};
 }
 function workflowObserved(parsed) {
