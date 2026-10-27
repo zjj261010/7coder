@@ -47,6 +47,7 @@ async function tree(mode) {
 }
 const deadline=setTimeout(()=>{console.error('PROCESS/OWNER deadline');for(const c of children)try{c.kill();}catch(e){}S.cleanup();process.exit(1);},100000);
 (async()=>{try{
+  if(!['all','basic','basic-tail','trees'].includes(scope))throw Error('Unknown process-owner test scope: '+scope);
   if(process.platform!=='win32')throw Error('process-owner native acceptance requires Windows');
   if(scope==='all'||scope==='basic'||scope==='basic-tail') {
     if(scope!=='basic-tail') {

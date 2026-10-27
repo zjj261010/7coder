@@ -9,6 +9,7 @@ function remember(c){children.push(c);c.text='';c.err='';c.on('error',e=>c.failu
 function ping(port){return new Promise(r=>{const q=http.get({host:'127.0.0.1',port,timeout:200},s=>{s.resume();s.on('end',()=>r(true));});q.on('error',()=>r(false));q.on('timeout',()=>q.destroy());});}
 const timeout=setTimeout(()=>{console.error('PROCESS/FAULTS deadline');for(const c of children)try{c.kill();}catch(e){}S.cleanup();process.exit(1);},60000);
 (async()=>{try{
+ if(!['all','states','cron'].includes(faultScope))throw Error('Unknown process-owner fault test scope: '+faultScope);
  if(process.platform!=='win32')throw Error('native fault suite requires Windows');
  if(faultScope!=='states'&&faultScope!=='cron'){
  const manifest=api.validateInstallation(root),exe=path.join(root,'native','process-owner.exe'),image=fs.readFileSync(exe);
@@ -86,6 +87,6 @@ const timeout=setTimeout(()=>{console.error('PROCESS/FAULTS deadline');for(const
    child_process:{exec(command,opts,callback){const child=new EventEmitter();child.pid=52003;child.exitCode=null;child.signalCode=null;child.ownedTree={bound:true,closed:false,error:'fixture failure'};context.child=child;return child;}}});
  vm.runInContext(source.slice(from,to),context);context.scheduleCronJob('unknown','1s','echo fixture');const job=context.cronJobs.get('unknown');job.nextRun=Date.now();timers[0].fn();context.child.emit('close',0);
  check('cron broker close without empty-job proof disables future automatic firing and preserves reason',job.stopped&&job.timer===null&&!job.running&&job.lastError.includes('unconfirmed')&&timers[timers.length-1].cleared);
- console.log('PROCESS/FAULTS '+checks+'/'+checks+'; SKIP 0; ownership failure paths, not Win7/CLR installation acceptance');
+ console.log('PROCESS/FAULTS '+checks+'/'+checks+'; scope='+faultScope+'; SKIP 0; ownership failure paths, not Win7/CLR installation acceptance');
 }finally{clearTimeout(timeout);for(const c of children)if(c.exitCode==null&&c.signalCode==null)try{c.kill();}catch(e){}for(const server of servers)try{server.close();}catch(e){}S.cleanup();}
 })().catch(e=>{console.error(e.stack);process.exitCode=1;});

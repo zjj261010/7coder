@@ -1,6 +1,6 @@
 # Windows 进程所有权与验收边界
 
-2026-10-27：接管 Windows 异步命令、task、cron、MCP、持久 Bash 和 debug；后续批将截图/桌面输入也迁入异步托管。同步 Git/发现等仍待处理；不是 Win7 实机验收通过声明。
+2026-10-27：接管 Windows 异步命令、task、cron、MCP、持久 Bash、debug、截图/桌面输入；后续批将同步 Git/发现等入口也接入。不是 Win7 实机验收通过声明，创建/绑定期间的强杀窗口仍待验证。
 
 ## 运行物料
 
@@ -13,7 +13,7 @@
 
 ## 生命周期
 
-1. Agent 建立随机命名管道；每次启动另有 nonce，校验托管程序 PID 后握手。控制消息不混入标准输入输出。
+1. 每个Agent懒启动一个Node13内置worker_threads控制线程（最多5秒启动/注册等待），独立维护随机命名管道，避免主线程同步调用阻塞握手/ACK。每次启动另有nonce；异步路径先复核ChildProcess PID，才允许运行。同步路径返回前没有PID，以注册nonce授权，返回后必须复核对端PID与spawnSync返回PID相同，才接受成功。控制消息不混入标准输入输出。
 2. 创建不允许 breakaway 的匿名 Job，设置 `KILL_ON_JOB_CLOSE`。
 3. 用 `CREATE_SUSPENDED` 创建目标，成功绑定 Job 后报告 READY；收到 GO 才恢复。创建/绑定/握手失败终止未恢复目标，不降级执行。
 4. `ChildProcess.kill()` 向所属控制连接发送 STOP。托管程序终止整个 Job，查询活动成员为零，报告 STOPPED；Agent 确认收到证明后才允许退出。不按旧 PID 枚举树或 taskkill。
@@ -28,7 +28,7 @@
 |---|---|
 | 接管的 Windows 异步入口 | `child.pid` 是托管程序 PID；`ownedTree.targetPid` 仅作诊断，不能事后据此 kill |
 | 编辑器/目录打开、后台 Agent 启动交接 | 显式外部生命周期，保留原始 spawn，避免启动器退出就杀编辑器或后台 Agent |
-| 同步 execSync/execFileSync：Git、worktree、发现命令等 | 尚未接管，不能据异步路径通过宣称这些后代已归属；截图/桌面输入已另批迁入 |
+| 同步 spawnSync/execSync/execFileSync：Git、worktree、发现命令等 | 经同一控制线程/Job接管，保留stdout/Buffer/退出码/错误stderr。同步调用仍阻塞Agent主线程，期间HTTP/模型/MCP解析和JS取消不能运行；控制线程不解决这个问题 |
 | process_kill_tool | 仍按用户提供 PID 操作外部进程，与 task/cron 所属句柄停止不同 |
 | Win7 外层已有非 breakaway Job | Win7 不支持嵌套；目标已在外层 Job 时可能绑定失败，明确拒绝。需实测任务计划/服务/远程宿主 |
 | 目标需要自己的 Job / 主动 breakaway | Win7 可能功能冲突或创建失败，不保证任意程序兼容；不以允许逃逸来伪装兼容 |
@@ -36,11 +36,15 @@
 | 超长命令 | Base64 UTF16 传输使可用容量小于直接启动的 32767 字符；检查展开长度，超限要求脚本文件，不截断参数 |
 | macOS/Linux | 保留原 child_process，不声称获得 Windows Job 语义 |
 
+**未覆盖的创建窗口（高可信待验证风险）**：Main中的CreateProcessW(CREATE_SUSPENDED)和AssignProcessToJobObject是分开的调用。若broker在两者之间被不可捕获终止，目标可能尚未属于本次Job；不能由“Job最后句柄关闭”推导它必被清理。目标应尚未恢复，但可能残留挂起进程、句柄或映像占用。当前强杀测试在后代已就绪后进行，未注入此窗口，不能据普通强杀用例通过判断窗口已验收。需进一步设计Win7创建阶段的所有权/监督/回收，再以受控句柄和出生身份验收；不直接套用Win8嵌套Job或更高系统的原子创建能力。此疑点与Win7外层Job/真实工具验收继续阻止关闭T22-07。
+
 依据：[Microsoft Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)、[AssignProcessToJobObject 的 Win7/PCA 限制](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-assignprocesstojobobject)。随包 Node13.14 使用 libuv1.37.0，其[原始 spawn 实现](https://raw.githubusercontent.com/libuv/libuv/v1.37.0/src/win/process.c)允许后代 silent breakaway，不能代替本批整组归属。
 
 ## 验证
 
 `test:process-owner` 覆盖参数、中文/空格、stdio、创建失败、三代树（中间层先退、叶子 detached/忽略 stdio）、自然结束、Agent/托管程序强杀及再启动；用叶子端口和心跳判断清理。集成专项覆盖实际隔离 Agent 的命令/PowerShell/task/cron/MCP，以及原函数 VM 下实际 native debug/Bash。故障专项覆盖物料、暂停边界、超时/输出上限、未知终态及共享准入。分段续测及实测结果见 ISSUES-LOG.md。
+
+`test:process-owner-sync`验证同步stdio/Unicode/错误、主线程阻塞时异步退出仍获确认、超时/超量未知、后代释放、父进程强杀及控制线程启动拒绝；`test:process-owner-git`验证实际HTTP Agent的status/diff/commit、提交前快照和callId审计，Git配置和hooks均在私有目录。控制线程增加一个Node isolate的常驻内存，CLR启动也增加每次Git调用成本，Win7并发内存和延迟须实测。
 
 发布前仍须干净 Win7 SP1 x64、普通用户、实际 CLR2/选定 CLR4、缺 CLR、中文/空格安装和工作区、默认 PS2、真实 Git/Python/MCP、外层 Job、任务计划/服务、关窗口/Ctrl+C/强杀/注销/关机后再次启动。验证三代心跳、独占文件、端口，以及 24/72 小时 helper/句柄/内存变化。现代 Windows 的成功不能替代这些门槛。
 

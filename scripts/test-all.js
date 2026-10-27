@@ -16,6 +16,7 @@ if (process.env.REAL_TEST === '1') suites.push('runner-k.js', 'runner-r.js');
 const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)] }))
   .concat([
     { name: 'stream-context.js', args: [path.join(ROOT, 'test', 'stream-context.js')] },
+    { name: 'selection-guards.js', args: [path.join(ROOT, 'test', 'selection-guards.js')] },
     { name: 'context-budget.js', args: [path.join(ROOT, 'test', 'context-budget.js')] },
     { name: 'repl-approval.js', args: [path.join(ROOT, 'test', 'repl-approval.js')] },
     { name: 'download-commit.js', args: [path.join(ROOT, 'test', 'download-commit.js')] },
@@ -103,7 +104,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
 if (process.platform === 'win32') {
-  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js','desktop-lifecycle.js','desktop-integration.js']) {
+  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js','process-owner-sync.js','process-owner-git.js','process-owner-control-errors.js','desktop-lifecycle.js','desktop-integration.js']) {
     targets.push({name:file,args:[path.join(ROOT,'test',file)]});
   }
 }

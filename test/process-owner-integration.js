@@ -11,6 +11,7 @@ async function info(file){return until(()=>{try{return JSON.parse(fs.readFileSyn
 function cut(source,a,b){const at=source.indexOf(a),end=source.indexOf(b,at);assert.ok(at>=0&&end>at,a);return source.slice(at,end);}
 const timeout=setTimeout(()=>{console.error('PROCESS/INTEGRATION deadline');if(H){H.stop().catch(()=>{});H.S.cleanup();}process.exit(1);},90000);
 (async()=>{try{
+  if(!['all','http','http-tail','internal'].includes(scope))throw Error('Unknown process-owner integration test scope: '+scope);
   if(process.platform!=='win32')throw Error('native integration requires Windows');
   let taskId,cronId,command,jobCommand;
   model=http.createServer((req,res)=>{let b='';req.on('data',c=>b+=c);req.on('end',()=>{

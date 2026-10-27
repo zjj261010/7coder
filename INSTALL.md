@@ -5,7 +5,7 @@
 > 该 win64 包的固定目标是 Win7 SP1 x64；其它系统需各自运行时和独立验收。网页另需提前准备浏览器及可达的本地/内网模型，二者不在当前包内。请先查看 **OFFLINE-BASELINE.md**；不能把“Agent运行时随包”理解为“默认IE可用、模型也已提供”。
 >
 > 注意：**打包机**（执行 `scripts/pack-offline.js` 的机器）需要 Node >= 14.14（打包脚本使用了 fs.rmSync）；
-> 目标机器使用包内 Node 13.14.0；Windows 异步命令/MCP/debug 托管另需可用 CLR 2.0 或 CLR 4，见 PROCESS-OWNERSHIP.md。无需目标机编译器，不会自动安装 .NET。
+> 目标机器使用包内 Node 13.14.0；Windows 进程托管（含同步 Git、命令/MCP/debug）另需可用 CLR 2.0 或 CLR 4，见 PROCESS-OWNERSHIP.md。无需目标机编译器，不会自动安装 .NET。
 
 ## 一、包内清单
 

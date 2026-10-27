@@ -17,6 +17,7 @@ function fixture(overrides,extra){const cwd=S.freshCwd('desktop 中文 空格'),
  f.invoke=async(args,token)=>{try{return await c.tool(args,token);}catch(error){return {status:error.code==='EXECUTION_CANCELLED'?'cancelled':'error',text:error.message};}};return f;
 }
 (async()=>{try{
+ if(!['all','roots'].includes(scope))throw Error('Unknown desktop lifecycle test scope: '+scope);
  if(process.platform!=='win32')throw Error('desktop-lifecycle filesystem fixtures require Windows');
  if(scope!=='roots'){
  let f=fixture(),state=path.join(f.cwd,'.7coder');fs.mkdirSync(state);const target=path.join(f.cwd,'data.txt');fs.writeFileSync(target,'PRESERVE');fs.linkSync(target,path.join(state,'input.ps1'));
@@ -60,5 +61,5 @@ function fixture(overrides,extra){const cwd=S.freshCwd('desktop 中文 空格'),
  f=fixture();f.image=true;let vision=0;f.c.VISION_MODEL='fixture';f.c.describeWithVision=async()=>{vision++;return {status:'ok',text:'x'};};
  f.c.awaitCommandCancellable=async()=>{const shots=path.join(f.cwd,'.7coder','screenshots'),archive=shots+'-original',foreign=path.join(S.runDir,'foreign-'+Math.random());fs.mkdirSync(foreign);fs.writeFileSync(path.join(foreign,'KEEP'),'FOREIGN');fs.renameSync(shots,archive);fs.symlinkSync(foreign,shots,'junction');return f.outcome;};r=await f.invoke({action:'screenshot'});
  check('screenshot cannot consume or send vision from a parent replaced across native await',r.status==='error'&&vision===0&&r.text.includes('parent')&&fs.readFileSync(path.join(f.cwd,'.7coder','screenshots','KEEP'),'utf8')==='FOREIGN');
- console.log('DESKTOP/LIFECYCLE '+checks+'/'+checks+'; captured desktop dispatch only; no real input or screen access');
+ console.log('DESKTOP/LIFECYCLE '+checks+'/'+checks+'; scope='+scope+'; captured desktop dispatch only; no real input or screen access');
 }finally{S.cleanup();}})().catch(error=>{console.error(error.stack);process.exitCode=1;});
