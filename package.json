@@ -57,6 +57,7 @@
     "test:process-owner-sync": "node test/process-owner-sync.js",
     "test:process-owner-git": "node test/process-owner-git.js",
     "diagnostic:creation-window": "node test/process-owner-creation-window.js --run",
+    "diagnostic:self-job": "node test/process-owner-self-job.js --run",
     "test:selection-guards": "node test/selection-guards.js",
     "test:process-owner-control-errors": "node test/process-owner-control-errors.js",
     "test:desktop-lifecycle": "node test/desktop-lifecycle.js",

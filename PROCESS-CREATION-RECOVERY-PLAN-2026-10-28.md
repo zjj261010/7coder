@@ -67,3 +67,12 @@ Job 基本成员列表和统计接口的版本边界参见 [QueryInformationJobO
 ## 6. 当前交付边界
 
 本文件和手动诊断不改变用户工具行为，不属于漏洞修复提交，不批准无人值守发布。同步操作阻塞 Agent 主线程、native IO 硬中断、外部 broker/WMI 派生和实际 Win7 兼容仍各自开放，不与 INC-JOB-02 混为一个已解决问题。
+
+
+## 7. 机制原型进展（2026-10-28）
+
+新增手动`npm run diagnostic:self-job`，仍只编译私有夹具，未修改产品物料。首次按“宿主无Job”要求运行，在零断言、零目标创建时被现有宿主Job拒绝。没有绕过宿主限制；原型随后将“已存在外层Job”显式记录并允许现代系统测试自身Job，同时独立模拟Win7单Job政策的提前拒绝。
+
+修正后的专项 **21/21**：创建前/未恢复/三代树运行时强杀、detached叶子归属、控制EOF、Job内成员清理到仅创建者、成员稳定句柄退出、创建者退出码37，以及严格宿主拒绝且零目标。所有正向输出均为`preexistingJob=true`，不是无外层单Job或Win7实测。证据在`C:\Users\zjj\AppData\Local\Temp\7coder-test-ncffh2\self-job\normal-evidence.json`。
+
+原型证明了在当前宿主上“创建者和目标共享自身严格Job”的机制及清理协议可执行。下一步可移植至产品并验证受影响调用方；Win7没有外层Job时的真实运行、Win7外层Job拒绝和CLR/系统关闭仍需实机，不因现代嵌套可用而关闭发布门槛。

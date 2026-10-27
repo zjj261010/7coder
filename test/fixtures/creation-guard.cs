@@ -38,6 +38,8 @@ internal static class CreationGuard {
     [DllImport("kernel32.dll",SetLastError=true)] static extern bool DuplicateHandle(IntPtr source,IntPtr handle,IntPtr destination,out IntPtr copy,uint access,bool inherit,uint flags);
     [DllImport("kernel32.dll")] static extern IntPtr GetCurrentProcess();
     [DllImport("kernel32.dll")] static extern uint GetProcessId(IntPtr process);
+    [DllImport("kernel32.dll")] static extern uint GetCurrentProcessId();
+    [DllImport("kernel32.dll",SetLastError=true)] static extern uint ResumeThread(IntPtr thread);
     [DllImport("kernel32.dll")] static extern IntPtr GetStdHandle(int id);
     [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
     static readonly object gate=new object(); static IntPtr job=IntPtr.Zero;
@@ -85,7 +87,97 @@ internal static class CreationGuard {
             Console.WriteLine(wait==0?"EXIT "+code:"ALIVE");return 0;
         } finally { if(target!=IntPtr.Zero)CloseHandle(target);if(parent!=IntPtr.Zero)CloseHandle(parent); }
     }
+    // Candidate mechanism only: one strict Job, containing the creator itself.
+    // Query the Job membership, not a saved PID/process-tree snapshot.
+    static uint[] MemberIds() {
+        for(int capacity=16;capacity<=4096;capacity*=2) {
+            int size=8+capacity*IntPtr.Size;IntPtr memory=Marshal.AllocHGlobal(size);
+            try {
+                bool ok=QueryList(job,3,memory,size,IntPtr.Zero);int error=Marshal.GetLastWin32Error();
+                if(!ok) { if(error==234)continue;throw new System.ComponentModel.Win32Exception(error,"self-members"); }
+                int assigned=Marshal.ReadInt32(memory,0),count=Marshal.ReadInt32(memory,4);
+                if(count<0||count>capacity||assigned<0)throw new Exception("self-member-count");
+                if(assigned>count)continue;
+                uint[] ids=new uint[count];for(int i=0;i<count;i++)ids[i]=(uint)Marshal.ReadIntPtr(memory,8+i*IntPtr.Size).ToInt64();return ids;
+            } finally { Marshal.FreeHGlobal(memory); }
+        }
+        throw new Exception("self-member-budget");
+    }
+    static void OnlySelf() {
+        uint self=GetCurrentProcessId();System.Diagnostics.Stopwatch clock=System.Diagnostics.Stopwatch.StartNew();
+        for(;;) {
+            if(clock.ElapsedMilliseconds>=5000)throw new Exception("self-cleanup-deadline");
+            uint[] ids=MemberIds();
+            if(ids.Length==1&&ids[0]==self&&Count().active==1)return;
+            foreach(uint pid in ids) {
+                if(pid==self)continue;
+                if(clock.ElapsedMilliseconds>=5000)throw new Exception("self-cleanup-deadline");
+                IntPtr process=OpenProcess(0x101001,false,pid);
+                if(process==IntPtr.Zero) { int error=Marshal.GetLastWin32Error();if(error==87)continue;throw new System.ComponentModel.Win32Exception(error,"self-open-member"); }
+                try {
+                    bool inside;Need(IsProcessInJob(process,job,out inside),"self-member-identity");
+                    if(!inside||WaitForSingleObject(process,0)==0)continue;
+                    if(!TerminateProcess(process,196)&&WaitForSingleObject(process,0)!=0)Need(false,"self-stop-member");
+                } finally { CloseHandle(process); }
+            }
+            Thread.Sleep(10);
+        }
+    }
+    static void Export(IntPtr process,IntPtr parent,string label) {
+        IntPtr remote;Need(DuplicateHandle(GetCurrentProcess(),process,parent,out remote,0,false,2),"self-export");
+        Console.WriteLine(label+" "+GetProcessId(process)+" "+remote.ToInt64()+" "+Birth(process));Console.Out.Flush();
+    }
+    static int Self(string[] args) {
+        IntPtr parent=IntPtr.Zero;Info target=new Info();Timer deadline=null;
+        try {
+            if(args.Length!=4)throw new Exception("self-arguments");
+            string startupGate=Environment.GetEnvironmentVariable("SELF_JOB_GATE");
+            if(!String.IsNullOrEmpty(startupGate)) {
+                System.Diagnostics.Stopwatch startupClock=System.Diagnostics.Stopwatch.StartNew();
+                while(!System.IO.File.Exists(startupGate)) {if(startupClock.ElapsedMilliseconds>=10000)throw new Exception("self-startup-deadline");Thread.Sleep(10);}
+            }
+            bool existing;Need(IsProcessInJob(GetCurrentProcess(),IntPtr.Zero,out existing),"self-host-job");
+            if(existing&&Environment.GetEnvironmentVariable("SELF_JOB_REQUIRE_EMPTY_HOST")=="1")throw new Exception("self-existing-job");
+            parent=OpenProcess(0x101040,false,uint.Parse(args[1]));Need(parent!=IntPtr.Zero,"self-parent");
+            job=CreateJobObjectW(IntPtr.Zero,null);Need(job!=IntPtr.Zero,"self-job");
+            Limits limits=new Limits();limits.basic.flags=0x2000;
+            Need(SetInformationJobObject(job,9,ref limits,Marshal.SizeOf(typeof(Limits))),"self-limits");
+            Need(AssignProcessToJobObject(job,GetCurrentProcess()),"self-assign");
+            deadline=new Timer(delegate(object unused){Environment.Exit(124);},null,30000,Timeout.Infinite);
+            Console.WriteLine("SELF_READY "+Birth(parent)+" "+(existing?"1":"0"));Console.Out.Flush();string line;
+            while((line=Console.ReadLine())!=null) {
+                if(line=="CREATE") {
+                    if(target.process!=IntPtr.Zero)throw new Exception("self-already-created");
+                    Startup startup=new Startup();startup.cb=Marshal.SizeOf(typeof(Startup));startup.flags=0x100;
+                    startup.stdin=GetStdHandle(-10);startup.stdout=GetStdHandle(-11);startup.stderr=GetStdHandle(-12);
+                    string app=Encoding.Unicode.GetString(Convert.FromBase64String(args[2])),command=Encoding.Unicode.GetString(Convert.FromBase64String(args[3]));
+                    Need(CreateProcessW(app,new StringBuilder(command),IntPtr.Zero,IntPtr.Zero,true,4u|0x08000000u,IntPtr.Zero,null,ref startup,out target),"self-create");
+                    bool inside;Need(IsProcessInJob(target.process,job,out inside)&&inside,"self-target-inherited");
+                    Export(target.process,parent,"SELF_TARGET");
+                } else if(line=="RESUME") {
+                    Need(target.thread!=IntPtr.Zero&&ResumeThread(target.thread)!=0xffffffff,"self-resume");Console.WriteLine("SELF_RUNNING");Console.Out.Flush();
+                } else if(line.StartsWith("CAPTURE ")) {
+                    uint pid=uint.Parse(line.Substring(8));if(pid==GetCurrentProcessId())throw new Exception("self-capture-creator");
+                    IntPtr p=OpenProcess(0x101001,false,pid);Need(p!=IntPtr.Zero,"self-capture");
+                    try { bool inside;Need(IsProcessInJob(p,job,out inside)&&inside,"self-capture-member");Export(p,parent,"SELF_CAPTURE"); }finally {CloseHandle(p);}
+                } else if(line=="CLEANUP") {
+                    OnlySelf();Console.WriteLine("ONLY_SELF 1");Console.Out.Flush();
+                } else if(line=="EXIT")return 37;
+                else throw new Exception("self-command");
+            }
+            return 125;
+        } catch(Exception e) {Console.Error.WriteLine("SELF_ERROR "+e.Message);return 125;}
+        finally {
+            if(deadline!=null)deadline.Dispose();
+            foreach(IntPtr h in new IntPtr[]{target.thread,target.process,parent})if(h!=IntPtr.Zero)CloseHandle(h);
+            // After successful self-assignment the OS must close the sole Job
+            // handle during process teardown. Explicit CloseHandle here would
+            // kill this process before Main can publish its selected exit code.
+            // Before assignment failure an empty Job also dies at process exit.
+        }
+    }
     static int Main(string[] args) {
+        if(args.Length>0&&args[0]=="self")return Self(args);
         IntPtr parent=IntPtr.Zero,target=IntPtr.Zero;Info broker=new Info();Timer deadline=null;
         try {
             if(args.Length>0&&args[0]=="inspect")return Inspect(args);
