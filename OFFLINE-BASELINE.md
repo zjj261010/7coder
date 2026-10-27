@@ -10,6 +10,7 @@
 | Agent 运行时 | 官方 Node.js **13.14.0 win-x64/node.exe**，随 `--with-node` 包提供，不依赖系统 Node/npm |
 | Node SHA256 | `8468f81ef779568e6c9f03f582ac90ce4d68364f8a01839457c0b05b8cdf1bef`；当前仓库文件与官方清单一致 |
 | 生产依赖 | 随包完整 `node_modules`，以 package-lock.json 和该离线包为准；目标机不运行 npm install |
+| Windows 命令托管 | 预编译 CLR2 AnyCPU 程序及完整 lib/native 随包；需要已有 CLR2 或 CLR4，不下载/启用组件，无目标编译器需求。Win7/外层 Job 待实机验收，见 PROCESS-OWNERSHIP.md |
 | 网页浏览器候选 | **Google Chrome 109.0.5414.120 x64**；这是待验收的固定候选，不声称是 109 的最后补丁 |
 | 浏览器物料 | **尚未随包提供**；安装包/可用已安装浏览器、来源、SHA256、目标机实测仍需交付方准备和记录。manifest 的 null/false 不能当作已验收 |
 | 模型服务 | 不随包提供模型服务或权重。提前准备本机或可达内网的 OpenAI-compatible 服务、模型和工具调用能力；客户端不要求该服务运行在同一台 Win7 上 |
@@ -41,7 +42,7 @@ ENABLE_AUTO_DEBUG=false
 
 如果模型在内网另一台机器，改成其真实内网地址。服务必须实际支持本项目使用的 chat completions、SSE 和 tool_calls；模型可用不等于工具调用质量已验收。云端默认地址在完全离线时不能工作。
 
-基础聊天/文件操作不要求目标机安装 npm、Python、Git、编译器或 .NET 开发环境。可选 Bash/Git、Python、tsc/eslint、C#/.NET 调试、GUI 截图/输入各有独立依赖，未准备的能力不能列为已交付；目标机器存在 PowerShell 2/CLR2 也不能代替这些工具的功能验收。操作系统补丁/运行库/DLL 和普通用户权限以干净 Win7 实测确认，不根据开发机能启动就推定目标机齐备。
+基础聊天/文件操作不要求目标机安装 npm、Python、Git、编译器或 .NET 开发环境；Windows 异步进程托管需要可用 CLR2/CLR4 运行时，须另验收，不能与开发环境混淆。可选 Bash/Git、Python、tsc/eslint、C# 调试、GUI 截图/输入各有依赖，未准备的能力不能列为已交付。系统补丁/运行库/DLL 和普通用户权限以干净 Win7 实测确认。
 
 在线搜索、外部网页/下载和远程MCP依赖对应资源可达，不属于基础离线承诺。旧npx MCP桥可能请求npm registry，离线现场不应依赖首次下载；预装可选工具或使用已准备的stdio服务，并通过功能预检。当前没有把所有在线工具从schema中删除。
 
@@ -51,13 +52,14 @@ ENABLE_AUTO_DEBUG=false
 
 ```bat
 runtime\node.exe --version
+native\process-owner.exe --probe
 runtime\node.exe -p "process.arch"
 runtime\node.exe -e "console.log(require('crypto').createHash('sha256').update(require('fs').readFileSync('runtime/node.exe')).digest('hex'))"
 7coder-web.bat "D:\现场 项目"
 ```
 
-应分别得到 v13.14.0、x64、上述 SHA256，并在页面/`/api/info` 确认真正监听完成。若 Node 自身无法启动，先保留 Windows 的 DLL/加载错误和退出码，不进入浏览器排障。散列命令不依赖 Win7 默认 PowerShell 缺少的 Get-FileHash。
+应得到 v13.14.0、进程托管协议名/CLR 版本、x64 和上述 Node SHA256，再在页面/`/api/info` 确认监听完成。Node 或 CLR 加载失败时先保留系统错误与退出码；不要跳过运行时故障直接进入浏览器排障。散列命令不依赖 Win7 默认 PowerShell 缺少的 Get-FileHash。
 
-`pack-offline.js --with-node` 在删除原 stage 之前校验 Node 文件散列；错版、架构不符或文件损坏直接拒绝，不自动下载。此检查只固定 Node，不验证整个离线包、浏览器或现场系统。浏览器物料、依赖清单和完整包 manifest/打包复验尚未完成。
+`pack-offline.js --with-node` 在删除原 stage 之前校验 Node 散列及进程托管物料绑定；损坏或源码/配置与二进制不同步直接拒绝，不自动下载。进程 probe 应输出协议名及 CLR 版本；物料检查不等于系统 CLR/Job 验收。完整离线包、浏览器、现场系统及最终打包复验尚未完成。
 
 最终仍需 ISSUES-LOG.md 中 V22-01/02/03/05/06/07/08 的相关门槛，尤其干净 Win7、真实浏览器、异常退出/再次启动和 24/72h 工作量。当前不能仅凭本文件或本机专项测试批准无人值守发布。

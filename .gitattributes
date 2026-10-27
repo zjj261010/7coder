@@ -1,0 +1,6 @@
+# These text files are SHA256-bound to the prebuilt ownership helper.
+native/*.cs text eol=lf
+native/*.manifest text eol=lf
+native/*.config text eol=lf
+native/*.json text eol=lf
+native/*.exe binary

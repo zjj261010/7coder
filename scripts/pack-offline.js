@@ -33,12 +33,12 @@ const COPY_FILES = [
   'index.js', 'package.json', 'package-lock.json', 'README.md', 'INSTALL.md',
   'LICENSE', '.env.example', '7coder.bat', '7coder-web.bat', 'webui.html', 'OFFLINE-BASELINE.md',
   'scripts/offline-baseline.json',
-  'scripts/start-web.ps1',
+  'scripts/start-web.ps1', 'PROCESS-OWNERSHIP.md', 'scripts/build-process-owner.ps1',
   // A2-22: INSTALL.md tells offline users to run this (it is dependency-free
   // and reads the bundled test/), so ship it and keep the scripts/ layout.
   'scripts/count-assertions.js', 'scripts/test-all.js'
 ];
-const COPY_DIRS = ['node_modules', 'test'];
+const COPY_DIRS = ['node_modules', 'test', 'lib', 'native'];
 
 // A2-21: the old retry fired 300ms later on a timer - i.e. AFTER the main flow
 // had already re-created the directory, deleting fresh files (race). Retry
@@ -75,6 +75,7 @@ function validateBundledNode(file) {
 (async () => {
   const runtimeSource = path.join(REPO, 'runtime', 'node.exe');
   if (withNode) validateBundledNode(runtimeSource); // validate before deleting a prior stage
+  require('../lib/process-owner').validateInstallation(REPO); // ownership is mandatory for Windows async tools
   console.log(`packing 7coder v${version} -> ${stage}`);
   rmrf(stage);
   fs.mkdirSync(stage, { recursive: true });

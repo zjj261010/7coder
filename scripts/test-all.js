@@ -102,7 +102,11 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'webui-ui-sim.js', args: [path.join(ROOT, 'test', 'webui-ui-sim.js')] },
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
-if (process.platform === 'win32') targets.push({ name: 'task-windows.js', args: [path.join(ROOT, 'test', 'task-windows.js')] });
+if (process.platform === 'win32') {
+  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js']) {
+    targets.push({name:file,args:[path.join(ROOT,'test',file)]});
+  }
+}
 if (process.env.BROWSER_TEST === '1') targets.push({name:'webui-browser.js',args:[path.join(ROOT,'test','webui-browser.js')]});
 
 function loadBaseline() {

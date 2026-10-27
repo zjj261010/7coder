@@ -68,6 +68,13 @@ function create(opts) {
   for (const name of ['index.js', 'package.json', 'webui.html', '.env.example']) {
     fs.copyFileSync(path.join(ROOT, '..', name), path.join(app, name));
   }
+  // Real private Agents use the same prebuilt ownership helper as delivery.
+  for (const directory of ['lib', 'native']) {
+    const destination = path.join(app, directory); fs.mkdirSync(destination);
+    for (const file of fs.readdirSync(path.join(ROOT, '..', directory))) {
+      if (fs.statSync(path.join(ROOT, '..', directory, file)).isFile()) fs.copyFileSync(path.join(ROOT, '..', directory, file), path.join(destination, file));
+    }
+  }
   const IDX = path.join(app, 'index.js');
   const modules = path.resolve(ROOT, '..', 'node_modules');
   process.env.NODE_PATH = [modules].concat((process.env.NODE_PATH || '').split(path.delimiter).filter(p => p && p !== modules)).join(path.delimiter);

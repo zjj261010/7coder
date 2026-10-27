@@ -7,6 +7,13 @@
     "sha256": "8468f81ef779568e6c9f03f582ac90ce4d68364f8a01839457c0b05b8cdf1bef",
     "source": "https://nodejs.org/download/release/v13.14.0/SHASUMS256.txt"
   },
+  "processOwner": {
+    "file": "native/process-owner.exe",
+    "materialManifest": "native/process-owner.json",
+    "runtime": "installed CLR 2.0 or CLR 4",
+    "bundled": true,
+    "validatedOnWin7": false
+  },
   "browserCandidate": {
     "product": "Google Chrome",
     "version": "109.0.5414.120",

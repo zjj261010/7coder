@@ -8,6 +8,7 @@
 
 - **OS**: Windows 7 SP1 or later (also works on Windows 10/11, macOS, Linux)
 - **Node.js**: Win7 offline baseline pins official v13.14.0 x64; newer Node versions are not a Win7 compatibility promise
+- **Windows command runtime**: the prebuilt process owner requires installed CLR 2.0 or CLR 4, with no target compiler or automatic .NET installation. See [PROCESS-OWNERSHIP.md](PROCESS-OWNERSHIP.md) for Job restrictions and pending Win7 acceptance.
 - **RAM**: 2 GB minimum (4 GB+ recommended for heavy models)
 - **Disk Space**: 500 MB free
 - **Model endpoint**: provisioned local/LAN OpenAI-compatible service for offline use; internet only for optional online endpoints/tools
@@ -22,7 +23,7 @@ three-step install. No internet, no npm install, no system Node required
 on the target machine for the Agent runtime. A compatible browser and reachable local/LAN model must be prepared separately; neither is included. Note: the packaging machine (the one executing
 `scripts/pack-offline.js`) needs Node >= 14.14, because the packer uses
 `fs.rmSync`; the target machine itself still only needs the bundled
-Node 13.14.0.
+Node 13.14.0 for JavaScript execution; Windows asynchronous command/MCP/debug ownership also needs the CLR runtime above. Keep the complete `lib/` and `native/` folders with the entry file.
 
 ## Distribution
 
@@ -469,7 +470,9 @@ One Agent process owns a canonical workspace at a time, across CLI, REPL, backgr
 
 Use the existing HTTP Agent for clients sharing its workspace, or stop it before running another CLI there. Independent workspaces may run together. Shared installation `.env`/`models.json` outside the owning workspace are read only: when the primary is invalid and a valid previous version exists, it is used with a warning while the installation bytes stay intact. Repair those shared originals separately. Background launch explicitly hands ownership to its child and reports acceptance after the child owns the workspace and finishes synchronous config/setup; task completion or failure is recorded in `.7coder/background.log`.
 
-Task stop and cron deletion wait up to five seconds for the direct child's `close`, including its pipes. A timed-out stop reports `stop-unknown`; a cron is disabled but retained for diagnosis and another delete attempt. A late close reconciles a stopped task. `/bye` attempts these stops together and warns about unconfirmed closes. Windows still uses an asynchronous, bounded `taskkill /T` attempt for a child not yet observed exiting; known exit never triggers another PID stop. This does not eliminate the PID reuse race or contain descendants through forced Agent termination. Native process ownership, one-shot exit semantics and Win7 termination/restart tests remain release requirements.
+Task stop and cron deletion wait up to five seconds for cleanup. Windows asynchronous commands/tasks/cron/MCP/Bash/debug now use a prebuilt Job owner: targets bind while suspended, and success requires empty-job confirmation. STOP uses the owned connection; forced Agent/broker exit closes kernel ownership. Unknown broker cleanup disables future cron firing and prevents debug repair/restart. Root completion also retires surviving descendants, so background commands must keep their root alive. Each broker consumes CLR resources; the shared 128-owner admission is a count limit, not an RSS guarantee.
+
+Editors and background-Agent handoff keep their separate lifecycles. Synchronous Git/screenshot/helper operations and external broker-created processes remain outside this batch; raw legacy ChildProcess stop still has the older taskkill boundary. Win7 does not support nested Jobs, so external host Jobs or targets needing their own Jobs may be rejected. See [PROCESS-OWNERSHIP.md](PROCESS-OWNERSHIP.md), the three `test:process-owner*` scripts, and ISSUES-LOG.md for evidence and pending Win7/logout/shutdown acceptance.
 
 Background tasks admit at most four live children, including unconfirmed stops. Each task retains the last 128 KiB of valid UTF-8 output; exceeding 8 MiB combined stdout/stderr requests a stop and records a failed task once close is observed. Output tools identify discarded history and output-limit failures. Finished history retains at most fifty tasks. The underlying command collector also has an 8 MiB per-stream buffer limit; this is a fallback, not the whole-Agent memory budget. Cron admits at most 32 jobs; deleting a job releases its slot after direct-child close. Command strings are limited to 32768 characters. Split large workloads or poll/finish existing tasks rather than launching unlimited work.
 

@@ -590,7 +590,7 @@
 | ✅ | T22-04 | High／确认 | **隔离 SSE 解析异常**：10-23完成结构校验、事件回调捕获、统一单次结算、提前close/aborted处理及失败销毁；原解析函数故障矩阵与实际HTTP null帧后下一请求恢复通过。 | R2 N02；index.js parseSSEStream；test/stream-context.js；本批31/31，详见10-23第二批记录；未宣称全部网络异常组合或Win7已验收 |
 | ✅ | T22-05 | High／确认 | **保护压缩前原始上下文**：10-23完成失败/空摘要明确报错且不改原数组；按20K分段全部输入成功后才提交；当前用户要求原文保留，工具参数/已完成副作用进入摘要输入；后续段失败零提交。 | R2 N03；index.js summarizeConversation/compressConversationIfNeeded；test/stream-context.js；31/31＋旧边界2/2；真实模型摘要质量仍有单独限制 |
 | 🔶 | T22-06 | High／确认 | **贯穿取消与截止时间**：68fa239、50e0d47、64daf8c已补模型/审批、网络/下载/MCP/shell、dream/BTW；第四批补debug观察、异步编译、fixer与重启前检查，取消后不再启动下一轮。debug21/21＋A定向20/20＋B sec2 9/9，均Node13单次。10-27再补brief扫描/状态读取、证据与恢复、stage/原子发布的可选control，扫描close越过deadline不再写summary（新22＋旧state59/预算12/位置4各一次）。**未完成**：native同步IO硬中断、其余调用方副作用截止及进程树停止；远端/后代结果仍可能未知，继续与T22-07联动，不关闭整项。 | R1 H03；R2 C02；OPT-15、A5、A2-06；本日第四批记录 |
-| 🔶 | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：task/cron close/停止期限与未知结果、/bye并行诊断见10-24首批。INC-24-03持久Bash已直接持有解释器；10-25拓展至普通bash_tool与.sh debug，同一Git布局/环境helper，真实取消见close。新依赖/所有权专项10/10（0skip）＋旧debug21＋B命令7。**未完成**：原生任意树所有权、taskkill PID复用、所有命令/MCP/debug统一回收、强杀/注销等；直属close不证明任意后代已停。 | R1 H04、M08；A10、NEW-2；T22-06、INC-24-03扩展 |
+| 🔶 | T22-07 | High／确认＋风险 | **统一进程树所有权与退出清理**：此前直属句柄/解释器修复保持；10-27增加预编译 CLR2/Win32 Job owner，接管Windows异步命令/task/cron/MCP/Bash/debug：暂停创建、归属成功后运行、连接式停止、根退出清后代、Agent/owner强杀清理；确认Job空才报成功，未知禁用cron/阻断debug重启。新专项分段19＋集成分段14＋故障分段21，相关旧145各一次，非完整单次/Win7验收。**未完成**：同步Git/截图等入口、外部broker派生、显式外部PID工具边界、Win7无嵌套/CLR/真实工具兼容及注销/关机/长期运行。新增CLR运行依赖/物料hash/打包前校验见PROCESS-OWNERSHIP.md；没有以直属close关闭整项。 | R1 H04、M08；A10、NEW-2；T22-06、INC-24-03；本日Job owner批 |
 | ✅ | T22-08 | High／确认＋风险 | **串行化交互审批并修 REPL 等待**：2026-10-23 第三批落地单一 CLI 问题队列，EOF/close 结算全部问题、取消结算对应问题；审批和询问用户共用输入分派。任务在首个 await 前占位并取走草稿，BTW 按草稿排队，后续输入进入下一草稿，clear 后旧回调不污染新草稿。Node13 新回归20/20＋既有btw-eof 1/1，均单次；真实Win7终端待验收，HTTP活动取消仍属T22-06。 | R2 N01；R1 M10；D6；提交5149903 |
 | ✅ | T22-09 | High／确认 | **下载替换不先删原文件**：2026-10-23 第四批移除目标 unlink；独占打开唯一临时文件，等 close＋fsync，严格完整旧版备份发布后单次 rename 覆盖，失败不删目标；复用有保留上限的 /undo 恢复。Node13故障专项获准复跑41/41，既有下载6/6；提交边界骤停及新进程恢复通过，实Win7/占用/断电仍待验收。 | R1 H07；AST-05；提交7ce82f9 |
 | ✅ | T22-10 | High／确认错误路径 | **文件编辑编码止损**：2026-10-23 第五批对读/提示词文件/写/追加/编辑/notebook实施UTF-8可逆检查，拒绝不支持的字节与NUL，不猜测GBK；保留BOM及单一换行风格。现存文件写入统一完整严格备份，失败阻断；恢复时间戳顺序保护。Node13专项46/46、既有读取/保留6/6，均单次。普通文本写入仍可能部分失败，需undo恢复；实Win7/字节编码歧义见第五批边界。 | R1 H08；A2 的 chcp 修复不覆盖文件编码；提交f2e9409 |
@@ -1860,3 +1860,26 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 本轮依次完成并提交：`da572b2` MCP输入/schema聚合、`0b65093`诊断追加/轮转归属（含新复现别名写入与丢旧档）、`e0df70c`后台日志自管预算、`5c1d2c9`brief/受管状态取消、`4c6a066`页面采集准入。各批验证与未验收边界见上文，无推送；源码工作区在最后修复提交后干净。
 - 重新读取额度：五小时used48%/remaining52%。下一优先阶段选择仍开放的High T22-07“原生任意进程树所有权”，而非继续叠加零散预算：需要原生组件及Win7能力/嵌套宿主约束评估、命令/task/cron/MCP/debug多入口接入、取消/超时/父异常退出后的所有权、再启动和打包物料共同完成；必须以多级后代心跳/文件占用/端口释放验证，不能以直属close冒充整树已停。
 - 这一步预计需至少约60%的完整窗口覆盖实现、失败排查、各入口必要回归及交付契约核验，当前52%不宜开始。该比例是工程工作量估计，不是平台承诺的token配额。按用户额度规则停止自动开展这一原生大项；剩余配额仍可用于用户另行指定的独立小项，但本轮不将大项切出未经验证的半成品。现有受限模式和T22-03/07、全Agent总预算、其它磁盘保留、真实Win7/浏览器/24–72h/最终包验收均继续开放。
+
+### 2026-10-27 —— T22-07 Windows 异步入口 Job 所有权
+
+- 用户继续执行后重读额度，五小时used1%/remaining99%，足够覆盖独立的“异步入口归属＋物料”闭环并留故障排查余量。Node13.14实际uv1.37.0；核对该版本spawn源码及Microsoft Job/AssignProcess文档，确认原libuv只归属直属进程、Win7不支持嵌套Job，不能依赖taskkill或父PID扫描解决。
+- 新增lib/process-owner与预编译AnyCPU/CLR2 Win32托管程序。随机管道＋每次nonce/ownerPID校验；CreateProcess挂起、Job绑定后才GO，禁止breakaway；STOP走所属连接，查询Job活动成员为零、双方ACK后结束。自然根退出也清后代；Agent强杀断开控制管道、owner强杀关闭唯一Job句柄。意外死亡缺accounting证明保留未知，不把直属close当成功。旧PID不用于这些受管路由的停止。
+- 全局私有child_process适配器接入异步command/PowerShell/bash、task、cron、MCP和debug。编辑器/目录打开与后台Agent交接显式保留外部生命周期，避免错误杀掉应独立存活的对象。同步Git/截图/发现等尚未接管，显式process_kill外部PID与WMI/服务/ShellExecute代理也不纳入整树承诺；T22-07保持🔶。
+- 收尾跨模块补证据门：execFile的0退出若无Job空证明返回EOWNERUNKNOWN；task异常owner结束为failed；debug未启动/清理未知阻止自动fixer重启；cron未知cleanup禁用下一次触发并保留原因。诊断区分broker PID/target诊断PID；/api/info显示物料、共享128活动准入和待握手。计数不是RSS保证，新增CLR每进程开销须Win7并发实测。
+- 目标机无需编译器/新增VC Runtime，但Windows异步命令现在明确需要可用CLR2或CLR4。没有自动安装/启用.NET。source/exe/config/manifest通过JSON SHA256绑定，gitattributes固定hash文本LF；首次启动检查物料，packer替换stage前验证并携带lib/native/文档。开发构建脚本使用.NET3.5编译器，首次因/noconfig未引用System.dll失败，补显式CLR2引用后编译成功；这不是目标机要求。当前exe SHA256见native/process-owner.json，未重新打包。
+
+验证记录（均Node13，现代Windows，私有安装/工作区）：
+
+- 新process-owner当前默认19项，本批证据是 **1＋9＋9**：首跑probe1项后控制管道死锁超时；同步duplex ReadFile阻止READY写入，改overlapped并持有稳定native缓冲区/OVERLAPPED直到IO完成。定向续测曾在JSON解析前失败（错误的managed临时地址生命周期），集中修正后basic尾部9项通过。随后三代夹具叶子先被中间层自己的libuv Job回收，修为中间层detached启动叶子（仍属于外层受管Job），仅trees **9/9**通过。先前probe/已过basic未重复，不写成19/19单次。
+- native参数保留空串、中文/emoji、引号/反斜杠/元字符、环境/cwd、stdin EOF/stdout/stderr；无PATH绝对Node、cmd/shim、非法/超长/缺exe拒绝、坏映像失败及准入归零；三代中间层先退/叶子忽略stdio、叶子端口＋心跳、正常根exit7、owner不可捕获终止、Agent不可捕获终止、再启动。没有用直属close代替叶子资源停止。
+- 新process-owner-integration当前默认14项，本批 **3＋11**：实际HTTP command/PowerShell/task启动3项先过；task-stop失败因fixture未考虑自动工作日志追加，诊断定位后只按首行匹配任务口令。只续测失败/未跑尾部 **11/11**，之前3项不重复；task/cron确认整树清理、MCP真实initialize/list/call及Agent强杀、同工作区重启；debug/Bash为原函数VM＋实际native进程，非实际GUI/模型验收。
+- 新process-owner-faults当前默认21项，本批 **17＋3＋1**：首跑17项（PE/CLR配置与五类物料损坏零spawn、握手前停止、START/GO前断开零副作用、输出限额/超时整树收口、spawn ENOENT/未知终态/128准入释放）；新增状态3项通过后cron VM缺CRON_MAX_JOBS依赖失败，补fixture后仅cron尾部 **1/1**。三个已过状态断言不重复。新scope中的模拟0退出未知、debug状态与cron禁用不是Win7内核故障实测。
+- 相关旧专项各一次：task-lifecycle **19/19**、debug-lifecycle **21/21**、pipe-lifecycle **37/37**（0skip）、harness-isolation **10/10**、open-feedback **33/33**（0skip）、workspace-lease **25/25**（0skip），合计145项。没有重新跑完整A–J/UI/test-all；新增Windows入口已登记npm/test-all。
+- Node13语法、JSON、物料hash/LF及diff检查通过。最后输入长度保护在quoting/Base64分配前拒绝超长config参数，按静态检查确认，不重复长命令用例。
+
+未验收与风险：
+
+- 干净Win7 SP1 x64、默认PS2、CLR2/CLR4/缺CLR、实际Git/Python/MCP、真实GUI/独占文件、外层宿主Job、跨账户/会话、Ctrl+C/关窗口/注销/关机、24/72h与最终ZIP均未验收。Win7外层非breakaway Job或目标依赖自有Job时可能明确拒绝启动；正常开发机测试不能解除T22-03/07发布门槛。
+- 根完成会杀剩余普通CreateProcess后代，长期后台命令必须保持根存活；Base64传输使最大命令小于直启32767字符，超限要求脚本文件。内核/驱动停止期限、外部broker逃逸、同步入口仍开放。详见PROCESS-OWNERSHIP.md；不声称“任意树、任意宿主、所有平台”均完成。
+- 本批按既有授权提交，未推送；完成后读取额度，再决定下一完整项。

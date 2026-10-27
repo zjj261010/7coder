@@ -3,7 +3,8 @@ const axios = require('axios');
 const readline = require('readline');
 const path = require('path');
 const fs = require('fs');
-const child_process = require('child_process');
+const raw_child_process = require('child_process');
+const child_process = require('./lib/process-owner').create(raw_child_process, __dirname);
 const http = require('http');
 const { pipeline, Transform } = require('stream');
 const crypto = require('crypto');
@@ -2830,9 +2831,10 @@ function observeOwnedChild(child, scope = 'child', id = '') {
   const closed = (code, signal) => {
     if (state.closed) return;
     state.closed = true;
-    recordRuntimeEvent(scope, code === 0 && !state.error ? 'ok' : 'error', { id, pid: child.pid, exitCode: code, signal,
+    recordRuntimeEvent(scope, code === 0 && !state.error && (!child.ownedTree || child.ownedTree.closed) ? 'ok' : 'error', { id, pid: child.pid, exitCode: code, signal,
       code: state.error && state.error.code, path: state.error && state.error.path, syscall: state.error && state.error.syscall,
-      message: state.error ? state.error.message : 'Direct child closed; descendant state is unverified.' });
+      message: state.error ? state.error.message : (child.ownedTree && child.ownedTree.closed ?
+        'Owned Windows job has no remaining members.' : 'Direct child closed; descendant state is unverified.') });
     for (const notify of Array.from(state.waiters)) notify();
     state.waiters.clear();
   };
@@ -2850,7 +2852,8 @@ function observeOwnedChild(child, scope = 'child', id = '') {
 function stopOwnedChild(child, timeoutMs = 5000) {
   if (!child) return Promise.resolve({ closed: true, message: 'No active direct child.' });
   const state = observeOwnedChild(child);
-  if (state.closed) return Promise.resolve({ closed: true, message: 'Direct child already closed.' });
+  if (state.closed) return Promise.resolve({ closed: !child.ownedTree || child.ownedTree.closed, treeClosed: !!(child.ownedTree && child.ownedTree.closed),
+    message: child.ownedTree && child.ownedTree.closed ? 'Owned Windows job already empty.' : 'Direct child already closed; descendant state is unverified.' });
   if (state.stopping) return state.stopping;
   let settle, timer, killError = '';
   const promise = new Promise(resolve => { settle = resolve; });
@@ -2859,14 +2862,18 @@ function stopOwnedChild(child, timeoutMs = 5000) {
     clearTimeout(timer);
     state.waiters.delete(finish);
     state.stopping = null;
-    settle({ closed: state.closed, message: state.closed ? 'Direct child closed; descendant state is unverified.' :
+    const treeClosed = !!(child.ownedTree && child.ownedTree.closed);
+    settle({ closed: state.closed && (!child.ownedTree || treeClosed), treeClosed, message: treeClosed ? 'Owned Windows job has no remaining members.' : state.closed ?
+      'Direct child closed; descendant state is unverified.' :
       'Direct child close unconfirmed; result unknown. ' + (killError || 'Close deadline exceeded.') });
   };
   state.waiters.add(finish);
   timer = setTimeout(finish, timeoutMs);
   if (!state.exited && child.exitCode == null && child.signalCode == null && !child.killed) {
     try {
-      if (process.platform === 'win32' && child.pid) {
+      if (child.ownedTree) {
+        if (!child.kill()) killError = 'Owned tree stop request was refused.';
+      } else if (process.platform === 'win32' && child.pid) {
         child_process.execFile('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'],
           { windowsHide: true, timeout: Math.max(1, timeoutMs - 500), maxBuffer: 65536 }, error => {
             if (error) killError = 'Tree stop attempt failed: ' + error.message;
@@ -2972,6 +2979,12 @@ function scheduleCronJob(jobId, schedule, command) {
       const state = observeOwnedChild(child, 'cron-child', jobId);
       const release = () => {
         if (job.child !== child) return;
+        if (child.ownedTree && !child.ownedTree.closed) {
+          job.stopped = true;
+          if (job.timer) clearTimeout(job.timer);
+          job.timer = null;
+          job.lastError = 'Owned job cleanup unconfirmed; cron disabled. ' + (child.ownedTree.error || 'Broker closed without accounting proof.');
+        }
         job.child = null;
         job.running = false;
       };
@@ -3346,7 +3359,7 @@ function launchDesktopPath(openPath, target, timeoutMs = 5000) {
       if (process.platform === 'win32') { cmd = 'cmd.exe'; argv = ['/c', 'start', '', openPath]; }
       else if (process.platform === 'darwin') { cmd = 'open'; argv = [openPath]; }
       else { cmd = 'xdg-open'; argv = [openPath]; }
-      child = child_process.spawn(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true });
+      child = (child_process.spawnExternal || child_process.spawn)(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true });
       active.add(child);
       child.on('error', failed); // attach even when pid/stdio were never created
       child.once('exit', (code, sig) => { exitCode = Number.isInteger(code) ? code : null; signal = sig || null; });
@@ -4382,7 +4395,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     });
     const state = observeOwnedChild(child, 'background-child', taskId);
     const complete = () => {
-      task.status = task.outputExceeded ? 'failed' : (task.stopRequested ? 'stopped' : (task.commandError || state.error ? 'failed' : 'completed'));
+      task.status = task.outputExceeded || (child.ownedTree && !child.ownedTree.closed) ? 'failed' : (task.stopRequested ? 'stopped' : (task.commandError || state.error ? 'failed' : 'completed'));
       task.endedAt = new Date().toISOString();
       task.child = null;
       pruneTasks();
@@ -5461,6 +5474,11 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes, cancel
     child.on('exit', (code, signal) => { exited = true; result.exitCode = code; result.signal = signal; awaitClose(); });
     child.on('close', (code, signal) => {
       closed = true; result.exitCode = code; result.signal = signal;
+      if (child.ownedTree) {
+        if (!child.ownedTree.bound) result.spawnFailed = true;
+        else if (!child.ownedTree.closed) result.cleanupFailed = true;
+        if (child.ownedTree.error) log('[ERROR] ' + child.ownedTree.error);
+      }
       log('[DEBUG] process closed: exit=' + code + ', signal=' + signal); finish();
     });
     for (const key of ['stdout', 'stderr']) if (child[key]) {
@@ -8127,6 +8145,7 @@ function startHttpServer() {
       sessionHistory: sessionHistoryPager.stats(),
       audit: auditSnapshot(),
       backgroundLog: backgroundLog ? backgroundLog.snapshot() : { enabled: false },
+      processOwner: child_process.processOwnerInfo ? child_process.processOwnerInfo() : { mode: 'direct-child', treeVerified: false },
       ui: { available: !!webuiHtml, fileLimit: 2 * 1024 * 1024, error: webuiError },
       mcp: mcpDiagnosticsSnapshot(),
       mcpBudget: mcpBudgetSnapshot(),
@@ -8687,7 +8706,7 @@ async function main() {
     const logPath = internalStatePath('.7coder', 'background.log');
     appendDiagnosticRecord(logPath, internalStatePath('.7coder', 'background.old.log'),
       Buffer.from('\n[' + new Date().toISOString() + '] background launch PID ' + process.pid + '\n'), 1024 * 1024, 'Background', undefined, true);
-    const child = child_process.spawn(process.execPath, process.argv.slice(1).filter(a => a !== '--background'), {
+    const child = (child_process.spawnExternal || child_process.spawn)(process.execPath, process.argv.slice(1).filter(a => a !== '--background'), {
       detached: true, stdio: ['ignore', 'pipe', 'pipe', 'ipc'], cwd: launchDir,
       env: Object.assign({}, process.env, { _7CODER_LEASE_HANDOFF: JSON.stringify({ token: workspaceLease.identity.token, pid: process.pid }) })
     });
