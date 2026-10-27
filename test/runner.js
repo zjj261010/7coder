@@ -238,7 +238,7 @@ scenarios.push({
       ['adv: todo_write creates TODO.md', fs.existsSync(path.join(cwd, 'TODO.md')), ''],
       ['adv: brief_tool writes summary into .7coder/summaries', fs.existsSync(path.join(cwd, '.7coder', 'summaries', '.summary')), tr(log, 'a18') ? tr(log, 'a18').c : 'no result'],
       ['adv: notebook edit', tr(log, 'a19') && tr(log, 'a19').c.includes('success'), ''],
-      ['adv: worktree created', tr(log, 'a20') && tr(log, 'a20').c.includes('Entered worktree') && fs.existsSync(path.join(cwd, 'wt1')), tr(log, 'a20') ? tr(log, 'a20').c.substring(0, 80) : 'no result'],
+      ['adv: worktree created', tr(log, 'a20') && tr(log, 'a20').c.includes('Created worktree') && fs.existsSync(path.join(cwd, 'wt1')), tr(log, 'a20') ? tr(log, 'a20').c.substring(0, 80) : 'no result'],
       ['adv: process_list returns tasklist', tr(log, 'a21') && tr(log, 'a21').c.includes('PID'), ''],
       ['adv: 100KB output truncated with marker', tr(log, 'a22') && tr(log, 'a22').c.includes('tool result truncated'), tr(log, 'a22') ? 'len=' + tr(log, 'a22').c.length : 'no result']
     ];

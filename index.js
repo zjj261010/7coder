@@ -1222,7 +1222,7 @@ const tools = [
   { type: "function", function: { name: "snip_tool", description: "Extract history snippet.", parameters: { type: "object", properties: { start: { type: "number" }, end: { type: "number" } } } } },
   { type: "function", function: { name: "tool_search_tool", description: "Discover available tools." } },
   { type: "function", function: { name: "list_mcp_resources_tool", description: "List MCP resources." } },
-  { type: "function", function: { name: "enter_worktree_tool", description: "Git worktree management - create and enter.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
+  { type: "function", function: { name: "enter_worktree_tool", description: "Create a Git worktree under the current workspace. The active workspace stays unchanged; prefix later file paths with the returned worktree path.", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } } },
   { type: "function", function: { name: "schedule_cron_tool", description: "Schedule a recurring cron job. Supported schedules: \"30s\", \"5m\", \"2h\", \"every 10m\", \"daily 09:30\".", parameters: { type: "object", properties: { schedule: { type: "string" }, command: { type: "string" } }, required: ["schedule", "command"] } } },
   { type: "function", function: { name: "cron_create_tool", description: "Create granular cron job. Supported schedules: \"30s\", \"5m\", \"2h\", \"every 10m\", \"daily 09:30\".", parameters: { type: "object", properties: { schedule: { type: "string" }, command: { type: "string" } }, required: ["schedule", "command"] } } },
   { type: "function", function: { name: "cron_delete_tool", description: "Delete cron job.", parameters: { type: "object", properties: { job_id: { type: "string" } }, required: ["job_id"] } } },
@@ -2417,7 +2417,8 @@ async function runGitCommandAsync(argsArr, opts, cancelled) {
   delete options.deadlineAt;
   const remaining = deadlineAt - Date.now();
   if (remaining <= 0) throw new Error('Git command deadline exceeded; no complete result available.');
-  options.timeout = Math.max(1, Math.min(30000, remaining));
+  const commandTimeout = Number.isFinite(options.timeout) && options.timeout > 0 ? options.timeout : 30000;
+  options.timeout = Math.max(1, Math.min(commandTimeout, remaining));
   const runner = runCommandAsync({ file: 'git', args: argsArr }, options);
   const { r, aborted } = await awaitCommandCancellable(runner, cancelled);
   if (aborted) throw executionCancelledError(cancelled);
@@ -4698,12 +4699,21 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
   }
 
   if (name === 'enter_worktree_tool') {
+    let rel = '', started = false;
     try {
-      const rel = sanitizePath(args.path || 'worktree');
-      const wtPath = quoteForShell(rel);
-      child_process.execSync(`git worktree add ${wtPath}`, { cwd: launchDir, timeout: 60000 });
-      return makeToolResult('ok', `[OK] Entered worktree at ${args.path}`);
-    } catch (e) { return makeToolResult('error', `Worktree error: ${e.message}`); }
+      checkExecution(cancelled);
+      rel = sanitizePath(args.path || 'worktree');
+      started = true;
+      await runGitCommandAsync(['worktree', 'add', '--', rel], { deadlineAt: Date.now() + 60000, timeout: 60000 }, cancelled);
+      checkExecution(cancelled);
+      return makeToolResult('ok', `[OK] Created worktree at ${rel}. Active workspace stays unchanged; prefix later file paths with ${rel}/.`,
+        { path: rel, workspaceChanged: false });
+    } catch (e) {
+      const status = e.code === 'EXECUTION_CANCELLED' || cancelled && cancelled() ? 'cancelled' : 'error';
+      const hint = started ? ' Creation may have left Git refs or files; inspect git worktree list and the target directory before retrying.' : '';
+      return makeToolResult(status, `Worktree ${status === 'cancelled' ? 'cancelled' : 'error'}: ${e.message}${hint}`,
+        { path: rel || null, workspaceChanged: false, sideEffectsPossible: started });
+    }
   }
 
   if (name === 'schedule_cron_tool' || name === 'cron_create_tool') {

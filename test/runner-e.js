@@ -333,7 +333,7 @@ scenarios.push({
     await new Promise(r => setTimeout(r, 600));
     await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
     const res = tr(readLog(m.log), 'wt1');
-    record('worktree: path with spaces creates worktree', res && res.c.includes('Entered worktree') && fs.existsSync(path.join(cwd, 'wt dir/two')), res ? res.c.substring(0, 60) : 'no result');
+    record('worktree: path with spaces creates worktree', res && res.c.includes('Created worktree') && fs.existsSync(path.join(cwd, 'wt dir/two')), res ? res.c.substring(0, 60) : 'no result');
     spawnSync('git', ['worktree', 'prune'], { cwd });
     stopMock(m);
   }

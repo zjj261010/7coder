@@ -100,3 +100,10 @@ Git提交的repo探针、恢复快照、stage、staged检查、commit、最后lo
 同步Git传输/probe和无生产调用方的同步快照包装已移除，原归属generator策略由唯一异步驱动消费。共享传输和快照消费者有实质变化，本批各一次验证：新提交21、检查点19、读取17、快照11、状态列9、依赖12、审计提示13、实际Git8，共110；无失败复跑。前后hook均真实私有Git：pre取消HEAD不变，post取消HEAD已变化，均保持恢复ref、逐callId取消审计/无重放、端口心跳清理、HTTP响应与后续status。实际快照保留测试改为异步驱动，测试内Git命令仍是同步fixture，不冒充其本身验证Agent调度。
 
 未重复native/创建窗口/桌面套件或完整A–J/UI/test-all；未做Win7/系统关闭/24–72h。worktree、where/bash发现、显式外部PID工具以及native IO仍有同步等待，T22-06继续开放。收尾仅更新deadline/测试说明及fixture提交标题，静态检查，未因此重复已通过专项。
+
+
+## Worktree 创建（2026-10-28）
+
+enter_worktree_tool改为异步受管Git argv `worktree add -- <relative path>`，保持60秒预算并服从调用方截止；共享传输只在明确传入时采用60秒，原Git默认30秒不变。中文/空格/%变量样式/&路径按字面值，不再经过cmd展开。取消/未知保留目录与Git元数据，结果提示检查worktree list/目标后再决定，避免删掉已执行钩子写入。
+
+原“Entered”描述不符合真实行为，现明确创建worktree但活跃工作区不变，后续路径需带worktree前缀；没有调用process.chdir改变全局工作区/租约。新15与旧E单场景1/J单场景2首次单次通过，共18；实际post-checkout钩子挂起期间HTTP可响应，取消后进程归零，目录/文件/登记保留，之后仍读主工作区。E/J外层强制私有空global Git/禁system配置，未碰用户全局配置。未重复上一批110或其它native/桌面/全套测试；Win7/旧Git版本、系统关闭、长期运行仍待实测。
