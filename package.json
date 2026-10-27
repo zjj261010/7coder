@@ -74,6 +74,7 @@
     "test:checkpoint-cancellation": "node test/checkpoint-cancellation.js",
     "test:git-commit-cancellation": "node test/git-commit-cancellation.js",
     "test:worktree-cancellation": "node test/worktree-cancellation.js",
+    "test:process-kill-cancellation": "node test/process-kill-cancellation.js",
     "test:path-boundaries": "node test/path-boundaries.js",
     "test:scan-budget": "node test/scan-budget.js",
     "test:cron-identity": "node test/cron-identity.js",

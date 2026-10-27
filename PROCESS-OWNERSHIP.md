@@ -107,3 +107,12 @@ Git提交的repo探针、恢复快照、stage、staged检查、commit、最后lo
 enter_worktree_tool改为异步受管Git argv `worktree add -- <relative path>`，保持60秒预算并服从调用方截止；共享传输只在明确传入时采用60秒，原Git默认30秒不变。中文/空格/%变量样式/&路径按字面值，不再经过cmd展开。取消/未知保留目录与Git元数据，结果提示检查worktree list/目标后再决定，避免删掉已执行钩子写入。
 
 原“Entered”描述不符合真实行为，现明确创建worktree但活跃工作区不变，后续路径需带worktree前缀；没有调用process.chdir改变全局工作区/租约。新15与旧E单场景1/J单场景2首次单次通过，共18；实际post-checkout钩子挂起期间HTTP可响应，取消后进程归零，目录/文件/登记保留，之后仍读主工作区。E/J外层强制私有空global Git/禁system配置，未碰用户全局配置。未重复上一批110或其它native/桌面/全套测试；Win7/旧Git版本、系统关闭、长期运行仍待实测。
+
+
+## 用户指定外部 PID（2026-10-28）
+
+process_kill_tool仍是用户指定PID的外部操作，不获得task/cron的稳定句柄身份保证。新增严格十进制整值校验（2–2147483647），不把123oops/123.5截成123。Windows固定SystemRoot/System32/taskkill.exe，异步argv `/PID n /T /F`，30秒/64KiB与调用方取消；缺SystemRoot在启动前失败，不走工作区/PATH同名程序。非零退出使用稳定的数字/错误码诊断，不依赖Win7本地化stderr的UTF8解码。
+
+Windows成功仅表明taskkill命令完成，POSIX仅表明SIGTERM已发送；targetState始终unverified，不冒充目标/后代均退出。取消/错误注明目标可能已停止，应核对身份/状态后再决定，不自动重放。实际是否忽略信号、PID复用和外部目标生命周期仍非本Job所有权范围。
+
+新专项17/17首次单次通过：9个VM边界＋8个实际隔离HTTP/受管Node替身。只在私有Agent替换唯一taskkill spec，未执行真实taskkill或POSIX信号；验证路径/argv/严格PID、错误码、迟到取消、未知归属、响应/审计/不重放/恢复和乱码字节不冒充成功。旧E kill-real和旧B含任意外部PID场景未运行，实际Win7 taskkill/权限/本地化输出与目标终止仍须受控实机验证。未重复无关Git/native/桌面或全套测试。

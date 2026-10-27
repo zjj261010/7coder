@@ -1331,7 +1331,7 @@ const TOOL_METADATA = Object.freeze(Object.assign(Object.create(null), {
   }),
   process_kill_tool: toolMetadata({
     explain: (a) => `Kill process ${a.pid}`, risk: "HIGH",
-    execution: "command", cancellation: "boundary",
+    execution: "command", cancellation: "active-command",
     resources: { process: 'write' }
   }),
   web_fetch_tool: toolMetadata({
@@ -4176,16 +4176,41 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     return makeToolResult('ok', r.stdout);
   }
   if (name === 'process_kill_tool') {
-    const pid = parseInt(args.pid, 10);
-    if (!pid || pid < 2) return makeToolResult('error', 'Invalid PID (must be >= 2)');
+    // Never truncate "123oops" or 123.5 into a different termination target.
+    const input = args.pid;
+    const pid = typeof input === 'number' ? input : typeof input === 'string' && /^\d+$/.test(input.trim()) ? Number(input.trim()) : NaN;
+    if (!Number.isInteger(pid) || pid < 2 || pid > 0x7fffffff) return makeToolResult('error', 'Invalid PID (expected a whole decimal PID from 2 to 2147483647)');
+    let requested = false;
     try {
+      checkExecution(cancelled);
       if (process.platform === 'win32') {
-        child_process.execSync(`taskkill /PID ${pid} /T /F`, { encoding: 'utf8', timeout: 30000 });
+        const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT;
+        if (!systemRoot || !path.isAbsolute(systemRoot)) throw new Error('SystemRoot is unavailable; no termination command was started.');
+        const remaining = cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt - Date.now() : 30000;
+        if (remaining <= 0) throw executionCancelledError(cancelled);
+        requested = true;
+        const runner = runCommandAsync({ file: path.join(systemRoot, 'System32', 'taskkill.exe'), args: ['/PID', String(pid), '/T', '/F'] },
+          { windowsHide: true, timeout: Math.max(1, Math.min(30000, remaining)), maxBuffer: 65536 });
+        const { r, aborted } = await awaitCommandCancellable(runner, cancelled);
+        if (aborted) throw executionCancelledError(cancelled);
+        checkExecution(cancelled);
+        if (runner.ownedTree && runner.ownedTree.bound && !runner.ownedTree.closed) throw new Error('Termination command cleanup unconfirmed.');
+        if (r.error) throw new Error(Number.isInteger(r.exitCode) ? 'System taskkill exited with code ' + r.exitCode + '.' :
+          'Termination command failed (' + (r.error.code || 'unknown completion') + ').');
+        return makeToolResult('ok', `[OK] Termination command completed for process ${pid}; target state was not separately verified.`,
+          { pid, method: 'taskkill', targetState: 'unverified' });
       } else {
+        requested = true;
         process.kill(pid, 'SIGTERM');
+        return makeToolResult('ok', `[OK] Sent SIGTERM to process ${pid}; termination was not separately verified.`,
+          { pid, method: 'SIGTERM', targetState: 'unverified' });
       }
-      return makeToolResult('ok', `[OK] Killed process ${pid}`);
-    } catch (e) { return makeToolResult('error', `Kill error: ${e.message}`); }
+    } catch (e) {
+      const status = e.code === 'EXECUTION_CANCELLED' || cancelled && cancelled() ? 'cancelled' : 'error';
+      return makeToolResult(status, `Kill ${status === 'cancelled' ? 'cancelled' : 'error'}: ${e.message}` +
+        (requested ? ' The target may already have stopped; inspect its identity/state before retrying.' : ''),
+        { pid, terminationRequested: requested, targetState: 'unverified' });
+    }
   }
 
   if (name === 'web_fetch_tool') {
