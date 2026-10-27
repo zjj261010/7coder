@@ -5,7 +5,7 @@
 > 该 win64 包的固定目标是 Win7 SP1 x64；其它系统需各自运行时和独立验收。网页另需提前准备浏览器及可达的本地/内网模型，二者不在当前包内。请先查看 **OFFLINE-BASELINE.md**；不能把“Agent运行时随包”理解为“默认IE可用、模型也已提供”。
 >
 > 注意：**打包机**（执行 `scripts/pack-offline.js` 的机器）需要 Node >= 14.14（打包脚本使用了 fs.rmSync）；
-> 目标机器使用包内 Node 13.14.0；Windows 进程托管（含同步 Git、命令/MCP/debug）另需可用 CLR 2.0 或 CLR 4，见 PROCESS-OWNERSHIP.md。无需目标机编译器，不会自动安装 .NET。
+> 目标机器使用包内 Node 13.14.0；Windows 进程托管（含 Git、Bash 发现、命令/MCP/debug）另需可用 CLR 2.0 或 CLR 4，见 PROCESS-OWNERSHIP.md。无需目标机编译器，不会自动安装 .NET。
 
 ## 一、包内清单
 
@@ -13,7 +13,7 @@
 |---|---|
 | `index.js` | 主程序（唯一入口，零编译） |
 | `runtime\node.exe` | 内置 Node.js 13.14.0 运行时（Win7 可用，MIT 许可，可再分发） |
-| `lib\` / `native\` | 进程托管适配器、预编译 CLR2 程序、配置及散列绑定源码，须完整保留 |
+| `lib\` / `native\` | 进程托管/控制线程与 Bash 发现辅助程序、预编译 CLR2 程序、配置及散列绑定源码，须完整保留 |
 | `node_modules\` | 预装的生产依赖（axios 1.20.0、dotenv 8.6.0） |
 | `.env.example` | 配置模板（复制为 `.env` 后填写） |
 | `7coder.bat` | 便捷启动脚本（自动使用内置运行时） |
@@ -47,7 +47,7 @@
    使用提前验收的浏览器打开 `http://127.0.0.1:7103/`（默认IE不支持；候选Chrome 109 x64尚未随包提供）。缺少必要API时页面会明确说明原因。按 Ctrl+C 停止服务。交互式命令行仍可用 `7coder.bat` 或 `runtime\node.exe index.js` 启动。
 
 > 无需安装 Node.js：`runtime\node.exe` 就是完整的运行时。
-> Windows 命令功能交付前，在包目录执行 `native\process-owner.exe --probe`，应输出 `7coder-process-owner-v1 CLR=...`。缺少/禁用 CLR 或加载失败时，保留错误与退出码并准备离线运行时。探针仅验证加载，不验证整树清理或 Win7 外层 Job。
+> Windows 命令功能交付前，在包目录执行 `native\process-owner.exe --probe`，应输出 `7coder-process-owner-v2 CLR=...`。缺少/禁用 CLR 或加载失败时，保留错误与退出码并准备离线运行时。探针仅验证加载，不验证整树清理或 Win7 外层 Job。
 > 从源码仓库启动时，`7coder-web.bat` 使用 `runtime\node.exe`；该文件缺失时才回退到 PATH 中的 Node.js，不会下载或提取压缩包。
 
 ## 项目级配置（可选）

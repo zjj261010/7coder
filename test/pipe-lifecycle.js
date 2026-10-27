@@ -8,6 +8,7 @@ const { EventEmitter } = require('events');
 const { PassThrough, Writable } = require('stream');
 const S = require('./_shared').create({ suite: 'pipe-lifecycle' });
 const source = fs.readFileSync(S.IDX, 'utf8');
+const discoveryOwner=require(path.join(path.dirname(S.IDX),'lib','process-owner')).create(cp,path.dirname(S.IDX));
 const contexts = [], bashChildren = [], controls = [];
 let checks = 0, skipped = 0;
 function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
@@ -35,12 +36,12 @@ function fakeChild() {
   return child;
 }
 function environment(spawn, cwd) {
-  const ctx = { Buffer, process, fs, path, setTimeout, clearTimeout, setInterval, clearInterval, console: { log() {}, warn() {} },
+  const ctx = { Buffer, process, fs, path, __dirname:path.dirname(S.IDX), bashDiscoveryMetadata:null, setTimeout, clearTimeout, setInterval, clearInterval, console: { log() {}, warn() {} },
     APP_VERSION: 'fixture', launchDir: cwd || S.freshCwd('unit'), agentDepth: 0, workflowStepDepth: 0,
     mcpServers: { fixture: { command: 'fixture' } }, mcpClients: {}, resolveCommandOnWindows: () => false,
-    findBash: () => 'fixture-bash', child_process: { spawn, execSync: cp.execSync } };
+    findBash: () => 'fixture-bash', child_process: { spawn, execFile:discoveryOwner.execFile } };
   vm.createContext(ctx);
-  vm.runInContext(cut('function executionCancelledError(', 'function parseSSEStream(') +
+  vm.runInContext(cut('function runCommandAsync(', '// ====================== PERSISTENT SHELL') + cut('function executionCancelledError(', 'function parseSSEStream(') +
     cut('function persistentBashExecutable(', 'function isSuperDangerous(') +
     cut('const MCP_CALL_TIMEOUT =', '// One lazily-created client') +
     cut('function mcpContentToText(', '// A2-19:') + cut('function createMcpStdioClient(', '// Redact secrets') +
@@ -225,7 +226,7 @@ function shellReply(child, out, code) { child.stdout.write(out + '\n' + marker(c
       return owned;
     }, bashCwd);
     vm.runInContext(cut('let bashPathCache;', 'function isSuperDangerous('), nativeShell);
-    if (!nativeShell.findBash()) { skipped++; console.log('SKIP real bash: Git Bash is unavailable; stream fault coverage still ran'); }
+    if (!await nativeShell.discoverBash()) { skipped++; console.log('SKIP real bash: Git Bash is unavailable; stream fault coverage still ran'); }
     else {
       const realShell = nativeShell.getPersistentShell('main');
       const one = await bounded(realShell.run('export PIPE_MARK=live; cd sub; printf "$PIPE_MARK"', 3000), 4000);

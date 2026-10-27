@@ -67,16 +67,16 @@ else{fs.writeFileSync(heart,'');const c=cp.spawn(process.execPath,[__filename,'m
   if(scope==='all'||scope==='internal'||scope==='http-tail'){
     const source=fs.readFileSync(S.IDX,'utf8'),owner=require(path.join(path.dirname(S.IDX),'lib','process-owner')).create(cp,path.dirname(S.IDX));
     const adapter=Object.assign({},owner,{spawn(file,args,opts){const c=owner.spawn(file,args,opts);nativeChildren.push(c);return c;}});
-    const c=vm.createContext({Buffer,console,process,fs,path,setTimeout,clearTimeout,setInterval,clearInterval,child_process:adapter,launchDir:cwd,
+    const c=vm.createContext({Buffer,console,process,fs,path,setTimeout,clearTimeout,setInterval,clearInterval,child_process:adapter,__dirname:path.dirname(S.IDX),launchDir:cwd,
       agentDepth:0,workflowStepDepth:0,EXECUTION_TIMEOUT_MS:10000});
-    vm.runInContext(cut(source,'function executionCancelledError(','function parseSSEStream(')+cut(source,'let bashPathCache;','function isSuperDangerous(')+
+    vm.runInContext(cut(source,'function runCommandAsync(','// ====================== PERSISTENT SHELL')+cut(source,'function executionCancelledError(','function parseSSEStream(')+cut(source,'let bashPathCache;','function isSuperDangerous(')+
       cut(source,'const persistentShells =','function globToRegex(')+cut(source,'async function runDebugCycle(','// AST-R2:'),c);
     const debugFile=path.join(cwd,'debug-info.json'),debugScript=path.join(cwd,'debug-launch.js');
     fs.writeFileSync(debugScript,'process.argv[2]="root";process.argv[3]='+JSON.stringify(debugFile)+';require('+JSON.stringify(fixture)+');');
     const cancelled=c.createExecutionControl(10000),debug=c.runDebugCycle(debugScript,debugScript,'cli',1,cancelled);
     const debugInfo=await info(debugFile);leaves.push(debugInfo);cancelled.cancel('fixture cancellation');const result=await debug;cancelled.dispose();
     check('production debug observer cancellation waits for managed native close',result.stoppedByAgent&&!result.cleanupFailed&&!result.spawnFailed&&await empty(debugInfo),JSON.stringify(result));
-    const bash=c.findBash();assert.ok(bash,'Git Bash required for this native shell fixture; cannot silently skip');
+    const bash=await c.discoverBash();assert.ok(bash,'Git Bash required for this native shell fixture; cannot silently skip');
     const shell=c.createPersistentShell('owned-integration');
     const first=await shell.run('export OWNED_PERSIST=中文; echo "FIRST:$OWNED_PERSIST"',5000);
     const second=await shell.run('echo "SECOND:$OWNED_PERSIST"',5000);

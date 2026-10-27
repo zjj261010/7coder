@@ -18,11 +18,11 @@ async function until(predicate, label) {
   let ctx;
   try {
     const cwd = S.freshCwd('deadline 中文 空格'), runDir = path.dirname(path.dirname(S.IDX)), owner = '--7coder-test-owner=' + runDir;
-    ctx = vm.createContext({ Buffer, fs, path, process, child_process: cp, launchDir: cwd, agentDepth: 0, workflowStepDepth: 0,
+    ctx = vm.createContext({ Buffer, fs, path, process, child_process: require(path.join(path.dirname(S.IDX),'lib','process-owner')).create(cp,path.dirname(S.IDX)), __dirname:path.dirname(S.IDX), launchDir: cwd, agentDepth: 0, workflowStepDepth: 0,
       console: { log() {}, warn() {} }, setTimeout, clearTimeout, setInterval, clearInterval, EXECUTION_TIMEOUT_MS: 5000 });
-    vm.runInContext(cut('let bashPathCache;', 'function isSuperDangerous(') + cut('function executionCancelledError(', 'function parseSSEStream(') +
+    vm.runInContext(cut('function runCommandAsync(', '// ====================== PERSISTENT SHELL') + cut('let bashPathCache;', 'function isSuperDangerous(') + cut('function executionCancelledError(', 'function parseSSEStream(') +
       cut('const persistentShells =', '// Converts a glob pattern'), ctx);
-    const bash = ctx.findBash();
+    const bash = await ctx.discoverBash();
     if (!bash) { console.log('SHELL/DEADLINE: 0 passed; 1 SKIP (Git Bash/bash unavailable, real timeout not validated)'); return; }
     ctx.child_process = { spawn(file, args, options) {
       const child = cp.spawn(file, args.concat(['-s', '--', owner]), Object.assign({}, options, { windowsHide: true }));

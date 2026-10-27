@@ -116,3 +116,16 @@ process_kill_tool仍是用户指定PID的外部操作，不获得task/cron的稳
 Windows成功仅表明taskkill命令完成，POSIX仅表明SIGTERM已发送；targetState始终unverified，不冒充目标/后代均退出。取消/错误注明目标可能已停止，应核对身份/状态后再决定，不自动重放。实际是否忽略信号、PID复用和外部目标生命周期仍非本Job所有权范围。
 
 新专项17/17首次单次通过：9个VM边界＋8个实际隔离HTTP/受管Node替身。只在私有Agent替换唯一taskkill spec，未执行真实taskkill或POSIX信号；验证路径/argv/严格PID、错误码、迟到取消、未知归属、响应/审计/不重放/恢复和乱码字节不冒充成功。旧E kill-real和旧B含任意外部PID场景未运行，实际Win7 taskkill/权限/本地化输出与目标终止仍须受控实机验证。未重复无关Git/native/桌面或全套测试。
+
+
+## Bash 发现与缓存（2026-10-28）
+
+Windows发现改由受管的随包Node子进程运行lib/bash-discovery.js，扫描和Git布局/环境前缀探测不占Agent主事件循环。协议为最多64KiB UTF8 JSON，不调用where，不解析系统代码页输出；最多1024次探测、PATH 32KiB/256项。先试已知安装目录与显式PATH（支持外层引号和%变量样式），再跨盘；不扫描出无关映射盘后才检查已经可用的PATH。
+
+主线程findBash仅读缓存；持久shell同步工厂保持原子创建，缓存未准备时在工具入口await发现后再次取工厂，两个等待者不会各建一个shell。stateless/debug同样await；已发现Git usr解释器和环境前缀直接用缓存，避免再主线程探测布局。正缓存60秒/负缓存10秒，时间回拨立即失效；失败、取消、格式错误、不完整扫描或归属未知不写缓存，迟到负结果不覆盖并发成功。
+
+本批首次各一次：新发现18、管道37、shell期限8、debug依赖10、native集成14、作用域17，共104，无skip/失败复跑。发现暂停用私有helper替身，取消后以原模块真正发现Git Bash并执行UTF8输出；其它专项实际Bash/MCP/debug/归属路径保持。测试清理BASH_ENV/ENV/CDPATH/SHELLOPTS/BASHOPTS/BASH_FUNC_*，不自动加载用户shell启动脚本。
+
+lib目录已有打包/隔离复制覆盖新文件；INSTALL修正v2 probe和依赖说明，packer补入其引用的所有权/创建计划文档，仅静态检查未生成ZIP。新helper增加冷发现时的Node内存/启动成本，Win7需实测。
+
+**边界**：index.js已无execSync/execFileSync/spawnSync调用，不代表同步fs/native API可硬中断。子进程若卡在无法及时终止的驱动IO，仍可能无法取得关闭证明/回调结算；此类未知终态对全局后续请求的隔离、文件操作副作用与Win7关机/再启动需下一独立阶段处理。现代Node替身可终止不证明真实Win7驱动可终止，T22-06/07与发布门槛继续开放。

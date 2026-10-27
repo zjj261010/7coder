@@ -2233,58 +2233,67 @@ function quoteForShell(token) {
 
 // Locate a real bash binary (on Windows: Git for Windows). Cached after first lookup.
 let bashPathCache;
+let bashDiscoveryMetadata = null, bashDiscoveryAt = 0;
+function bashDiscoveryFresh() {
+  const age = Date.now() - bashDiscoveryAt;
+  return bashDiscoveryMetadata && age >= 0 && age < (bashPathCache ? 60000 : 10000);
+}
+// Synchronous factories only consume a prepared cache. Shell creation itself
+// stays atomic after the asynchronous discovery boundary (no double sessions).
 function findBash() {
-  if (bashPathCache !== undefined) return bashPathCache;
-  if (process.platform !== 'win32') {
-    bashPathCache = 'bash';
-    return bashPathCache;
+  if (process.platform !== 'win32') return 'bash';
+  return bashDiscoveryFresh() ? bashPathCache : null;
+}
+async function discoverBash(cancelled) {
+  checkExecution(cancelled);
+  if (process.platform !== 'win32') return 'bash';
+  if (bashDiscoveryFresh()) return bashPathCache;
+  const remaining = cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt - Date.now() : 10000;
+  if (remaining <= 0) throw executionCancelledError(cancelled);
+  const runner = runCommandAsync({ file: process.execPath, args: [path.join(__dirname, 'lib', 'bash-discovery.js')] },
+    { timeout: Math.max(1, Math.min(10000, remaining)), maxBuffer: 65536, windowsHide: true });
+  const { r, aborted } = await awaitCommandCancellable(runner, cancelled);
+  if (aborted) throw executionCancelledError(cancelled);
+  checkExecution(cancelled);
+  if (runner.ownedTree && runner.ownedTree.bound && !runner.ownedTree.closed) throw new Error('Bash discovery cleanup unconfirmed; no shell was started.');
+  if (r.error) throw new Error('Bash discovery failed (' + (r.error.code || 'unknown completion') + '): ' + String(r.stderr || r.error.message).slice(-800));
+  let result;
+  try { result = JSON.parse(r.stdout); } catch (e) { throw new Error('Bash discovery returned invalid data; no shell was started.'); }
+  if (!result || result.version !== 1 || !(result.bash === null || typeof result.bash === 'string' && path.isAbsolute(result.bash) && !result.bash.includes('\0')) ||
+      !Array.isArray(result.prefix) || result.prefix.length > 4 || result.prefix.some(p => typeof p !== 'string' || !path.isAbsolute(p) || p.includes('\0')) ||
+      !['', 'MINGW64', 'MINGW32', 'UCRT64'].includes(result.msystem) || typeof result.incomplete !== 'boolean') {
+    throw new Error('Bash discovery returned invalid data; no shell was started.');
   }
-  const candidates = [];
-  if (process.env.ProgramFiles) {
-    candidates.push(path.join(process.env.ProgramFiles, 'Git', 'bin', 'bash.exe'));
-    candidates.push(path.join(process.env.ProgramFiles, 'Git', 'usr', 'bin', 'bash.exe'));
+  if (!result.bash && result.incomplete) throw new Error('Bash discovery incomplete; check unavailable drives or permissions. No shell was started.');
+  checkExecution(cancelled);
+  // Another successful concurrent lookup may already have filled this cache.
+  // Never replace a useful result with a late negative result.
+  if (!bashDiscoveryFresh() || result.bash && !bashPathCache) {
+    bashPathCache = result.bash; bashDiscoveryMetadata = result; bashDiscoveryAt = Date.now();
   }
-  if (process.env['ProgramFiles(x86)']) {
-    candidates.push(path.join(process.env['ProgramFiles(x86)'], 'Git', 'bin', 'bash.exe'));
-  }
-  if (process.env.LOCALAPPDATA) {
-    candidates.push(path.join(process.env.LOCALAPPDATA, 'Programs', 'Git', 'bin', 'bash.exe'));
-  }
-  candidates.push('C:\\Program Files\\Git\\bin\\bash.exe');
-  // Git for Windows is frequently installed on a non-C drive (e.g.
-  // D:\Program Files\Git) and a minimal/stripped PATH would also defeat the
-  // 'where bash' fallback below - so probe the standard Git layout on every
-  // present drive letter, and every PATH entry, before giving up.
-  for (const letter of 'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('')) {
-    if (!fs.existsSync(letter + ':\\')) continue;
-    candidates.push(letter + ':\\Program Files\\Git\\bin\\bash.exe');
-    candidates.push(letter + ':\\Program Files\\Git\\usr\\bin\\bash.exe');
-    candidates.push(letter + ':\\Git\\bin\\bash.exe');
-  }
-  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
-    if (dir) candidates.push(path.join(dir, 'bash.exe'));
-  }
-  for (const c of candidates) {
-    try { if (fs.existsSync(c)) { bashPathCache = c; return c; } } catch (e) {}
-  }
-  try {
-    const found = child_process.execSync('where bash', { encoding: 'utf8', timeout: 10000 }).trim().split('\n')[0].trim();
-    if (found && fs.existsSync(found)) { bashPathCache = found; return found; }
-  } catch (e) {}
-  bashPathCache = null;
-  return null;
+  return bashPathCache;
 }
 
 // Git's bin/bash.exe may be a compat launcher which owns a second
 // usr/bin/bash.exe. Managed persistent/stateless/debug launches must hold
 // the actual interpreter. Unknown non-Git layouts retain their original path.
 function persistentBashExecutable(bash) {
+  if (bashDiscoveryMetadata && bash === bashDiscoveryMetadata.bash) return bash;
   if (process.platform !== 'win32' || !/[\\/]bin[\\/]bash\.exe$/i.test(bash) || /[\\/]usr[\\/]bin[\\/]bash\.exe$/i.test(bash)) return bash;
   const direct = path.resolve(path.dirname(bash), '..', 'usr', 'bin', 'bash.exe');
   return fs.existsSync(direct) ? direct : bash;
 }
 function persistentBashEnvironment(bash) {
   const env = Object.assign({}, process.env, { TERM: 'dumb', PS1: '' });
+  if (bashDiscoveryMetadata && bash === bashDiscoveryMetadata.bash) {
+    if (bashDiscoveryMetadata.prefix.length) {
+      let inherited = '';
+      for (const key of Object.keys(env)) if (key.toLowerCase() === 'path') { inherited = env[key]; delete env[key]; }
+      env.PATH = bashDiscoveryMetadata.prefix.concat(inherited ? [inherited] : []).join(path.delimiter);
+      if (bashDiscoveryMetadata.msystem && !env.MSYSTEM) env.MSYSTEM = bashDiscoveryMetadata.msystem;
+    }
+    return env;
+  }
   if (process.platform !== 'win32' || !/[\\/]usr[\\/]bin[\\/]bash\.exe$/i.test(bash)) return env;
   const root = path.resolve(path.dirname(bash), '..', '..');
   const prefix = [path.dirname(bash), path.join(root, 'cmd')];
@@ -4090,7 +4099,9 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
     // cwd/env/aliases survive across calls (cd, export...). Default stays the
     // stateless one-shot mode - deterministic and safe for scripts.
     if (args.persistent === true) {
-      const sh = getPersistentShell(shellSessionKey(), cancelled);
+      const key = shellSessionKey();
+      let sh = getPersistentShell(key, cancelled);
+      if (!sh) { await discoverBash(cancelled); checkExecution(cancelled); sh = getPersistentShell(key, cancelled); }
       if (!sh) {
         return makeToolResult('error', 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.', { exitCode: null });
       }
@@ -4105,7 +4116,7 @@ async function executeToolRaw(name, args, conversation, approvalBridge, cancelle
       return makeToolResult('ok', `Command OK (persistent shell, exit 0):\n${r.out}`, data);
     }
 
-    const bash = persistentBashExecutable(findBash());
+    const bash = persistentBashExecutable(await discoverBash(cancelled));
     checkExecution(cancelled);
     if (!bash) {
       return makeToolResult('error', 'bash not found. On Windows install Git for Windows (it ships bash.exe), then retry - or use powershell_tool / run_command instead.', { exitCode: null });
@@ -5562,7 +5573,7 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes, cancel
     if (!cmdToRun) throw new Error('Python prerequisite missing on PATH; prepare a compatible interpreter offline. No target process was started.');
     cmdArgs = [filePath];
   } else if (filePath.endsWith('.sh')) {
-    const discovered = process.platform === 'win32' ? findBash() : findOptionalExecutable('bash');
+    const discovered = process.platform === 'win32' ? await discoverBash(cancelled) : findOptionalExecutable('bash');
     if (!discovered) throw new Error('Bash prerequisite missing; prepare a compatible Git Bash/bash offline. No target process was started.');
     cmdToRun = persistentBashExecutable(discovered);
     childEnv = persistentBashEnvironment(cmdToRun);

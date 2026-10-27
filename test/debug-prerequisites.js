@@ -15,7 +15,7 @@ function own(child,command,args){children.push(child);child.closed=false;child.o
   try{
     const cwd=S.freshCwd('debug 中文 空格'),root=path.join(cwd,'Windows fixture'),bin=path.join(cwd,'bin');fs.mkdirSync(bin);let spawns=0,compiles=0;
     const contextProcess={platform:process.platform,execPath:S.NODE_BIN,env:{PATH:bin,SystemRoot:root}};
-    const c=loadContext(source,cwd,{},{Buffer,process:contextProcess,ENABLE_AUTO_DEBUG:true,ENABLE_HTTP_SERVER:false,DANGER_MODE:false,DEBUG_TEST_MINUTES:3,autoDebugActive:false,systemPrompt:'fixture',
+    const c=loadContext(source,cwd,{},{Buffer,__dirname:path.dirname(S.IDX),process:contextProcess,ENABLE_AUTO_DEBUG:true,ENABLE_HTTP_SERVER:false,DANGER_MODE:false,DEBUG_TEST_MINUTES:3,autoDebugActive:false,systemPrompt:'fixture',
       console:{log(){},warn(){}},effectivePermissionMode:()=> 'bypass',
       child_process:{spawn(){spawns++;throw Error('unexpected spawn');}},runCommandAsync(){compiles++;throw Error('unexpected compile');}});
     vm.runInContext(cut('let bashPathCache;','function isSuperDangerous(')+cut('function findOptionalExecutable(','function powerShellExecutable(')+
@@ -23,7 +23,7 @@ function own(child,command,args){children.push(child);child.closed=false;child.o
       cut('async function runDebugCycle(','// AST-R2: reason of the most recent auto-approval')+
       'async function debug(args,cancelled=null,modelContext=null){const name="auto_debug_tool";\n'+cut("  if (name === 'auto_debug_tool') {",'  return `Unknown tool:')+'\n}'+
       'async function bashTool(args,cancelled){const name="bash_tool";\n'+cut("  if (name === 'bash_tool') {","  if (name === 'powershell_tool') {")+'\n}',c);
-    const discovered=c.findBash;c.findBash=()=>null;
+    const discovered=c.discoverBash;c.discoverBash=async()=>null;
     for(const [file,word]of [['app.py','Python prerequisite'],['app.sh','Bash prerequisite'],['app.cs','C# compiler csc']]){
       fs.writeFileSync(path.join(cwd,file),'fixture');const r=await c.debug({path:file});check(file+' missing dependency is explicit with no process/compile and restored guard',r.status==='error'&&r.text.includes(word)&&spawns===0&&compiles===0&&!c.autoDebugActive);
     }
@@ -44,7 +44,7 @@ function own(child,command,args){children.push(child);child.closed=false;child.o
     const observed=await c.runDebugCycle(py,py,'cli',0.05);
     check('owned interpreter shim uses absolute PATH selection and Unicode/space argv',observed.exitCode===7&&observed.stdout.includes('OWNED_INTERPRETER_SHIM')&&children[0].command===python&&children[0].closed);
 
-    c.process=process;c.findBash=discovered;const bash=c.findBash();
+    c.process=process;c.discoverBash=discovered;vm.runInContext(cut('function runCommandAsync(','// ====================== PERSISTENT SHELL'),c);const bash=await c.discoverBash();
     if(!bash){skips++;console.log('SKIP real Git Bash debug/stateless ownership (Bash unavailable)');}
     else{
       const direct=c.persistentBashExecutable(bash),script=path.join(cwd,'命令 空格.sh');fs.writeFileSync(script,'printf "OWNED_BASH_DEBUG_READY\\n"\nend=$((SECONDS+6)); while ((SECONDS<end)); do :; done\n');
