@@ -80,3 +80,12 @@ Git status/diff及其repo探针已改为异步受管execFile，各工具共用30
 **剩余跨阶段阻塞**：HTTP和CLI请求开始前的createTaskGitCheckpoint仍用同步Git；提交/快照/保留策略、worktree和发现也仍可能阻塞。新读取专项在模型fixture响应（检查点之后）才启用私有fsmonitor/diff驱动，准确验证工具等待，不把它写成整条HTTP请求已无同步阻塞。首次将fsmonitor提前配置时，检查点阶段实际阻塞并使health超时，这个现场路径保持开放。
 
 新专项5个确定性预算/取消断言＋12个真实HTTP/Git断言分段通过；status列9、前置依赖12、实际Git/提交8各一次，合计46个有效检查。真实驱动等待时HTTP可读，断开后端口/心跳、owner/tool归零，逐callId审计cancelled且不重放，同Agent下一读取成功。未重跑native owner/创建窗口/其它旧专项、完整A–J/UI/test-all或Win7/24–72h。
+
+
+## 请求前检查点等待（2026-10-28 再后续批）
+
+createTaskGitCheckpoint现为异步，CLI和两种HTTP入口都await并在模型开始前复核取消。repo探针、stash create、自有ref发布和保留共用30秒命令预算/1MiB输出，主动取消会等回调结算；确认bound但清理未知直接中止请求，不当可忽略快照失败后继续模型。普通非仓库仍静默；其它非致命检查点失败保留阶段警告。已发布ref不会因取消补偿删除，取消后不继续prune。
+
+同步commit快照和异步task检查点驱动同一个generator命令计划；归属/namespace/50条保留、CAS/--no-deref、时间回拨/多worktree策略未复制或改变。runner只新增只读ownedTree getter用于明确区分清理未知。
+
+本批首跑：新checkpoint-cancellation19/19（含6个边界、两种HTTP各5、CLI3）、旧Git快照11/11、实际Git/提交8/8、审计提交预算13/13，共51。真实fsmonitor在首个模型前暂停时HTTP可响应，取消后模型零调用/无新ref，CLI自身期限也能停止；正常后续快照保留working/index而不改HEAD/原文件。没有重复上批Git读17/状态列/依赖或native/桌面专项和全套，也未做Win7/系统关闭/24–72h。之前请求前检查点的同步阻塞代码已修；提交、worktree和发现等待及native IO仍开放。

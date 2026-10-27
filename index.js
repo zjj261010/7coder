@@ -2395,7 +2395,7 @@ function runCommandAsync(spec, opts) {
         : child_process.exec(spec.cmd, base, done);
     } catch (e) { resolve({ error: e, stdout: '', stderr: '', exitCode: null }); }
   });
-  return { promise, kill: () => { try { if (child) child.kill(); } catch (e) {} } };
+  return { promise, get ownedTree() { return child && child.ownedTree; }, kill: () => { try { if (child) child.kill(); } catch (e) {} } };
 }
 // Observe cancellation and kill the direct child, but keep awaiting the
 // command callback. Process-tree termination remains a separate guarantee.
@@ -6260,8 +6260,13 @@ function ownedGitSnapshotPolicy(kind) {
   return { prefix: 'refs/7coder/' + (kind === 'task' ? 'task-snapshots' : 'snapshots') + '/v1/' + workspace + '/',
     marker: '7coder owned ' + kind + ' snapshot v1' };
 }
+function snapshotListArgs(policy) {
+  return ['for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(contents:subject)', policy.prefix];
+}
 function readOwnedGitSnapshots(gitCommand, policy) {
-  const text = gitCommand(['for-each-ref', '--format=%(refname)%00%(objectname)%00%(objecttype)%00%(symref)%00%(contents:subject)', policy.prefix]);
+  return parseOwnedGitSnapshots(gitCommand(snapshotListArgs(policy)), policy);
+}
+function parseOwnedGitSnapshots(text, policy) {
   const owned = [];
   for (const line of String(text).split(/\r?\n/)) {
     const fields = line.split('\0'), ref = fields[0] || '';
@@ -6274,19 +6279,19 @@ function readOwnedGitSnapshots(gitCommand, policy) {
   }
   return owned;
 }
-function recordOwnedGitSnapshot(gitCommand, kind) {
+function* ownedGitSnapshotSteps(kind) {
   const policy = ownedGitSnapshotPolicy(kind);
-  const sha = gitCommand(['stash', 'create', policy.marker]).trim();
+  const sha = (yield [['stash', 'create', policy.marker]]).trim();
   if (!sha) return '';
   if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(sha)) throw new Error('Git returned an invalid snapshot object ID');
-  const previous = readOwnedGitSnapshots(gitCommand, policy);
+  const previous = parseOwnedGitSnapshots(yield [snapshotListArgs(policy)], policy);
   // Existing owned names keep creation order monotonic even across a restart,
   // coarse/frozen Win7 clock or rollback. Nonces also avoid accidental overwrite.
   let stamp = Math.max(0, Date.now());
   for (const record of previous) stamp = Math.max(stamp, record.stamp + 1);
   if (!Number.isSafeInteger(stamp)) throw new Error('Snapshot sequence exhausted');
   const ref = policy.prefix + String(stamp).padStart(16, '0') + '-' + crypto.randomBytes(8).toString('hex') + '-' + sha.slice(0, 12);
-  gitCommand(['update-ref', '--no-deref', '-m', policy.marker, ref, sha, '0'.repeat(sha.length)], { stdio: 'pipe' });
+  yield [['update-ref', '--no-deref', '-m', policy.marker, ref, sha, '0'.repeat(sha.length)], { stdio: 'pipe' }];
   const records = previous.concat({ ref, sha, stamp }).sort((a, b) => a.stamp - b.stamp || a.ref.localeCompare(b.ref));
   let excess = records.length - 50;
   try {
@@ -6295,11 +6300,46 @@ function recordOwnedGitSnapshot(gitCommand, kind) {
       if (record.ref === ref) continue;
       // Never follow a ref changed into a symbolic reference to a user branch.
       // Compare the old OID so an external rewrite fails instead of being erased.
-      gitCommand(['update-ref', '--no-deref', '-d', record.ref, record.sha], { stdio: 'pipe' });
+      yield [['update-ref', '--no-deref', '-d', record.ref, record.sha], { stdio: 'pipe' }];
       excess--;
     }
   } catch (e) { console.warn('[WARN] snapshot retention stopped; current snapshot retained: ' + e.message); }
   return sha;
+}
+
+// The same command plan preserves ownership/CAS rules for synchronous
+// commit snapshots and asynchronous request checkpoints. No duplicate policy.
+function recordOwnedGitSnapshot(gitCommand, kind) {
+  const plan = ownedGitSnapshotSteps(kind);
+  let step = plan.next();
+  while (!step.done) {
+    let value;
+    try { value = gitCommand(step.value[0], step.value[1]); }
+    catch (error) { step = plan.throw(error); continue; }
+    step = plan.next(value);
+  }
+  return step.value;
+}
+async function recordOwnedGitSnapshotAsync(gitCommand, kind, cancelled) {
+  checkExecution(cancelled);
+  const plan = ownedGitSnapshotSteps(kind);
+  let step = plan.next();
+  try {
+    while (!step.done) {
+      checkExecution(cancelled);
+      let value;
+      try { value = await gitCommand(step.value[0], step.value[1]); }
+      catch (error) {
+        checkExecution(cancelled);
+        if (error.code === 'EXECUTION_CANCELLED' || error.code === 'EOWNERUNKNOWN') throw error;
+        step = plan.throw(error); continue;
+      }
+      checkExecution(cancelled); // In particular, no pruning after late cancellation.
+      step = plan.next(value);
+    }
+    checkExecution(cancelled);
+    return step.value;
+  } finally { plan.return(); }
 }
 
 // GAP-12: create a lightweight, recoverable pre-task checkpoint without
@@ -6307,17 +6347,46 @@ function recordOwnedGitSnapshot(gitCommand, kind) {
 // Tracked working-tree and index changes are preserved; untracked files are
 // excluded by `stash create`. Clean trees need no snapshot. No checkout/index
 // changes are made and the refs are local to the repository.
-function createTaskGitCheckpoint() {
-  const gitTask = (args, opts) => child_process.execFileSync('git', args, Object.assign({ encoding: 'utf8', cwd: launchDir, timeout: 30000 }, opts || {}));
+async function createTaskGitCheckpoint(cancelled = null) {
+  checkExecution(cancelled);
+  const deadlineAt = Math.min(Date.now() + 30000, cancelled && Number.isFinite(cancelled.deadlineAt) ? cancelled.deadlineAt : Infinity);
+  const gitTask = async (args, opts) => {
+    checkExecution(cancelled);
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new Error('Task Git checkpoint deadline exceeded.');
+    const runner = runCommandAsync({ file: 'git', args }, Object.assign({ encoding: 'utf8', cwd: launchDir, windowsHide: true,
+      timeout: Math.max(1, remaining), maxBuffer: 1024 * 1024 }, opts || {}));
+    const { r, aborted } = await awaitCommandCancellable(runner, cancelled);
+    if (aborted) throw executionCancelledError(cancelled);
+    checkExecution(cancelled);
+    if (runner.ownedTree && runner.ownedTree.bound && !runner.ownedTree.closed) {
+      throw Object.assign(new Error('Task Git checkpoint cleanup unconfirmed; no model request was started.'), { code: 'EOWNERUNKNOWN' });
+    }
+    if (r.error) {
+      r.error.stdout = r.stdout; r.error.stderr = r.stderr;
+      if (Number.isInteger(r.exitCode)) r.error.status = r.exitCode;
+      throw r.error;
+    }
+    if (Date.now() >= deadlineAt) throw new Error('Task Git checkpoint deadline exceeded.');
+    return r.stdout;
+  };
   try {
-    if (gitTask(['rev-parse', '--is-inside-work-tree'], { stdio: 'pipe' }).trim() !== 'true') return '';
-  } catch (e) { return ''; } // ordinary non-Git workspaces are silent
+    if ((await gitTask(['rev-parse', '--is-inside-work-tree'], { env: Object.assign({}, process.env, { LC_ALL: 'C', LANG: 'C' }) })).trim() !== 'true') return '';
+  } catch (e) {
+    checkExecution(cancelled);
+    if (e.code === 'EOWNERUNKNOWN') throw e;
+    if (!(e.status === 128 && /not a git repository/i.test(String(e.stderr || '')))) console.warn('[WARN] task Git checkpoint probe failed: ' + e.message);
+    return '';
+  }
   try {
-    const snapshot = recordOwnedGitSnapshot(gitTask, 'task');
+    const snapshot = await recordOwnedGitSnapshotAsync(gitTask, 'task', cancelled);
+    checkExecution(cancelled);
     if (!snapshot) return '';
     console.log('[CHECKPOINT] git task snapshot ' + snapshot.substring(0, 12));
     return snapshot;
   } catch (e) {
+    checkExecution(cancelled);
+    if (e.code === 'EOWNERUNKNOWN') throw e;
     console.warn('[WARN] task git checkpoint failed: ' + e.message);
     return '';
   }
@@ -7980,7 +8049,8 @@ async function executeTask(modelContext = createModelContext()) {
   const finishRuntime = beginRuntimeOperation('cli-task');
   try {
     resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
-    createTaskGitCheckpoint();
+    await createTaskGitCheckpoint(cancelled);
+    checkExecution(cancelled);
     console.log(`7coder is ${getRandomSpinner()}`);
     let streamed = false;
     const onDelta = (t) => { streamed = true; process.stdout.write(t); };
@@ -8613,7 +8683,8 @@ function startHttpServer() {
               finishRuntime = beginRuntimeOperation('http-task');
               if (clientGone) return;
               checkExecution(execution);
-              createTaskGitCheckpoint();
+              await createTaskGitCheckpoint(execution);
+              checkExecution(execution);
               const result = await processWithTools(tempMessages, {
                 onDelta: t => writeChunk({ content: t }, null), cancel: execution, modelContext,
                 onReasoning: t => writeChunk({ reasoning: t }, null),
@@ -8650,7 +8721,8 @@ function startHttpServer() {
           let result;
           try {
             checkExecution(execution);
-            createTaskGitCheckpoint();
+            await createTaskGitCheckpoint(execution);
+            checkExecution(execution);
             result = await processWithTools(tempMessages, { modelContext, cancel: execution });
             checkExecution(execution);
             updateLastInteractionTime();
