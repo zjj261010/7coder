@@ -14,6 +14,7 @@ const ICommand = require('./_i-command-fixture');
 const IFlush = require('./_i-flush-fixture');
 const IRalph = require('./_i-ralph-fixture');
 const ToolDeclarations = require('./_tool-declarations');
+const ICronExit = require('./_i-cron-exit-fixture');
 const crypto = require('crypto');
 const { create: createEndpoint } = require('./_endpoint');
 
@@ -433,30 +434,47 @@ scenarios.push({
 scenarios.push({
   name: 'cron-treekill',
   fn: async () => {
-    const cwd = freshCwd('i9');
-    const heart = path.join(cwd, 'hb.txt');
-    // heartbeat script: writes every 150ms, self-terminates after 8s
-    fs.writeFileSync(path.join(cwd, 'hb.js'),
-      'const f=' + JSON.stringify(heart.split('\\').join('/')) +
-      ';const i=setInterval(()=>require("fs").appendFileSync(f,"x\\n"),150);setTimeout(()=>{clearInterval(i);process.exit(0)},8000)');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'ck1', type: 'function', function: { name: 'schedule_cron_tool', arguments: JSON.stringify({ schedule: '3s', command: 'node hb.js' }) } }] },
-      { role: 'assistant', content: 'CK-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 40000,
-      stdinSteps: [
-        { t: 'cron heartbeat\n', d: 80 }, { t: '/execute-task-now\n', d: 5000 },
-        { t: '/bye\n', d: 2500 }
-      ]
-    });
-    await new Promise(r2 => setTimeout(r2, 1500));
-    const safeSize = () => { try { return fs.statSync(heart).size; } catch (e) { return -1; } };
-    const size1 = safeSize();
-    await new Promise(r2 => setTimeout(r2, 900));
-    const size2 = safeSize();
-    record('cron-treekill: heartbeat child killed on /bye (file stops growing)', size1 > 0 && size1 === size2, 'size1=' + size1 + ' size2=' + size2 + ' exit=' + r.code);
+    if (process.platform !== 'win32') { S.skip('cron-treekill: requires Windows owned Job proof'); return; }
+    const cwd = freshCwd('i9'), program = path.join(cwd, 'hb.js'), infoFile = path.join(cwd, 'leaf.json');
+    const fixture = ICronExit.create(NODE_BIN, program, infoFile, crypto.randomBytes(24).toString('hex'));
+    fs.writeFileSync(program, fixture.programSource);
+    const m = startMock(fixture.script, { MOCK_STRICT: '1' });
+    let child, closed = false, info, output = '', exitCode;
+    const began = process.hrtime(), elapsed = () => { const value = process.hrtime(began); return value[0] * 1000 + value[1] / 1000000; };
+    const wait = async (predicate, label) => {
+      const start = elapsed();
+      while (elapsed() - start < 10000) { const value = await predicate(); if (value) return value; if (closed) throw Error('I9 Agent closed early: ' + output.slice(-2000)); await new Promise(resolve => setTimeout(resolve, 15)); }
+      throw Error(label + ': ' + output.slice(-2000));
+    };
+    try {
+      await readyMock(m);
+      child = spawn(NODE_BIN, [IDX], { cwd, env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1',
+        HEAVY_MODEL: fixture.model, LIGHT_MODEL: 'i-cron-exit-light', SUMMARY_MODEL: 'i-cron-exit-summary', MAX_RETRIES: '1', PERMISSION_MODE: 'bypass',
+        DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false', AUDIT_LOG: 'true', EXECUTION_TIMEOUT_MS: '8000' }) });
+      child.stdout.on('data', data => { output = (output + data).slice(-16384); }); child.stderr.on('data', data => { output = (output + data).slice(-16384); }); child.stdin.on('error', () => {});
+      child.once('close', code => { closed = true; exitCode = code; });
+      await wait(() => output.includes('Commands:'), 'I9 REPL not ready');
+      child.stdin.write(fixture.prompt + '\n/execute-task-now\n');
+      info = await wait(() => { try { return JSON.parse(fs.readFileSync(infoFile, 'utf8')); } catch (e) { return null; } }, 'I9 leaf did not publish');
+      const running = await wait(async () => { const value = await fixture.query(info); return value && value.ticks >= 2 ? value : null; }, 'I9 leaf did not work');
+      await wait(() => output.includes(fixture.done) && output.includes('[USAGE]'), 'I9 create task did not complete');
+      const log = readLog(m.log), audits = readLog(path.join(cwd, '.7coder', 'audit.jsonl')), id = fixture.cronId(log);
+      record('cron-treekill: exact strict creation transcript has one successful cron call', fixture.creation(log, audits), 'requests=' + log.length);
+      record('cron-treekill: detached descendant is live and writing before Agent quit', running.pid === info.pid && info.pid !== info.rootPid && running.ticks >= 2 && fs.statSync(info.heart).size > 0, 'ticks=' + running.ticks);
+      child.stdin.write('/bye\n');
+      await wait(() => closed, 'I9 Agent did not close after bye');
+      record('cron-treekill: actual Agent handle closes successfully after explicit quit', exitCode === 0 && output.includes('Goodbye!'), 'exit=' + exitCode);
+      record('cron-treekill: exact scheduled group has native empty-Job and broker-close proof', fixture.nativeClosed(readLog(path.join(cwd, '.7coder', 'runtime.jsonl')), id), 'cron=' + id);
+      const firstBytes = fs.statSync(info.heart).size;
+      await new Promise(resolve => setTimeout(resolve, 150)); // several 25ms heartbeats
+      record('cron-treekill: listener closes and heartbeat stops well before 45s self-exit', fixture.stopped(firstBytes, fs.statSync(info.heart).size, await fixture.query(info), elapsed()), 'elapsed=' + Math.round(elapsed()));
+    } finally {
+      // The nonce-bound test service stops only itself; no PID enumeration or
+      // saved PID kill. Its parent exits when that exact leaf closes.
+      if (info) await fixture.query(info, 'stop');
+      if (child && !closed) { child.kill(); await new Promise(resolve => { if (closed) resolve(); else child.once('close', resolve); }); }
+      stopMock(m);
+    }
   }
 });
 

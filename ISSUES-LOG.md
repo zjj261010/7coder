@@ -32,12 +32,12 @@
 | runner-f.js | 23 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
-| runner-i.js | 75 |
+| runner-i.js | 79 |
 | runner-j.js | 18 |
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **689** |
+| **合计** | **693** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2207,3 +2207,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - I调度夹具接入实际checkExecution及受控owner状态，3秒有界settle并观察早期reject，read并行逆序完成仍按ID入history、混合write/read串行，二者都必须到最终模型回合；新增owner错误在零模型/工具/history前原样阻断。仅metadata-scheduling/table-consistency完成12/12（3＋9），其余I场景未重复。
 - 新声明oracle初版23项通过。H4首跑6/7，新增参数判断器把四个实际无参数工具当错误；第一次只放行省略properties，定向参数oracle5项通过，但H required-only仍失败。读取四条原始声明确认它们省略整个parameters，按真实可选契约修正，补“显式null拒绝/整个字段省略合法”仅2项；H required-only最终1/1，未重复先过6项或I12。最终默认oracle为26项：其余原证据及受影响分段分别记录，不将23＋5＋2重叠计为30个独立断言，不冒称默认26曾一次全跑。无参数声明一直是合法产品代码，本批两次H失败属于我方oracle过严，未制造产品缺陷。
 - Node13语法/JSON/diff、标准入口、静态record统计更新；无产品/native改动、真实模型/桌面/Win7/长稳/打包和全套执行。H required/items检查不覆盖$ref/allOf等完整schema语义，不声称本地VM证明真实调度/Win7进程组。T22-33继续保留部分完成，按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 I9 cron退出证据与自然结束区分
+
+- 元数据批已提交cb8674d，继续旧cron-treekill：原测试固定输入/5秒等待后仅比较两次心跳大小，夹具8秒自行结束；慢时序下“大小不变”无法单独证明/bye完成树回收，亦无实际创建状态、匹配组证明。此为验收缺口，不据此声称当前产品必定漏杀。
+- 新夹具实际REPL严格两次模型请求/唯一ck1创建audit成功，随包Node绝对路径、1秒调度、私有root再启动detached leaf。先通过nonce专属监听和25ms心跳确认leaf确实在工作，才发送/bye并等保留Agent句柄close。之后要求对应真实cronId的唯一cron-child记录包含“Owned Windows target group is empty; broker closed.”，再比对端口停止/非空心跳稳定；单调hrtime从整个场景起计必须<30秒，独立45秒故障兜底不能成为成功解释。
+- 不再靠固定几秒估计启动/退出；就绪/工作/关闭有10秒阶段期限及有界输出。失败清理只调用该nonce夹具自身的stop接口或保留Agent句柄，leaf关闭后其root自行退出，不枚举/按历史PID查杀其它进程。无故障时未触发兜底退出。此scope仅Windows，其它平台明确skip，不把direct child close替代Job证明。
+- 新i-cron-exit-oracles首跑20/20：完整正例、错/多调用、命令漂移、audit blocked/重复、缺失/错组/直属关闭/重复证明、空/增长心跳、仍活监听、45秒自然到期、30秒边界、NaN/负时间。仅RUN_ONLY=cron-treekill首跑5/5，0skip、约4秒完成，真实后代从活跃到停止且匹配native组为空；无失败/复跑，未重复I其它场景或先前进程专项。
+- Node13语法/夹具程序编译静态/JSON/diff、默认入口与静态断言块更新，产品/native不变。无真实模型/桌面/Win7/长稳/打包/全套；并不覆盖CLR入口前死亡窗口、机器关机/注销/异常强杀或所有外部broker进程。T22-07/33与V22-05保留各自未验收部分，按授权本地提交后继续，不推送。

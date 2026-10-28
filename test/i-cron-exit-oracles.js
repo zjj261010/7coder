@@ -1,0 +1,34 @@
+'use strict';
+const assert = require('assert'), F = require('./_i-cron-exit-fixture').create('C:\\private install\\node.exe', 'C:\\private work\\hb.js', 'C:\\private work\\leaf.json', 'private-token');
+const clone = value => JSON.parse(JSON.stringify(value));
+let checks = 0;
+function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
+const model = F.model, tools = [{ type: 'function', function: { name: 'schedule_cron_tool' } }], first = [{ role: 'system', content: 'private fixture system' }, { role: 'user', content: F.prompt }];
+const id = 'cron-123-1', result = '[OK] Cron job ' + id + ' scheduled (every 1s), next run: 2026-10-29T00:00:00.000Z';
+const log = [{ model, stream: true, tools, messages: clone(first) }, { model, stream: true, tools, messages: clone(first).concat([{ role: 'assistant', content: null, tool_calls: [F.call] }, { role: 'tool', tool_call_id: 'ck1', content: result }]) }];
+const audits = [{ type: 'tool', callId: 'ck1', tool: 'schedule_cron_tool', status: 'ok' }];
+const runtime = [{ scope: 'cron-child', id, message: 'Owned Windows target group is empty; broker closed.' }];
+check('complete strict cron transcript and successful unique call are accepted', F.creation(log, audits) && F.cronId(log) === id);
+check('specific native empty-group proof is accepted', F.nativeClosed(runtime, id));
+check('stopped listener and nonempty stable heartbeat before deadline are accepted', F.stopped(20, 20, null, 5000));
+function rejectLog(label, mutate) { const data = clone(log); mutate(data); check(label, !F.creation(data, audits)); }
+rejectLog('empty model history cannot pass', data => { data.length = 0; });
+rejectLog('wrong call ID cannot pass matching cron result', data => { data[1].messages[3].tool_call_id = 'wrong'; });
+rejectLog('extra summary call cannot be ignored', data => data.push(clone(data[1])));
+rejectLog('changed cron command cannot pass original identity', data => { data[1].messages[2].tool_calls[0].function.arguments = '{"schedule":"1s","command":"echo nothing"}'; });
+const blocked = clone(audits); blocked[0].status = 'blocked';
+check('blocked creation status cannot pass', !F.creation(log, blocked));
+check('duplicate successful audit cannot pass', !F.creation(log, audits.concat(clone(audits))));
+check('no runtime completion proof cannot pass', !F.nativeClosed([], id));
+check('proof for a different job cannot pass', !F.nativeClosed(runtime, 'cron-other'));
+const direct = clone(runtime); direct[0].message = 'Direct child closed; descendant state is unverified.';
+check('direct close without group proof cannot pass', !F.nativeClosed(direct, id));
+check('duplicate proof records cannot be mistaken for one lifecycle', !F.nativeClosed(runtime.concat(clone(runtime)), id));
+check('missing or empty heartbeat cannot pass as stopped work', !F.stopped(0, 0, null, 5000));
+check('continuing heartbeat cannot pass', !F.stopped(20, 21, null, 5000));
+check('live owned listener cannot pass quiet heartbeat alone', !F.stopped(20, 20, { ticks: 1 }, 5000));
+check('natural 45s watchdog expiry cannot pass Agent cleanup proof', !F.stopped(20, 20, null, 45000));
+check('30s evidence deadline boundary is refused', !F.stopped(20, 20, null, 30000));
+check('missing elapsed time cannot claim a pre-watchdog stop', !F.stopped(20, 20, null, NaN));
+check('negative elapsed time cannot bypass the deadline', !F.stopped(20, 20, null, -1));
+assert.strictEqual(checks, 20); console.log('I/CRON-EXIT-ORACLES 20/20');
