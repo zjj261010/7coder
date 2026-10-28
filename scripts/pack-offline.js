@@ -34,6 +34,7 @@ const COPY_FILES = [
   'LICENSE', '.env.example', '7coder.bat', '7coder-web.bat', 'webui.html', 'OFFLINE-BASELINE.md',
   'scripts/offline-baseline.json',
   'PROCESS-OWNERSHIP.md', 'PROCESS-CREATION-RECOVERY-PLAN-2026-10-28.md',
+  'PROCESS-RECOVERY-RUNBOOK.md',
   'scripts/start-web.ps1', 'PROCESS-OWNERSHIP.md', 'scripts/build-process-owner.ps1',
   // A2-22: INSTALL.md tells offline users to run this (it is dependency-free
   // and reads the bundled test/), so ship it and keep the scripts/ layout.

@@ -47,7 +47,7 @@ async function tree(mode) {
 }
 const deadline=setTimeout(()=>{console.error('PROCESS/OWNER deadline');for(const c of children)try{c.kill();}catch(e){}S.cleanup();process.exit(1);},100000);
 (async()=>{try{
-  if(!['all','basic','basic-tail','trees'].includes(scope))throw Error('Unknown process-owner test scope: '+scope);
+  if(!['all','basic','basic-tail','trees','recovery-tail'].includes(scope))throw Error('Unknown process-owner test scope: '+scope);
   if(process.platform!=='win32')throw Error('process-owner native acceptance requires Windows');
   if(scope==='all'||scope==='basic'||scope==='basic-tail') {
     if(scope!=='basic-tail') {
@@ -82,7 +82,8 @@ const deadline=setTimeout(()=>{console.error('PROCESS/OWNER deadline');for(const
     await until(()=>manager.processOwnerInfo().active===0,'idle counters');
     check('completed/failed native launches release all admission and control records',manager.processOwnerInfo().active===0&&manager.processOwnerInfo().pending===0);
   }
-  if(scope==='all'||scope==='trees'||scope==='basic-tail') {
+  if(scope==='all'||scope==='trees'||scope==='basic-tail'||scope==='recovery-tail') {
+    if(scope!=='recovery-tail') {
     let t=await tree();
     check('three-generation leaf remains alive after middle parent exits',await request(t.info.port));
     t.child.kill();const code=await t.child.done;
@@ -103,8 +104,13 @@ const deadline=setTimeout(()=>{console.error('PROCESS/OWNER deadline');for(const
     const info=await until(()=>{try{return JSON.parse(fs.readFileSync(infoFile,'utf8'));}catch(e){}},'parent leaf ready');ports.push(info);
     const parentDone=new Promise(r=>agent.once('close',r));agent.kill('SIGKILL');await parentDone;
     check('forced owner exit removes native descendants without JS cleanup',await stopped(info));
-    const fresh=await tree();fresh.child.kill();await fresh.child.done;
-    check('subsequent fresh owner can launch/stop without stale lock or PID state',fresh.child.ownedTree.closed&&await stopped(fresh.info));
+    } else {
+      // Minimal failed-tail setup only: do not repeat the 18 prior checks.
+      const t=await tree();cp.ChildProcess.prototype.kill.call(t.child,'SIGKILL');await t.child.done;
+      assert.ok(await stopped(t.info),'tail fixture native teardown');
+    }
+    let refused;try{manager.spawn(S.NODE_BIN,[]);}catch(error){refused=error;}
+    check('unknown broker death blocks further work until explicit process recovery',refused&&refused.code==='EOWNERUNKNOWN'&&manager.processOwnerInfo().active===0&&manager.processOwnerInfo().recoveryRequired);
   }
   console.log('PROCESS/OWNER '+checks+'/'+checks+'; scope='+scope+'; SKIP 0; modern Windows, not Win7 acceptance');
 } finally {

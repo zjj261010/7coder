@@ -14,7 +14,7 @@ function policy() {
     getToolMetadata: () => ({ risk: 'HIGH', explain: () => 'fixture' }), audit() {},
     askApproval: async question => { questions.push(question); return true; }, executeToolRaw: async (name, args) => { calls.push({ name, args }); return 'OK'; },
     makeToolResult: (status, text) => ({ status, text }), isAutoApprovalSafe: async () => ({ safe: true }) });
-  vm.runInContext(cut('function effectivePermissionMode()', '// Runs a sub-agent:') + cut('async function safeExecuteToolInner(', '// ====================== APPROVAL'), c);
+  vm.runInContext(cut('function checkExecution(', 'function watchExecution(')+cut('function effectivePermissionMode()', '// Runs a sub-agent:') + cut('async function safeExecuteToolInner(', '// ====================== APPROVAL'), c);
   c.invoke = (name, args) => c.safeExecuteToolInner({ function: { name, arguments: JSON.stringify(args) } }, [], null, () => false, {});
   c.change = value => { c.PERMISSION_MODE = value; c.effectivePermissionMode.revision = (c.effectivePermissionMode.revision || 0) + 1; };
   return { c, calls, questions };

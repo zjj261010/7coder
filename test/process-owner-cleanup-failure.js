@@ -28,7 +28,7 @@ function ping(port){return new Promise(resolve=>{const req=http.get({host:'127.0
  const info=await until(()=>{try{return JSON.parse(fs.readFileSync(infoFile,'utf8'));}catch(e){return null;}});
  check('owned detached descendant is alive before native cleanup failure',await ping(info.port));
  fs.writeFileSync(gate,'FINISH');const outcome=await result;await closed;
- check('native cleanup exception preserves stage and failure exit instead of root success',outcome.error&&outcome.error.code===125&&outcome.stderr.includes('fixture-cleanup-query-failure'));
+ check('native cleanup exception preserves unknown outcome with original failure exit',outcome.error&&outcome.error.code==='EOWNERUNKNOWN'&&outcome.error.cause&&outcome.error.cause.code===125&&outcome.stderr.includes('fixture-cleanup-query-failure'));
  check('cleanup exception never publishes a target-group completion proof',child.ownedTree.bound&&!child.ownedTree.closed&&!!child.ownedTree.error);
  await until(async()=>!await ping(info.port));const size=fs.statSync(heart).size;await pause(180);
  check('OS broker teardown still removes descendant listener and heartbeat',fs.statSync(heart).size===size&&manager.processOwnerInfo().active===0);

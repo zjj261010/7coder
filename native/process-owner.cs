@@ -135,7 +135,15 @@ internal static class ProcessOwner {
                     if(!inside) continue; // A reused PID outside this Job is never a termination target.
                     uint wait=WaitForSingleObject(member,0); Require(wait==0||wait==258,"wait-member");
                     if(wait==0) continue;
-                    if(!TerminateProcess(member,1) && WaitForSingleObject(member,0)!=0) Require(false,"terminate-member");
+                    if(!TerminateProcess(member,1)) {
+                        int terminateError=Marshal.GetLastWin32Error();
+                        uint after=WaitForSingleObject(member,0); Require(after==0||after==258,"wait-terminated-member");
+                        // Another parent/Job may already be terminating it.
+                        // ERROR_ACCESS_DENIED is not an empty-group proof:
+                        // re-query membership/accounting under the SAME total
+                        // deadline. Persistent denial still fails as unknown.
+                        if(after!=0 && terminateError!=5) throw new System.ComponentModel.Win32Exception(terminateError,"terminate-member");
+                    }
                 } finally { CloseHandle(member); }
             }
             Thread.Sleep(10);

@@ -15,7 +15,7 @@ function cut(from, to) { const a = source.indexOf(from), b = source.indexOf(to, 
     }
     let calls = 0;
     const c = vm.createContext({ MAX_TOOL_STEPS: 0, HEAVY_MODEL: 'fixture', createModelContext: main => ({ main }), callOpenAI: () => { calls++; throw Error('must not run'); } });
-    vm.runInContext(cut('async function processWithTools(', '// ====================== TASK CHANGE SUMMARY'), c);
+    vm.runInContext(cut('function checkExecution(', 'function watchExecution(')+cut('async function processWithTools(', '// ====================== TASK CHANGE SUMMARY'), c);
     check('zero-step final-answer path still honours cancellation', (await c.processWithTools([{ role: 'user', content: 'stop' }], { cancel: () => true })).includes('aborted') && calls === 0);
 
     const requests = [];

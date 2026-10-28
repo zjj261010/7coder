@@ -132,6 +132,8 @@ node scripts\test-all.js
 
 ## 八、常见问题
 
+- **进程结果未知 / recovery required**：立即停止重放任务，保存 `/api/info` 和工作区 `.7coder-process-recovery-required.json`。标记会阻止下次启动；只有人工确认实际进程、I/O 和文件/Git 状态后才能归档。标记写入未完成/失败时，不保证重启保护已落盘。见[现场恢复说明](PROCESS-RECOVERY-RUNBOOK.md)。
+
 - **中文乱码**：程序输出已全部 ASCII 化；Windows 命令输出已自动切换 UTF-8 代码页，无需手动 chcp。
 - **杀毒/防火墙提示**：HTTP 服务只绑定本机回环；如需局域网访问会被明确警告，务必设置 API key。
 - **GLM/本地模型**：任何 OpenAI 协议端点均可；`OPENAI_ENDPOINT` 留空则默认 OpenAI 官方。

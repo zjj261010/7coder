@@ -145,7 +145,7 @@ function startChat(port, job, stream) {
       effectivePermissionMode: () => 'default', isProtectedTarget: () => false, matchPermRule: () => null,
       isSuperDangerous: () => false, getToolMetadata: () => ({ risk: 'LOW', explain: () => 'fixture' }),
       makeToolResult: (status, text) => ({ status, text }) });
-    vm.runInContext(cut('async function safeExecuteToolInner(', '// ====================== APPROVAL'), gate);
+    vm.runInContext(cut('function checkExecution(', 'function watchExecution(')+cut('async function safeExecuteToolInner(', '// ====================== APPROVAL'), gate);
     let executed = 0;
     const late = control();
     gate.askApproval = async () => { late.cancel('approval arrived after disconnect'); return true; };

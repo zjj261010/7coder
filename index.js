@@ -89,11 +89,18 @@ REPL commands: /clear, /undo <file>, /btw <note>, /fork <N>, /execute-task-now, 
 // log and streamed replies in one-shot mode).
 function flushExit(code) {
   const pending = () => (process.stdout.writableLength || 0) + (process.stderr.writableLength || 0);
-  const deadline = Date.now() + 2000; // never hang if a stream never drains
+  let deadline = Date.now() + 2000; // never hang if a stream never drains
+  const recoveryDeadline=Date.now()+6000;
   // An explicit nonzero code wins; otherwise a process.exitCode set by a failed
   // task must survive the flush (success paths pass 0 and stay 0).
   const exitWith = code || process.exitCode || 0;
-  const tryExit = () => { if (pending() === 0 || Date.now() > deadline) process.exit(exitWith); else setTimeout(tryExit, 50); };
+  const tryExit = () => {
+    const recovery=typeof processRecovery!=='undefined'&&processRecovery&&processRecovery.info();
+    if(recovery&&recovery.pending&&!recovery.persistenceError&&Date.now()<recoveryDeadline){
+      deadline=Date.now()+2000;setTimeout(tryExit,50);return;
+    }
+    if(pending()===0||Date.now()>deadline)process.exit(exitWith);else setTimeout(tryExit,50);
+  };
   tryExit();
 }
 
@@ -101,6 +108,7 @@ function flushExit(code) {
 const launchDir = process.cwd();
 const appDir = require.main ? path.dirname(require.main.filename) : __dirname;
 let workspaceLease = null;
+let processRecovery = null;
 var backgroundLog = null;
 // Only the launcher can supply this before .env is loaded. It authorizes a
 // bounded wait for that exact parent's handoff, never bypasses OS exclusion.
@@ -209,6 +217,15 @@ async function acquireWorkspaceLease(directory, handoff) {
 // setup/recovery, not just main() or HTTP listen. --help stays outside the gate.
 async function initializeAgent() {
 workspaceLease = await acquireWorkspaceLease(launchDir, leaseHandoff);
+processRecovery = require('./lib/process-recovery').create(launchDir);
+processRecovery.assertReady(); // Before configuration recovery or workspace writes.
+if(child_process.onProcessOwnerUnknown)child_process.onProcessOwnerUnknown(error=>{
+  const recovery=processRecovery.record(error,result=>{
+    if(result.persistenceError)console.error('[PROCESS] Recovery marker persistence failed or timed out: '+result.persistenceError+
+      '. Keep this workspace stopped; inspect processes/files manually before any restart. Marker: '+result.file);
+  });
+  console.error('[PROCESS] '+error.message+' Recovery marker persistence requested: '+recovery.file);
+});
 if (leaseHandoff) {
   backgroundLog = createBackgroundLogger();
   for (const channel of ['stdout', 'stderr']) {
@@ -1095,6 +1112,7 @@ function pumpRequestGate() {
   if (requestGateBusy || !requestGateQueue.length) return;
   const entry = requestGateQueue.shift();
   clearTimeout(entry.timer); entry.detach();
+  try{checkExecution();}catch(error){entry.reject(error);pumpRequestGate();return;}
   requestGateBusy = true;
   let released = false;
   entry.resolve(() => {
@@ -2062,7 +2080,8 @@ const PROTECTED_FILES = [
   '.env', '.env.local', '.env.development', '.env.production',
   '.gitconfig', '.bashrc', '.zshrc', '.profile', '.npmrc', '.netrc',
   'id_rsa', 'id_ed25519', 'credentials.json',
-  'models.json' // AST-04: .7coder/models.json stores provider apiKeys
+  'models.json', // AST-04: .7coder/models.json stores provider apiKeys
+  '.7coder-process-recovery-required.json'
 ];
 
 function isProtectedTarget(name, args) {
@@ -2409,10 +2428,11 @@ function runCommandAsync(spec, opts) {
 // Observe cancellation and kill the direct child, but keep awaiting the
 // command callback. Process-tree termination remains a separate guarantee.
 async function awaitCommandCancellable(runner, cancelled) {
-  if (!cancelled) return { r: await runner.promise, aborted: false };
+  if (!cancelled) {const r=await runner.promise;if(r.error&&r.error.code==='EOWNERUNKNOWN')throw r.error;return { r, aborted: false };}
   const detach = watchExecution(cancelled, () => { try { runner.kill(); } catch (e) {} });
   try {
     const r = await runner.promise;
+    if(r.error&&r.error.code==='EOWNERUNKNOWN')throw r.error;
     return { r, aborted: cancelled() };
   } finally { detach(); }
 }
@@ -2876,6 +2896,10 @@ function observeOwnedChild(child, scope = 'child', id = '') {
   };
   child.once('exit', () => { state.exited = true; });
   child.once('close', closed);
+  child.on('ownerUnknown',error=>{
+    state.error=error;
+    for(const notify of Array.from(state.waiters))notify();
+  });
   child.on('error', error => {
     state.error = error;
     recordRuntimeEvent(scope, 'error', { id, pid: child.pid, message: error.message, code: error.code, path: error.path, syscall: error.syscall });
@@ -2891,15 +2915,17 @@ function stopOwnedChild(child, timeoutMs = 5000) {
   if (state.closed) return Promise.resolve({ closed: !child.ownedTree || child.ownedTree.closed, treeClosed: !!(child.ownedTree && child.ownedTree.closed),
     message: child.ownedTree && child.ownedTree.closed ? 'Owned Windows target group already empty; broker closed.' : 'Direct child already closed; descendant state is unverified.' });
   if (state.stopping) return state.stopping;
-  let settle, timer, killError = '';
+  let settle, timer, killError = '', finished = false;
   const promise = new Promise(resolve => { settle = resolve; });
   state.stopping = promise;
   const finish = () => {
+    if(finished)return;finished=true;
     clearTimeout(timer);
     state.waiters.delete(finish);
     state.stopping = null;
     const treeClosed = !!(child.ownedTree && child.ownedTree.closed);
-    settle({ closed: state.closed && (!child.ownedTree || treeClosed), treeClosed, message: treeClosed ? 'Owned Windows target group is empty; broker closed.' : state.closed ?
+    if((!state.closed||!treeClosed)&&child.markOwnerUnknown)child.markOwnerUnknown('Owned child stop completed without confirmed broker close and empty target group');
+    settle({ closed: state.closed && (!child.ownedTree || treeClosed), treeClosed, message: state.closed&&treeClosed ? 'Owned Windows target group is empty; broker closed.' : state.closed ?
       'Direct child closed; descendant state is unverified.' :
       'Direct child close unconfirmed; result unknown. ' + (killError || 'Close deadline exceeded.') });
   };
@@ -3536,6 +3562,7 @@ function serializeModelRequest(payload, cancelled, maxBytes = 8 * 1024 * 1024, m
   }
 }
 function checkExecution(cancelled) {
+  if(typeof child_process!=='undefined'&&child_process.assertProcessOwnerReady)child_process.assertProcessOwnerReady();
   if (cancelled && cancelled()) throw executionCancelledError(cancelled);
 }
 function watchExecution(cancelled, callback) {
@@ -3816,6 +3843,7 @@ function parseSSEStream(stream, onDelta, onReasoning) {
 }
 
 async function callOpenAI(currentMessages, options = {}) {
+  checkExecution(options.cancel);
   const {
     model = options.modelContext ? options.modelContext.main : HEAVY_MODEL,
     useTools = true,
@@ -3998,6 +4026,7 @@ function nextTodoId(items) {
 // spawn their own sub-conversations must NOT push into it mid-tool-call.
 async function executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext) {
   // Entry boundary. Tools that await before committing need additional checks.
+  checkExecution();
   if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: execution cancelled]');
   if (name === 'read_file') {
     try {
@@ -5601,6 +5630,7 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes, cancel
       if (closed || closeTimer) return;
       closeTimer = setTimeout(() => {
         result.cleanupFailed = true; log('[ERROR] close not observed; process/descendant result unknown.');
+        if(child.markOwnerUnknown)child.markOwnerUnknown('Debug observer close deadline exceeded');
         if (child.stdout) child.stdout.destroy();
         if (child.stderr) child.stderr.destroy();
         finish();
@@ -5625,6 +5655,9 @@ async function runDebugCycle(exePath, filePath, appType, durationMinutes, cancel
     } catch (e) { result.spawnFailed = true; log('[ERROR] spawn failed: ' + e.message); finish(); return; }
     // Node13 has no reliable 'spawn' event: bind error/exit/close immediately.
     child.on('error', e => {
+      if(e.code==='EOWNERUNKNOWN'){
+        result.cleanupFailed=true;log('[ERROR] '+e.message);finish();return;
+      }
       result.spawnFailed = true; log('[ERROR] spawn failed: ' + e.message);
       if (!child.pid) finish(); else stop('process error');
     });
@@ -5690,10 +5723,15 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   audit({ ts: new Date().toISOString(), type: 'tool', callId: toolCallIdentity(toolCall.id), tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: sanitizeAuditLine(first).substring(0, 160) });
   finishRuntime(status, { id: func.name, message: status === 'ok' ? undefined : first, exitCode: res && res.data && res.data.exitCode });
   return res;
-  } catch (error) { finishRuntime('error', error); throw error; }
+  } catch (error) {
+    if(error.code==='EOWNERUNKNOWN')audit({ts:new Date().toISOString(),type:'tool',callId:toolCallIdentity(toolCall.id),tool:toolCall.function.name,
+      mode:effectivePermissionMode(),status:'error',result:'Process outcome unknown; recovery required before further work.'});
+    finishRuntime('error', error); throw error;
+  }
 }
 
 async function safeExecuteToolInner(toolCall, conversation, approvalBridge, cancelled, modelContext) {
+  checkExecution();
   if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: execution cancelled]');
   const func = toolCall.function;
   let args;
@@ -5713,6 +5751,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
       return null;
     };
     const dispatch = async () => {
+      checkExecution();
       const blocked = policyResult();
       return blocked || await executeToolRaw(name, args, conversation, approvalBridge, cancelled, modelContext);
     };
@@ -5865,6 +5904,7 @@ async function safeExecuteToolInner(toolCall, conversation, approvalBridge, canc
   } catch (e) {
     // Never let a tool exception kill the whole conversation - feed the error
     // back to the model so it can react.
+    if(['EOWNERUNKNOWN','EOWNERCLEANUP','EOWNERUNAVAILABLE'].includes(e.code))throw e;
     if (cancelled && cancelled()) return makeToolResult('cancelled', '[aborted: execution cancelled]');
     return `Tool error: ${e.message}`;
   }
@@ -6205,6 +6245,7 @@ async function compressConversationIfNeeded(currentMessages, modelContext, cance
 }
 
 async function processWithTools(currentMessages, opts = {}) {
+  checkExecution();
   const onDelta = opts.onDelta || null;
   const onReasoning = opts.onReasoning || null;
   const onToolCall = opts.onToolCall || null;
@@ -6219,6 +6260,7 @@ async function processWithTools(currentMessages, opts = {}) {
   // concurrent streaming clients each talk to their own SSE connection.
   const approvalBridge = opts.approvalBridge || null;
   for (let step = 0; step < MAX_TOOL_STEPS; step++) {
+    checkExecution();
     if (cancelled()) return '[aborted: client disconnected]';
     await compressConversationIfNeeded(currentMessages, modelContext, cancelled);
     if (cancelled()) return '[aborted: client disconnected]';
@@ -6261,7 +6303,8 @@ async function processWithTools(currentMessages, opts = {}) {
       const calls = assistantMsg.tool_calls;
       if (calls.length > 1 && calls.every(tc => READ_ONLY_TOOLS.has(tc.function.name))) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext).catch(e => 'Tool error: ' + e.message)));
+        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext).catch(e => {if(['EOWNERUNKNOWN','EOWNERCLEANUP','EOWNERUNAVAILABLE'].includes(e.code))throw e;return 'Tool error: ' + e.message;})));
+        checkExecution();
         for (let i = 0; i < calls.length; i++) {
           if (onToolResult) {
             let preview = {};
@@ -6275,6 +6318,7 @@ async function processWithTools(currentMessages, opts = {}) {
       for (const tc of calls) {
         if (cancelled()) return '[aborted: client disconnected]';
         const result = await safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext);
+        checkExecution();
         if (onToolResult) {
           let preview = {};
           try { preview = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
@@ -8338,6 +8382,7 @@ function startHttpServer() {
       audit: auditSnapshot(),
       backgroundLog: backgroundLog ? backgroundLog.snapshot() : { enabled: false },
       processOwner: child_process.processOwnerInfo ? child_process.processOwnerInfo() : { mode: 'direct-child', treeVerified: false },
+      processRecovery: processRecovery && processRecovery.info(),
       ui: { available: !!webuiHtml, fileLimit: 2 * 1024 * 1024, error: webuiError },
       mcp: mcpDiagnosticsSnapshot(),
       mcpBudget: mcpBudgetSnapshot(),
@@ -8616,6 +8661,10 @@ function startHttpServer() {
     });
   }
   function hChat(req, res) {
+    try{checkExecution();}catch(error){
+      res.writeHead(503,{'Content-Type':'application/json'});
+      res.end(JSON.stringify({error:{code:error.code,message:error.message}}));req.resume();return;
+    }
     const reservation = reserveChatRequest();
     if (!reservation) {
       res.writeHead(429, { 'Content-Type': 'application/json', 'Retry-After': '1' });

@@ -3,9 +3,9 @@
 'use strict';
 const assert=require('assert'),fs=require('fs'),path=require('path'),cp=require('child_process'),http=require('http'),vm=require('vm');
 const {create}=require('./_endpoint');let H,model,chat,pendingDriver=null;const sockets=new Set(),saved={};let checks=0;
-const scope=process.env.GIT_READ_SCOPE||'all';assert.ok(['all','http'].includes(scope),'known git-read scope');const EXPECTED=scope==='http'?12:17;
+const scope=process.env.GIT_READ_SCOPE||'all';assert.ok(['all','http','diff-tail'].includes(scope),'known git-read scope');const EXPECTED=scope==='diff-tail'?1:scope==='http'?12:17;
 process.once('exit',()=>{if(checks!==EXPECTED){console.error('GIT/READ incomplete '+checks+'/'+EXPECTED);process.exitCode=1;}});
-function check(label,ok){assert.ok(ok,label);checks++;console.log('PASS '+label);}
+function check(label,ok){assert.ok(ok,label);if(scope==='diff-tail'&&!label.includes('same Agent'))return;checks++;console.log('PASS '+label);}
 const pause=ms=>new Promise(r=>setTimeout(r,ms));
 async function until(fn,label){const end=Date.now()+10000;while(Date.now()<end){const value=await fn();if(value)return value;await pause(20);}throw Error(label);}
 function cut(source,a,b){const start=source.indexOf(a),end=source.indexOf(b,start);assert.ok(start>=0&&end>start,a);return source.slice(start,end);}
@@ -44,11 +44,11 @@ function begin(prompt){let response;const data=JSON.stringify({stream:true,messa
  git(['init','--quiet']);git(['config','user.name','fixture']);git(['config','user.email','fixture@invalid']);const hooks=path.join(S.runDir,'empty-hooks');fs.mkdirSync(hooks);git(['config','core.hooksPath',hooks]);
  fs.writeFileSync(path.join(cwd,'tracked.txt'),'v1\n');git(['add','tracked.txt']);git(['commit','--quiet','-m','base']);fs.writeFileSync(path.join(cwd,'tracked.txt'),'v2\n');
  await H.start(cwd);
- for(const mode of ['status','diff']){
+ for(const mode of scope==='diff-tail'?['diff']:['status','diff']){
   const infoFile=path.join(S.runDir,mode+'.json'),heart=path.join(S.runDir,mode+'.heart'),driver=path.join(S.runDir,'hold-'+mode+'.js');fs.writeFileSync(heart,'');
   fs.writeFileSync(driver,'const fs=require("fs"),http=require("http");setTimeout(()=>process.exit(0),20000);http.createServer((q,s)=>s.end("held")).listen(0,"127.0.0.1",function(){fs.writeFileSync('+JSON.stringify(infoFile)+',JSON.stringify({port:this.address().port}));});setInterval(()=>fs.appendFileSync('+JSON.stringify(heart)+',"x"),25);');
   const command='"'+S.NODE_BIN.replace(/\\/g,'/')+'" "'+driver.replace(/\\/g,'/')+'"',key=mode==='status'?'core.fsmonitor':'diff.external';
-  // The request's pre-model task checkpoint still uses synchronous Git.
+  // The request's pre-model task checkpoint uses a separate async Git phase.
   // Activate this driver only when its first model response dispatches the
   // read tool, so this test proves that tool's wait rather than hiding phase.
   const prompt='hold-'+mode;pendingDriver={prompt,enable(){git(['config',key,command]);}};

@@ -7,7 +7,7 @@ const call=(id,name='write_file',args={path:'must-not-write.txt',content:'unexpe
 (async()=>{
   try{
     const src=fs.readFileSync(S.IDX,'utf8'),a=src.indexOf('async function processWithTools('),b=src.indexOf('// ====================== TASK CHANGE SUMMARY',a);
-    assert.ok(a>=0&&b>a);const loop=src.slice(a,b);
+    assert.ok(a>=0&&b>a);const loop=src.slice(src.indexOf('function checkExecution('),src.indexOf('function watchExecution('))+src.slice(a,b);
     for(const [label,message]of [
       ['missing message',null],['non-array tool_calls',{role:'assistant',tool_calls:'bad'}],
       ['65-call round',{role:'assistant',tool_calls:Array.from({length:65},(_,i)=>call('c'+i))}],

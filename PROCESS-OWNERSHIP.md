@@ -20,7 +20,7 @@
 5. v2发送 `TARGETS_EMPTY`/`STOPPED_EMPTY` 和根退出码，表示**目标组为空、broker仍待退出**；收到ACK或最多等2秒后正常退出，由OS关闭唯一Job句柄，保留选定退出码。`ownedTree.closed`是该目标组证明，完成操作还须ChildProcess close；不能把它解释为收到证明当刻整个Job已零成员。诊断暴露mode=windows-job-v2及proofScope=targets-empty-before-broker-close，旧协议物料明确拒绝。
 6. broker强制死亡关闭唯一Job句柄，内核处理包含未恢复目标在内的本Job成员；Agent死亡导致管道EOF，broker停止并退出。没有收到目标组证明的意外关闭保持清理未知，不因内核兜底已请求就冒称完成。长期后台命令仍应保持根目标存活，自然退出也清理后代。
 
-控制管道采用 overlapped IO；缓冲区、OVERLAPPED 和事件保持固定 native 地址直到完成。内核/驱动异常仍可能使停止结果未知，不承诺系统调用有硬时间上限。普通命令成功回调要求目标组空证明及 broker close；debug 的未启动/清理未知不进入自动修复；cron 清理未知会禁用后续自动触发并保留原因。MCP/shell 已执行副作用仍需查验，不自动重放。
+控制管道采用 overlapped IO；缓冲区、OVERLAPPED 和事件保持固定 native 地址直到完成。内核/驱动异常仍可能使停止结果未知，不承诺系统调用有硬时间上限。普通命令成功回调要求目标组空证明及 broker close；未结算停止/stdio 现在有软件未知终态和全局隔离，详见[现场恢复说明](PROCESS-RECOVERY-RUNBOOK.md)。debug 的未启动/清理未知不进入自动修复；cron 清理未知会禁用后续自动触发并保留原因。MCP/shell 已执行副作用仍需查验，不自动重放。
 
 ## 边界
 
@@ -141,4 +141,12 @@ lib目录已有打包/隔离复制覆盖新文件；INSTALL修正v2 probe和依�
 
 本批collector9、手动Job探针6、owner19/sync17/faults21、native集成14、桌面集成14、Git读取17/检查点19/提交21/实际Git8、Bash18、PID仅HTTP8、worktree仅HTTP9，共200个有效检查。探针首跑因夹具C#同名变量CS0136在0断言编译失败，修正后仅未完成探针6/6；其它通过项不重复。启动和全部execFile采集机制实质改变，旧测试不能替代本次；未重跑纯状态/审计/快照策略和全套。真实桌面/系统目标结束仍未执行。
 
-**极早期边界仍开放**：跳过uv Job后，broker在CLR进入Main/连接控制管道前若永久卡死，父Agent退出没有uv自动回收保证，可能有极早期helper残留。普通进入Main有连接期限且用户目标尚不能创建，但不构成CLR加载器硬期限证明。不能据就绪后强杀或Job探针宣称“所有进程从出生均受管”。它与native IO/未结算stdio的全局未知终态需后续架构/Win7验证；T22-07仍开放，不批准无人值守发布。
+**极早期边界仍开放**：跳过uv Job后，broker在CLR进入Main/连接控制管道前若永久卡死，父Agent退出没有uv自动回收保证，可能有极早期helper残留。普通进入Main有连接期限且用户目标尚不能创建，但不构成CLR加载器硬期限证明。不能据就绪后强杀或Job探针宣称“所有进程从出生均受管”。父Agent仍存活且事件循环可调度时，现有握手期限/停止监督可使它进入未知并隔离；父Agent提前死亡的架构边界未修。T22-07仍开放，不批准无人值守发布。
+
+## 未结算进程的未知终态与隔离（2026-10-28）
+
+正常完成契约保持。停止后8秒/exit后2秒仍无close时，采集器返回EOWNERUNKNOWN及有界部分输出；不发伪造close，不把destroy流当成目标组证明。全局隔离阻断新进程、模型和工具边界，并释放/拒绝HTTP队列；取消不能把未知转换成普通取消后继续工作。未关闭记录仍计数，迟到关闭只退记录，不自动恢复。异步独占写恢复标记，IO超时单独诊断；标记存在则下次启动在配置恢复前拒绝，详见现场手册。
+
+本批还确认debug实际清理出现terminate-member/Win32 5：结束上游进程后另一个Job可同时触发成员终止，TerminateProcess失败与句柄变为信号之间存在时序差。现在保存错误码，5且仍未信号时继续原5秒总预算内的Job成员/活动数复核；不把5直接当成功，其它错误仍失败。持续拒绝依然未知。参见[Microsoft TerminateProcess 文档](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)。生产CLR2物料已重建绑定，exe SHA256为71ae9983108bc2d140157b3c8d2eb0702456cb442fb61b95e36fbeb78a4001dc。
+
+验证记录与首跑失败/分段续测见ISSUES-LOG.md；没有重新执行整个旧套件，也没有Win7实机、系统注销/关机、24/72h或离线打包。旧章节的“下一阶段处理未知终态”是此前停点；软件隔离已落地，硬IO/父死亡/持久化失败等剩余边界仍不能据此关闭。
