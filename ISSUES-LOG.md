@@ -2145,3 +2145,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 发现过程捕获起始generation，初始化后/每页前后/保留及发布检查；变化即失败并丢弃本次部分结果，下一次显式请求才能重新发现，不自动循环重试。分页中通知不提前归还仍被当前协程持有的schema配额，由其finally回收；避免释放额度后又保留/发布旧数组。完整缓存才可当场释放，4MiB共享规则不变。
 - 新mcp-tools-generation首次15/15：双client缓存归属、通知零响应/零pending、重新获取新列表、重复失效不下溢、错误通知/带id请求不混淆、已保留首分页的数据收费直到失败finally、未发布混代schema、显式恢复、初始化continuation前变化与后续恢复、死client数据忽略/计数归零；真实受管Node peer在完整缓存后通知v1→v2、分页中变化后舍弃旧页再显式取得v3，最终Job及schema/input/pending归零。
 - Node13语法/JSON/diff、native物料绑定静态通过，Windows默认专项登记。没有重跑前面已通过的消息/初始化/队列/管道专项；未改变底层byte/页数准入算法，没有用重复正向结果装全套。未真实第三方/Win7/浏览器/长稳或打包。代际只在客户端会话内递增；已返回结果仍是当时快照，不是远端永远不变的保证，caller保留和总heap仍属T22-15。按授权本地提交后继续，不推送。
+
+### 2026-10-28 —— INC-LOOP-01 中断工具批的历史与并行结算
+
+- **High／确认错误路径**：processWithTools先加入assistant.tool_calls；串行批在剩余调用前取消会直接return，所有权检查或onToolResult异常也可能在结果入history前throw。REPL下一任务复用内存messages，严格模型会拒绝未配对tool_call_id；saveSession虽会移除磁盘工具链，却不修当前内存，不能作为恢复证明。并行Promise.all遇到所有权错误还会提前拒绝，释放任务门时其它已启动调用可能尚未结算。
+- 已准入并写入assistant的批次现在finally为每个ID保留唯一结果：已完成内容优先，未开始明确not executed，已进入调用但无完整结果明确outcome unknown并提醒复查副作用。先记录真实结果再通知consumer；历史修复不伪造audit/UI完成、不自动重放工具、不吞所有权隔离错误。并行等待全部已启动调用结算后再传播首个所有权错误；其它错误保留旧有Tool error兼容路径。全批预检失败仍零history/回调/执行，未更改64调用上限。
+- 新tool-history-recovery首跑前10项通过，真实REPL尾部因夹具错误等待读取审批超时（实际read_file自动放行、写入审批已正常超时）；只移除错误等待并以real selector续跑尾部4/4，不重复通过10项。覆盖取消前未开始、已完成后取消、串行fatal三态、结果后guard、两类consumer异常、并行fatal等待受控悬挂兄弟调用、普通错误兼容。真实Node13持久REPL读文件成功→写入审批截止→第三项未开始，下一任务实际通过本地严格配对endpoint；零写文件、仅两条真实audit、无工具重放，正常/bye退出。
+- 仅受影响旧tool-batch14/14、tool-step-limit20/20各首跑一次，保留无效批准入、64边界及0/1步上限契约。Node13语法/JSON/diff检查、标准test-all登记；native物料不变。未跑A–J/UI/全套、真实模型、Win7/关机/24–72h；未增加全局历史清洗或改变磁盘存档格式。工具本身永久不结算的风险仍依赖各自deadline/所有权监督，不因等待全部结果而宣称解决全部异步挂死。按授权本地提交后继续，不推送。

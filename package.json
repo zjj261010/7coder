@@ -113,6 +113,7 @@
     "test:endpoint-oracles": "node test/endpoint-oracles.js",
     "test:tool-correlation": "node test/tool-correlation.js",
     "test:tool-batch": "node test/tool-batch.js",
+    "test:tool-history-recovery": "node test/tool-history-recovery.js",
     "test:read-window": "node test/read-window.js",
     "test:mcp-budget": "node test/mcp-budget.js",
     "test:mcp-message-routing": "node test/mcp-message-routing.js",

@@ -6386,6 +6386,27 @@ async function processWithTools(currentMessages, opts = {}) {
     }
     currentMessages.push(assistantMsg);
     if (assistantMsg.tool_calls && assistantMsg.tool_calls.length > 0) {
+      const calls = assistantMsg.tool_calls;
+      // Once the assistant round is committed, every ID needs a tool reply,
+      // including cancellation, owner quarantine and callback failures. These
+      // history records do not fabricate execution/audit events or replay work.
+      const states = calls.map(() => ({ started: false, content: null, recorded: false }));
+      const runCall = async (tc, i) => {
+        states[i].started = true;
+        const result = await safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext);
+        states[i].content = capToolResult(result);
+        return result;
+      };
+      const recordCall = i => {
+        const state = states[i];
+        if (state.recorded) return;
+        const content = state.content !== null ? state.content : state.started
+          ? '[interrupted: tool invocation started but no complete result is available; outcome unknown; check side effects before retrying]'
+          : '[not executed: tool batch interrupted before this invocation started]';
+        currentMessages.push({ role: 'tool', tool_call_id: calls[i].id, content });
+        state.recorded = true;
+      };
+      try {
       // Notify UI about each tool call before execution
       if (onToolCall) {
         for (const tc of assistantMsg.tool_calls) {
@@ -6396,35 +6417,50 @@ async function processWithTools(currentMessages, opts = {}) {
           } catch (e) {}
         }
       }
-      // Parallel execution: read-only tools run concurrently via Promise.all;
+      // Parallel execution: read-only tools run concurrently;
       // write tools force sequential execution from that point onward.
-      const calls = assistantMsg.tool_calls;
       if (calls.length > 1 && calls.every(tc => READ_ONLY_TOOLS.has(tc.function.name))) {
         if (cancelled()) return '[aborted: client disconnected]';
-        const results = await Promise.all(calls.map(tc => safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext).catch(e => {if(['EOWNERUNKNOWN','EOWNERCLEANUP','EOWNERUNAVAILABLE'].includes(e.code))throw e;return 'Tool error: ' + e.message;})));
+        // Settle every admitted invocation before releasing the task gate. A
+        // fatal owner error must not leave sibling work running behind it.
+        const outcomes = await Promise.all(calls.map(async (tc, i) => {
+          try { return { result: await runCall(tc, i) }; }
+          catch (error) {
+            if (['EOWNERUNKNOWN','EOWNERCLEANUP','EOWNERUNAVAILABLE'].includes(error.code)) return { error };
+            const result = 'Tool error: ' + error.message;
+            states[i].content = capToolResult(result);
+            return { result };
+          }
+        }));
+        const failed = outcomes.find(outcome => outcome.error);
+        if (failed) throw failed.error;
         checkExecution();
         for (let i = 0; i < calls.length; i++) {
+          recordCall(i);
           if (onToolResult) {
             let preview = {};
             try { preview = JSON.parse(calls[i].function.arguments || '{}'); } catch (e) {}
-            onToolResult(calls[i].function.name, preview, results[i], calls[i].id);
+            onToolResult(calls[i].function.name, preview, outcomes[i].result, calls[i].id);
           }
-          currentMessages.push({ role: 'tool', tool_call_id: calls[i].id, content: capToolResult(results[i]) });
         }
         continue;
       }
-      for (const tc of calls) {
+      for (let i = 0; i < calls.length; i++) {
+        const tc = calls[i];
         if (cancelled()) return '[aborted: client disconnected]';
-        const result = await safeExecuteTool(tc, currentMessages, approvalBridge, cancelled, modelContext);
+        const result = await runCall(tc, i);
         checkExecution();
+        recordCall(i);
         if (onToolResult) {
           let preview = {};
           try { preview = JSON.parse(tc.function.arguments || '{}'); } catch (e) {}
           onToolResult(tc.function.name, preview, result, tc.id);
         }
-        currentMessages.push({ role: 'tool', tool_call_id: tc.id, content: capToolResult(result) });
       }
       continue;
+      } finally {
+        for (let i = 0; i < calls.length; i++) recordCall(i);
+      }
     }
     return assistantMsg.content || '';
   }
