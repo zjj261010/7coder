@@ -13,6 +13,7 @@ const ISummary = require('./_i-summary-fixture');
 const ICommand = require('./_i-command-fixture');
 const IFlush = require('./_i-flush-fixture');
 const IRalph = require('./_i-ralph-fixture');
+const ToolDeclarations = require('./_tool-declarations');
 const crypto = require('crypto');
 const { create: createEndpoint } = require('./_endpoint');
 
@@ -281,11 +282,8 @@ scenarios.push({
   name: 'table-consistency',
   fn: async () => {
     const src = fs.readFileSync(IDX, 'utf8');
-    const start = src.indexOf('const tools = [');
-    const end = src.indexOf('// ====================== SYSTEM PROMPT', start);
-    if (start < 0 || end < 0) throw new Error('tool metadata region not found');
     const ctx = {};
-    require('vm').runInNewContext(src.slice(start, end) + '\nthis.api = { tools, TOOL_METADATA, getToolMetadata, validateToolMetadata };', ctx);
+    require('vm').runInNewContext(ToolDeclarations.regions(src).metadata + '\nthis.api = { tools, TOOL_METADATA, getToolMetadata, validateToolMetadata };', ctx);
     const { tools, TOOL_METADATA: metadata, getToolMetadata, validateToolMetadata } = ctx.api;
     const baseline = JSON.parse(fs.readFileSync(path.join(ROOT, 'fixtures', 'tool-policy-before-opt12.json'), 'utf8'));
     const names = tools.map(t => t.function.name);
@@ -364,14 +362,16 @@ scenarios.push({
   name: 'metadata-scheduling',
   fn: async () => {
     const src = fs.readFileSync(IDX, 'utf8');
-    const definitions = src.slice(src.indexOf('const tools = ['), src.indexOf('// ====================== SYSTEM PROMPT'));
+    const definitions = ToolDeclarations.regions(src).metadata;
     const loop = src.slice(src.indexOf('async function processWithTools('), src.indexOf('// ====================== TASK CHANGE SUMMARY'));
+    const guard = src.slice(src.indexOf('function checkExecution('), src.indexOf('function watchExecution('));
     const vm = require('vm');
-    const run = async names => {
+    const run = async (names, ownerError) => {
       const starts = [], release = {};
-      let round = 0;
+      let round = 0, guardCalls = 0;
       const ctx = {
         MAX_TOOL_STEPS: 3, HEAVY_MODEL: 'fixture',
+        child_process: { assertProcessOwnerReady() { guardCalls++; if (ownerError) throw ownerError; } },
         createModelContext: main => ({ main, light: main, summary: main }),
         compressConversationIfNeeded: async () => {}, capToolResult: String,
         callOpenAI: async () => ({ message: round++ === 0 ? { role:'assistant',tool_calls:names.map((name,i) => ({id:String(i),function:{name,arguments:'{}'}})) } : {role:'assistant',content:'done'} }),
@@ -380,26 +380,34 @@ scenarios.push({
           return new Promise(resolve => { release[call.id] = () => resolve('result-'+call.id); });
         }
       };
-      vm.runInNewContext(definitions + '\n' + loop + '\nthis.run = processWithTools;', ctx);
-      const messages = [], done = ctx.run(messages);
+      vm.runInNewContext(definitions + '\n' + guard + '\n' + loop + '\nthis.run = processWithTools;', ctx);
+      const messages = [], pending = ctx.run(messages);
+      const done = new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error('metadata scheduling fixture did not settle')), 3000);
+        pending.then(value => { clearTimeout(timer); resolve(value); }, error => { clearTimeout(timer); reject(error); });
+      });
+      done.catch(() => {}); // observe early failures before the manual releases
       await new Promise(resolve => setImmediate(resolve));
-      return { starts, release, messages, done };
+      return { starts, release, messages, done, rounds: () => round, guardCalls: () => guardCalls };
     };
     const reads = await run(['sleep_tool','read_file']);
     const bothStarted = reads.starts.join(',') === '0,1';
     if (reads.release['1']) reads.release['1'](); // finish in reverse order
     reads.release['0']();
     if (!bothStarted) { await new Promise(r => setImmediate(r)); if(reads.release['1']) reads.release['1'](); }
-    await reads.done;
-    record('metadata scheduling: eligible reads start together and preserve tool-call result order', bothStarted && reads.messages.filter(m => m.role==='tool').map(m => m.tool_call_id+':'+m.content).join(',') === '0:result-0,1:result-1', reads.starts.join(','));
+    const readAnswer = await reads.done;
+    record('metadata scheduling: eligible reads start together, preserve result order and complete final model turn', bothStarted && readAnswer === 'done' && reads.rounds() === 2 && reads.guardCalls() > 0 && reads.messages.filter(m => m.role==='tool').map(m => m.tool_call_id+':'+m.content).join(',') === '0:result-0,1:result-1', reads.starts.join(','));
     const mixed = await run(['write_file','read_file']);
     const writeAlone = mixed.starts.join(',') === '0';
     mixed.release['0']();
     await new Promise(r => setImmediate(r));
     const readAfterWrite = mixed.starts.join(',') === '0,1';
     if(mixed.release['1']) mixed.release['1']();
-    await mixed.done;
-    record('metadata scheduling: mixed write/read batch stays sequential', writeAlone && readAfterWrite && mixed.messages.filter(m => m.role==='tool').map(m => m.content).join(',')==='result-0,result-1', mixed.starts.join(','));
+    const mixedAnswer = await mixed.done;
+    record('metadata scheduling: mixed write/read batch stays sequential and completes final model turn', writeAlone && readAfterWrite && mixedAnswer === 'done' && mixed.rounds() === 2 && mixed.guardCalls() > 0 && mixed.messages.filter(m => m.role==='tool').map(m => m.content).join(',')==='result-0,result-1', mixed.starts.join(','));
+    const fatal = Object.assign(Error('owned process cleanup pending'), { code: 'EOWNERCLEANUP' });
+    const gated = await run(['sleep_tool','read_file'], fatal), error = await gated.done.then(() => null, value => value);
+    record('metadata scheduling: original execution guard rejects before any model, tool or history mutation', error === fatal && gated.guardCalls() === 1 && gated.rounds() === 0 && gated.starts.length === 0 && gated.messages.length === 0, '');
   }
 });
 

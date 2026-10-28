@@ -7,6 +7,7 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { pairingValid } = require('./_protocol');
+const ToolDeclarations = require('./_tool-declarations');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'H', wsPrefix: 'w-h-' });
@@ -138,38 +139,20 @@ scenarios.push({
 scenarios.push({
   name: 'static-audit',
   fn: async () => {
+    const scope = process.env.H_STATIC_AUDIT_SCOPE || 'all';
+    if (!['all', 'required'].includes(scope)) throw Error('unknown H static-audit scope');
     const src = fs.readFileSync(IDX, 'utf8');
-    // tools array region
-    const tStart = src.indexOf('const tools = [');
-    const tEnd = src.indexOf('\n];', tStart);
-    const toolsSrc = src.substring(tStart, tEnd);
-    const names = [];
-    const nameRe = /name:\s*"([a-z0-9_]+)"/g;
+    // Evaluate only the top-level literal; regexes over nested object text
+    // previously skipped required/properties checks or included local arrays.
+    const declarations = require('vm').runInNewContext(ToolDeclarations.regions(src).declaration + '\ntools;');
+    const errors = ToolDeclarations.problems(declarations);
     let mm;
-    while ((mm = nameRe.exec(toolsSrc))) names.push(mm[1]);
-    const dupes = names.filter((n, i) => names.indexOf(n) !== i);
-    record('static: tool names unique (' + names.length + ' tools)', dupes.length === 0, 'dupes=' + JSON.stringify(dupes));
-    const missingDesc = [];
-    const missingReq = [];
-    const entryRe = /function:\s*\{\s*name:\s*"([a-z0-9_]+)"(?:,\s*description:\s*"((?:[^"\\]|\\.)*)")?((?:[^}])*?)\}\s*\}/g;
-    while ((mm = entryRe.exec(toolsSrc))) {
-      const [, name, desc, rest] = mm;
-      if (!desc) missingDesc.push(name);
-      const reqMatch = rest.match(/required:\s*\[([^\]]*)\]/);
-      if (reqMatch) {
-        const reqs = reqMatch[1].split(',').map(s => s.replace(/["'\s]/g, '')).filter(Boolean);
-        const propsMatch = rest.match(/properties:\s*\{([\s\S]*?)\},?\s*required/);
-        if (propsMatch) {
-          const props = [];
-          const propRe = /([a-z_0-9]+):\s*\{\s*"type"/g;
-          let pm;
-          while ((pm = propRe.exec(propsMatch[1]))) props.push(pm[1]);
-          for (const rq of reqs) if (!props.includes(rq)) missingReq.push(name + '.' + rq);
-        }
-      }
+    if (scope === 'all') {
+      record('static: nonempty tool declarations have unique valid names (' + declarations.length + ' tools)', errors.names.length === 0, JSON.stringify(errors.names));
+      record('static: every declared tool has a nonempty description', errors.descriptions.length === 0, JSON.stringify(errors.descriptions));
     }
-    record('static: every tool has a description', missingDesc.length === 0, 'missing=' + JSON.stringify(missingDesc));
-    record('static: required fields all declared in properties', missingReq.length === 0, 'violations=' + JSON.stringify(missingReq));
+    record('static: root/nested required fields exist in actual properties objects', errors.required.length === 0, JSON.stringify(errors.required));
+    if (scope === 'required') { S.info('static-audit: required assertion only; six previously passed assertions are not repeated'); return; }
     // env var documentation cross-check (both dot and bracket access)
     const envReads = new Set();
     const envRe = /process\.env\.([A-Za-z_][A-Za-z0-9_]*)/g;
@@ -180,7 +163,7 @@ scenarios.push({
     const documented = new Set();
     const docRe = /^\s*([A-Z_][A-Z0-9_]*)=/gm;
     while ((mm = docRe.exec(envExample))) documented.add(mm[1]);
-    const sysAllow = new Set(['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'PATH']); // PATH: Windows-provided like the others (findBash probes it), not 7coder config
+    const sysAllow = new Set(['ProgramFiles', 'ProgramFiles(x86)', 'LOCALAPPDATA', 'PATH', 'ComSpec', 'SystemRoot', 'SYSTEMROOT']); // OS-provided, not 7coder config
     const legacyAllow = new Set(['MAX_ATTEMPT_RETRIES', 'ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE']);
     // Internal parent->child lease handoff (set programmatically at spawn,
     // consumed and deleted at startup) - process IPC, not user configuration.

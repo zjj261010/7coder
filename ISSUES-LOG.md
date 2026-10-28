@@ -32,12 +32,12 @@
 | runner-f.js | 23 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
-| runner-i.js | 74 |
+| runner-i.js | 75 |
 | runner-j.js | 18 |
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **688** |
+| **合计** | **689** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2199,3 +2199,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新_i-ralph-fixture严格覆盖1轮、2轮、0→3轮回退、配置5轮但第2轮完成、功能关闭只1轮共五场景；上限用例不提前COMPLETE，提前完成另立案例。逐请求固定主模型/工具/stream、完整初始任务、每个精确refine轮号及前序回复，要求请求数恰好，不让辅助模型/重复兜底消耗位置脚本。每例还核对CLI真实退出/最终回复、准确循环横幅和完成位置、短回复不写无谓摘要，实际mock就绪替代600ms等待。
 - 新i-ralph-oracles首跑21/21，包含五类正例和旧两轮夹具不能证明三轮的直接反例、空/少/多请求、辅助模型偷步、tools/transport、错误轮号/任务/回复、幽灵tool结果、只看横幅/次数不足/完成轮错/完成后继续/重复完成。仅RUN_ONLY=ralph-bounds首跑15/15，五个隔离CLI均结束，0skip/无失败或重跑；未重复I1/I2等通过场景。
 - Node13语法/JSON/diff、默认入口和静态计数块更新；动态15与静态record调用数分别记录。未产品/native改动、A–J/UI/全套、真实模型/Win7/长稳/打包，不声称真实模型一定遵守完成约定。T22-33其余旧mock、跨执行ID及模型质量仍开放，按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 元数据抽取与调度夹具接线
+
+- I8循环证据已提交68942a3。阅读发现metadata-scheduling单独抽取processWithTools却遗漏checkExecution依赖；补入原guard后首跑仍在0断言因更早的抽取缺口语法失败：原indexOf('const tools = [')命中MCP函数内局部const tools=[]，把含await的函数片段当顶层脚本。I7和H4也共用错误搜索形式，不能再把它们旧通过记录当当前源码证明。
+- 新_tool-declarations以唯一顶层const tools声明及明确终点抽取，缺失/歧义显式失败；H4只在VM求值原声明字面量，独立对象检查非空/有效/唯一名字、说明、根/嵌套required字段，不再用会跳过嵌套结构的正则。此为现有工具定义的局部契约检查，不是完整JSON Schema编译器。ComSpec/SystemRoot/SYSTEMROOT列入OS环境变量，避免把系统前提误算成缺.env文档。
+- I调度夹具接入实际checkExecution及受控owner状态，3秒有界settle并观察早期reject，read并行逆序完成仍按ID入history、混合write/read串行，二者都必须到最终模型回合；新增owner错误在零模型/工具/history前原样阻断。仅metadata-scheduling/table-consistency完成12/12（3＋9），其余I场景未重复。
+- 新声明oracle初版23项通过。H4首跑6/7，新增参数判断器把四个实际无参数工具当错误；第一次只放行省略properties，定向参数oracle5项通过，但H required-only仍失败。读取四条原始声明确认它们省略整个parameters，按真实可选契约修正，补“显式null拒绝/整个字段省略合法”仅2项；H required-only最终1/1，未重复先过6项或I12。最终默认oracle为26项：其余原证据及受影响分段分别记录，不将23＋5＋2重叠计为30个独立断言，不冒称默认26曾一次全跑。无参数声明一直是合法产品代码，本批两次H失败属于我方oracle过严，未制造产品缺陷。
+- Node13语法/JSON/diff、标准入口、静态record统计更新；无产品/native改动、真实模型/桌面/Win7/长稳/打包和全套执行。H required/items检查不覆盖$ref/allOf等完整schema语义，不声称本地VM证明真实调度/Win7进程组。T22-33继续保留部分完成，按授权本地提交后继续，不推送。

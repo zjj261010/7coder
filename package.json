@@ -112,6 +112,7 @@
     "test:i-command-oracles": "node test/i-command-oracles.js",
     "test:i-flush-oracles": "node test/i-flush-oracles.js",
     "test:i-ralph-oracles": "node test/i-ralph-oracles.js",
+    "test:tool-declaration-oracles": "node test/tool-declaration-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",
     "test:tool-correlation": "node test/tool-correlation.js",
