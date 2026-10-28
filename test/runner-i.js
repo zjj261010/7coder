@@ -11,6 +11,8 @@ const http = require('http');
 const IContext = require('./_i-context-fixture');
 const ISummary = require('./_i-summary-fixture');
 const ICommand = require('./_i-command-fixture');
+const IFlush = require('./_i-flush-fixture');
+const crypto = require('crypto');
 const { create: createEndpoint } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
@@ -66,33 +68,42 @@ scenarios.push({
 scenarios.push({
   name: 'flush',
   fn: async () => {
-    const cwd = freshCwd('i2');
-    const big = 'FLUSHMARK-'.repeat(2000); // 20KB streamed reply
-    const m = startMock([{ role: 'assistant', content: big }, { role: 'assistant', content: 'flush summary' }]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
-    record('flush: 20KB streamed reply fully flushed before exit', r.out.includes(big) && r.code === 0, 'outLen=' + r.out.length);
+    const fixture = IFlush.create(NODE_BIN), env = { PERMISSION_MODE: 'bypass', HEAVY_MODEL: fixture.main, LIGHT_MODEL: fixture.summary,
+      SUMMARY_MODEL: fixture.summary, ENABLE_RALPH_MODE: 'false', DREAM_ALLOW: 'false', AUDIT_LOG: 'true', EXECUTION_TIMEOUT_MS: '8000' };
+    const cwd = freshCwd('i2'), m = startMock(fixture.directScript, { MOCK_STRICT: '1' });
+    let m2, worker, workerClosed = false;
+    try {
+      await readyMock(m);
+      const result = await runCli({ port: m.port, args: ['--prompt', fixture.directPrompt], env, cwd, timeoutMs: 12000 });
+      record('flush: exactly one complete 20KB reply is drained before actual CLI close', result.code === 0 && fixture.flushed(result.out), 'outLen=' + result.out.length + ' exit=' + result.code);
+      record('flush: strict main and complete summary requests occur exactly once', fixture.directEvidence(readLog(m.log)), 'requests=' + readLog(m.log).length);
+      record('flush: completed action summary is persisted before CLI exits', fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8') === '<!-- 7coder:auto-log:start -->\n- ' + fixture.directSummary + '\n<!-- 7coder:auto-log:end -->\n', '');
 
-    // Keep the plaintext marker out of the command preview. Verify the
-    // actual tool message sent back to the model, not incidental log text.
-    const stderrMarker = 'BGERR-MARK', encoded = Buffer.from(stderrMarker).toString('base64');
-    const m2 = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'bg', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: '"' + NODE_BIN + '" -e "process.stderr.write(Buffer.from(\'' + encoded + '\',\'base64\'))"' }) } }] },
-      { role: 'assistant', content: 'BG2-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const bgCwd = freshCwd('i2b');
-    const p = spawn(NODE_BIN, [IDX, '--background', '--prompt', 'bg'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', MAX_RETRIES: '1', PERMISSION_MODE: 'bypass' }),
-      cwd: bgCwd, stdio: 'ignore'
-    });
-    await new Promise(r => setTimeout(r, 5000));
-    const logPath = path.join(bgCwd, '.7coder', 'background.log');
-    const content = fs.existsSync(logPath) ? fs.readFileSync(logPath, 'utf8') : '';
-    const result = tr(readLog(m2.log), 'bg');
-    record('flush: background command forwards successful stderr to model', result && result.c.startsWith('Command OK:') && result.c.includes('[STDERR]\n' + stderrMarker) && content.includes('BG2-DONE'), result ? result.c : 'no tool result');
-    stopMock(m2);
-    stopMock(m);
+      // Launch the real handoff worker directly so this test retains its
+      // ChildProcess handle through close. The detached launcher has its own
+      // background-log/workspace-lease tests; do not infer worker death from it.
+      m2 = startMock(fixture.workerScript, { MOCK_STRICT: '1' }); await readyMock(m2);
+      const bgCwd = freshCwd('i2b'), token = crypto.randomBytes(24).toString('hex');
+      worker = spawn(NODE_BIN, [IDX, '--prompt', fixture.workerPrompt], { cwd: bgCwd, stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
+        env: Object.assign({}, process.env, env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1', MAX_RETRIES: '1',
+          _7CODER_LEASE_HANDOFF: JSON.stringify({ token, pid: process.pid }) }) });
+      let acknowledgement, bootstrap = '';
+      worker.on('message', message => { acknowledgement = message; });
+      for (const stream of [worker.stdout, worker.stderr]) stream.on('data', data => { bootstrap = (bootstrap + data).slice(-4096); });
+      const code = await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error('owned I2 worker close deadline')), 12000);
+        worker.once('close', value => { workerClosed = true; clearTimeout(timer); resolve(value); });
+      });
+      const content = fs.readFileSync(path.join(bgCwd, '.7coder', 'background.log'), 'utf8');
+      record('flush: retained worker handle confirms close after logger/workspace acknowledgement', code === 0 && acknowledgement && acknowledgement.kind === '7coder-background-owned' && acknowledgement.handoffToken === token && acknowledgement.owner && acknowledgement.owner.pid === worker.pid && acknowledgement.logReady === true, 'exit=' + code);
+      record('flush: worker tool identity, successful status and exact stderr reach next model', fixture.workerEvidence(readLog(m2.log), readLog(path.join(bgCwd, '.7coder', 'audit.jsonl'))), '');
+      record('flush: worker final answer exists exactly once in its completed log', content.split(fixture.workerDone).length - 1 === 1 && !bootstrap.includes(fixture.workerDone), '');
+      record('flush: worker finishes logging without hidden task/protocol or dropped-output errors', !/\[ERROR\]|MOCK_PROTOCOL|prior output dropped:|UnhandledPromiseRejection/.test(content + bootstrap), content.slice(-1200));
+      S.info('flush: real handoff worker and CLI close; detached launcher is covered separately');
+    } finally {
+      if (worker && !workerClosed) { worker.kill(); await new Promise(resolve => { if (workerClosed) resolve(); else worker.once('close', resolve); }); }
+      stopMock(m2); stopMock(m);
+    }
   }
 });
 

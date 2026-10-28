@@ -6,13 +6,15 @@
 >
 > 状态图例：✅ 已完成（附提交号/代码位置）｜🔶 部分完成（注明剩余部分）｜⬜ 未处理｜⛔ 不修（有明确决策）
 >
-> **最新待办索引（2026-10-22）**：见本文「2026-10-22 —— 双阶段审阅合并待办」：33 项修复/工程任务、8 项专项验证，以及保留的暂缓/不做项。已合并两轮审阅与既有账目；本次只整理清单，未修产品代码、未运行测试。下方历史回归通过记录不代表这些新增故障已关闭。
+> **待办基线（2026-10-22）**：见本文「2026-10-22 —— 双阶段审阅合并待办」：33 项修复/工程任务、8 项专项验证，以及保留的暂缓/不做项。清单建立当天只整理，后续实施以该节当前状态和文末逐批记录为准；历史回归通过记录不代表新增故障已关闭。
+>
+> **当前执行状态（2026-10-29）**：本地批次继续推进，最新新增工具批中断配对/并行结算、MCP协议/启动/缓存代际、交付额度及schema/出站预检，另补I1 CMD与I2退出日志的严格业务证据。具体提交/首跑失败/定向续测均记于文末，未推送、未重新打包；T22-06/07/15/26/33等部分项仍开放。真实Win7、交付浏览器、CLR入口前监督及24–72h/最终ZIP门槛未验收，不能把现代Windows上的Node13局部通过当发布许可。
 >
 > **执行进度（2026-10-23）**：T22-01 测试隔离改造、T22-02 启动器兼容修复已落地，暂列部分完成；隔离专项10/10、CLI定向3/3、权限sec1定向10/10通过。首轮隔离fixture格式错误及获准单次复跑如实记于10-23执行记录；完整A–J、最终shim变更及Win7/清理脚本实机验收未运行，不能宣称整单完成。
 >
 > **第二批进度（2026-10-23）**：T22-04/T22-05已完成本批修复与定向验收：Node13语法3/3、新增stream-context 31/31、旧compress-edges 2/2，均单次执行。实际HTTP故障恢复已验证；完整回归、Win7实机、真实模型摘要质量和取消/进程树等其它发布门槛仍未完成。
 >
-> 当前状态（2026-10-13）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-13~16 及既有暂缓项仍保留；OPT-12 已完成统一元数据；GAP-8/12、OPT-17 与 P2-7 已按 10-13 补齐范围验收，不能称全部待办清零。详见文末清账与修复记录。
+> 历史状态（2026-10-13）：本轮修复 P1-1/OP2-3、NEW-1 模型清单、NEW-2 cron 重叠执行，并同步关闭 OPT-8 的 ts3 验收缺口。A2-10、A2-16、AST-R1 已补翻完成状态；OPT-13~16 及既有暂缓项仍保留；OPT-12 已完成统一元数据；GAP-8/12、OPT-17 与 P2-7 已按 10-13 补齐范围验收，不能称全部待办清零。详见文末清账与修复记录。
 > 历史发布快照（v2.18.0，`1f52a8a`）：离线包 dist/7coder-v2.18.0-offline-win64.zip（21.6MB、449 条目、零残渣零 .env、内置 Node 13.14.0 冒烟通过）。该产物早于后续 OP2/A2 修复，不能据此宣称包含修复；本轮未重新打包。
 > 本轮回归（2026-10-20，**OPT-13 第四批**）：7 个校验/查找缺口工具（skill_tool/todo_write_tool/task_create_tool/task_stop_tool/cron_delete_tool/process_kill_tool/agent_tool）迁移结构化 ToolResult（同前三批分工）。七类失败文本此前均不在 TO_FAIL_RE、被推断为 ok，现获显式 error：`Skill error:`/`Skill "x" not found`/`Task error: command is required`/task_stop 的 `Task not found`/`Cron job not found:`/`Invalid PID`/`Agent error:`。语义决定并锁定：task_stop 幂等停止（`already <status>`）保持 ok（b4 绿记录）。enter_worktree_tool 的 `Worktree error:` 缺口**本轮主动不做**——freshCwd 位于真实仓库内，活体反例会向真 .git 写 worktree 元数据（副作用），留待清扫批代码审查确认。先红后绿：实施前 runner-b 失败记录恰 4 条、runner-i 恰 1 条。全绿门禁：node --check + runner-b **335/335** + runner-i **54/54** + runner(A) 88/88 + test-all 12 目标全绿；**Node 13.14.0 复验 B 335/335、I 54/54、A 88/88**。task_create 的 shutting-down、agent/process_kill/skill 成功路径活体不可构造或不宜构造，由代码审查确认。
 > 本轮回归（2026-10-20，**OPT-13 第三批**）：7 个状态读取/内容透传工具（task_get/task_list/task_output/memory_tool/list_mcp_resources/read_mcp_resource/prompt_from_file）迁移结构化 ToolResult（同批二分工：tierflow_pro 照规格执行＋门禁红绿，主会话终检）。先红后绿：实施前 runner-b 失败记录恰 4 条（任务输出/prompt 文件/MCP 资源的内容透传前缀误判×2、Task/File/Resource not found 三类推断缺口、workflow 跨错误样任务输出中断）、runner-i 恰 1 条。全绿门禁：node --check + runner-b **328/328** + runner-i **53/53** + runner(A) 88/88 + test-all 12 目标全绿；**Node 13.14.0 复验 B 328/328、I 53/53、A 88/88**。list_mcp_resources 的 catch 前缀 `MCP resource list error:` 不匹配 TO_FAIL_RE 的 `MCP error`（推断缺口）一并修复，活体反例不可构造由代码审查确认。**附带观察（不修）**：任务 id `task-<13位时间戳>-N` 含 `sk-<数字>` 子串，SSE/审计展示侧 sanitizeAuditLine（index.js:419）会把它掩码成 `task-***-1`——展示侧脱敏的预期副作用，模型侧文本未脱敏、功能无损；测试侧以同款归一化适配（b3 场景 norm 辅助）。
@@ -30,12 +32,12 @@
 | runner-f.js | 23 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
-| runner-i.js | 67 |
+| runner-i.js | 72 |
 | runner-j.js | 18 |
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **681** |
+| **合计** | **686** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -83,7 +85,7 @@
 | C2 | web_search / web_browser 真实外网 | ⬜ 保持离线确定性 |
 | C3 | computer_use 真实截屏 | ⬜ 仅真机手动验证过 |
 | C4 | macOS / Linux 分支真实运行 | ⬜ 本机 Windows |
-| C5 | 真 Win7 硬件（驱动/代码页差异） | ⬜ 以 Node 13 运行时等价验证 |
+| C5 | 真 Win7 硬件（驱动/代码页差异） | ⬜ 未验收；现代Windows上的Node13仅作语法/API局部证据，不能等价Win7，见V22-01 |
 | C6 | 超长 cron（>24.8 天分段续期） | ⬜ |
 | C7 | >6 并发 HTTP | ⬜ 6 并发已验证 |
 | C8 | 内存泄漏（数小时级 soak） | 🔶 短会话 24 任务 RSS 已验证（Suite H）；小时级未测 |
@@ -2182,3 +2184,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 第一条失败命令使用随包Node绝对路径，不假设系统PATH；等待现有readyMock实际就绪，替换固定600ms等待。仅Windows执行，其它平台明确skip。保留测试隔离和finally只关闭本测试mock，不接真实模型/桌面或工作区配置。此场景证明现代Windows上的cmd，不等于Win7/CP936/PS2实机验收。
 - 新i-command-oracles首跑20/20，反例包括空/少/多请求、轻模型偷步、错transport/命令/ID/重复结果、跨请求漂移、audit错状态/缺失/重复/错工具、退出码缺失/错误/重复、仅命中输出词/引号丢失/拒绝结果。I1首跑在0断言因调用名误写awaitMockReady失败；修为现有readyMock后仅重跑RUN_ONLY=chcp，6/6通过且1条INFO未冒算断言，零skip；未重跑20项oracle或其它I场景。
 - Node13语法/JSON/diff、默认脚本登记，静态断言计数块按现有脚本更新；不把静态record数当本次实际通过数。未A–J/UI/全套、真实模型/Win7/长稳/打包，产品源码和native物料不变。T22-33其余旧位置mock、跨执行ID及真实模型质量仍开放；按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 I2退出日志与真实worker关闭
+
+- I1补强已提交b9cf167。I2旧用例按位置mock、固定600ms/5s等待，观察后台最终字样却未等真实worker关闭；bootstrap的ChildProcess不能证明脱离worker退出。本批只修测试证据，不将这一盲区包装成新产品Bug或整树停止证明。
+- 普通CLI现在strict区分主/摘要模型，核对完整20KB正文只输出一次、完整摘要请求/持久化以及实际close后exit0。后台分支复用既有background-log专项认可的IPC handoff worker入口：直接保留真实worker句柄，验证token/owner.pid/loggerReady，等待其close（12秒有界）后才读日志；超时只操作此保留句柄。显式说明不覆盖detached启动器，后者继续由background-log/workspace-lease独立专项负责。移除全部固定就绪/完成睡眠。
+- worker模型严格两请求、唯一bg工具参数/ID/完整stderr、audit唯一ok，最终答复仅在worker完成日志中出现一次、不会误取bootstrap输出，无隐藏协议/任务/丢日志错误；不用stdout启动预览中的marker替代模型实际结果。原有20KB reply和stderr业务目标保留，新增身份/顺序/close证据。
+- 新i-flush-oracles首跑22/22，包括完整正例、空/少/多请求、辅助模型偷步、tools/transport、摘要截尾、正文重复/截断、错ID/命令/重复结果、audit缺失/重复/blocked、拒绝内容和多余stderr。仅RUN_ONLY=flush首跑7/7（另1条INFO，0skip），实际Node13 CLI及worker均退出；本批无测试失败/复跑，不重复I1或其它场景。
+- Node13语法/JSON/diff、标准入口登记、静态计数更新；问题文档头改为当前执行状态，旧10-13明确历史，并纠正C5“Node13等价Win7”的错误表述。未产品/native改动、未全套/真实模型/桌面/Win7/长稳/打包，不因workerclose宣称后代/外部资源全部清理。T22-33其余旧mock及真实模型证据仍开放；按授权本地提交后继续，不推送。
