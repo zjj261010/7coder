@@ -2118,3 +2118,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新web-launcher首次14/14：5种地址格式、无PS读.env/端口猜测、缺目录与Registry provider在私有入口marker前失败、真实文本PowerShell通过PATH选择随包Node13、中文空格实际cwd、带引号端口.env与真正HTTP/UI地址一致、强停PS后Agent监听/Job关闭、Node exit23准确传回及生产脚本/native不改。所有运行都用私有安装/配置，仅读HKCU Software目录元数据，不写注册表、不运行真实模型/桌面或改用户PATH。
 - 相关旧startup-readiness首次13/13，覆盖bind失败零启动副作用、dream挂起/抢占/期限与显式任务恢复，连新14共27无失败/复跑。Node13语法、现代PowerShell解析、JSON/diff通过，新Windows专项登记；没有为纯URL/日志重复页面或先前MCP/原生命令套件。
 - 未进行真实Win7/PS2、双击交互窗口、代码页/ACL、IPv6监听/目标浏览器/真实模型、24–72h与打包；T22-02/22保留🔶，仅完成可在本机独立验证的链路。按授权本地提交后继续，不推送。
+
+
+### 2026-10-28 —— INC-MCP-05 方法结果校验与格式化预算
+
+- 网页启动批已提交23db29f，继续验证MCP业务完成判断。**High／确认错误路径**：JSON-RPC envelope有result并不代表tools/call方法结果有效；旧mcpContentToText把null/缺content当空数组而返回成功，把字符串content逐字符序列化，非布尔isError也按truthiness处理。这可能把无有效业务结果写成完成；不是INC-MCP-02已处理的外层响应互斥问题。
+- 按当前2024-11-05方法契约，要求对象结果、content数组、可选布尔isError；每项为带非空type的对象，text项必须字符串。畸形结果MCP_PROTOCOL_ERROR/结果未知并提醒检查副作用，保留合法空content[]及正常isError错误。非text/未来扩展块继续保留compact JSON，不强行扩展能力协商或宣称完整schema验证。依据[MCP工具结果](https://modelcontextprotocol.io/specification/2024-11-05/server/tools)。
+- 格式化新增4096块/4MiB总输出预算（包括换行），先检查再parts/join。非文本块复用现有serializeModelRequest的64层/10万值/转义字节预检再JSON.stringify，避免深层栈溢出和JSON.parse数值规范化后比原帧大幅膨胀；预算错误明确MCP_RESULT_BUDGET/结果不完整，不带“工具未执行”误导字段，不自动重放。不等于MCP解析后对象或所有caller保留已具总heap预算。
+- 新mcp-call-result首次30/30：8种外形、6种块类型、合法空输出/UTF8/资源扩展、块数/换行/精确字节边界、深层和原帧<4MiB但数值展开超限时零原生stringify；实际原工具分支的错误/空成功/isError/恢复与预算归还。最后真实受管Node stdio peer返回null后下一调用正确，ToolResult明确error再ok，同一客户端保留可用，关闭后Job及MCP计数归零。
+- Node13语法/JSON/diff通过，Windows默认专项登记。共享序列化器本身未改，没有重复此前消息/队列/管道、启动器、Git等已通过套件；测试只读真实源码，私有配置/peer，不用模型/桌面/外部PID或下载。native物料未变，未打包/全套/Win7/第三方MCP/长稳验收。T22-15总内存与能力协商/目标协议矩阵仍开放；按授权本地提交后继续，不推送。

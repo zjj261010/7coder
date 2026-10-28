@@ -407,10 +407,30 @@ const MCP_MAX_FRAME_BYTES = 4 * 1024 * 1024;
 // process lifetime and disposed at shutdown.
 const mcpClients = Object.create(null);
 function mcpContentToText(result) {
-  const parts = [];
-  for (const c of ((result && result.content) || [])) {
-    if (c && c.type === 'text' && typeof c.text === 'string') parts.push(c.text);
-    else parts.push(JSON.stringify(c));
+  const protocolError=()=>Object.assign(new Error('Invalid MCP tools/call result; sent tool result unknown, check side effects before retrying.'),{code:'MCP_PROTOCOL_ERROR'});
+  const budgetError=()=>Object.assign(new Error('MCP tool result exceeds formatting budget; result incomplete, check side effects before retrying.'),{code:'MCP_RESULT_BUDGET'});
+  if(!result||typeof result!=='object'||Array.isArray(result)||!Array.isArray(result.content)||
+      (result.isError!==undefined&&typeof result.isError!=='boolean'))throw protocolError();
+  if(result.content.length>4096)throw budgetError();
+  const parts = [];let bytes=0;
+  for (const c of result.content) {
+    if(!c||typeof c!=='object'||Array.isArray(c)||typeof c.type!=='string'||!c.type.trim())throw protocolError();
+    let text;
+    if(c.type==='text'){
+      if(typeof c.text!=='string')throw protocolError();
+      text=c.text;
+    }else{
+      // Future/non-text blocks keep their compact JSON representation. The
+      // existing serializer preflights depth/nodes/escaped bytes before any
+      // full stringify, including numeric expansion of parsed JSON values.
+      try{text=serializeModelRequest(c,null,MCP_MAX_FRAME_BYTES);}catch(error){
+        if(['EOWNERUNKNOWN','EOWNERCLEANUP','EOWNERUNAVAILABLE','EXECUTION_CANCELLED'].includes(error.code))throw error;
+        throw budgetError();
+      }
+    }
+    bytes+=Buffer.byteLength(text,'utf8')+(parts.length?1:0);
+    if(bytes>MCP_MAX_FRAME_BYTES)throw budgetError();
+    parts.push(text);
   }
   return parts.join('\n');
 }
