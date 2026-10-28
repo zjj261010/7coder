@@ -12,6 +12,7 @@ const IContext = require('./_i-context-fixture');
 const ISummary = require('./_i-summary-fixture');
 const ICommand = require('./_i-command-fixture');
 const IFlush = require('./_i-flush-fixture');
+const IRalph = require('./_i-ralph-fixture');
 const crypto = require('crypto');
 const { create: createEndpoint } = require('./_endpoint');
 
@@ -405,18 +406,17 @@ scenarios.push({
 scenarios.push({
   name: 'ralph-bounds',
   fn: async () => {
-    for (const [label, env, expectRefine] of [
-      ['iterations=1 -> no loop', { ENABLE_RALPH_MODE: 'true', RALPH_ITERATIONS: '1' }, false],
-      ['iterations=2 -> one refinement', { ENABLE_RALPH_MODE: 'true', RALPH_ITERATIONS: '2' }, true],
-      ['iterations=0 falls back to MAX_RETRIES', { ENABLE_RALPH_MODE: 'true', RALPH_ITERATIONS: '0', MAX_RETRIES: '3' }, true]
-    ]) {
-      const cwd = freshCwd('i8' + label.length);
-      const m = startMock([{ role: 'assistant', content: 'B-REPLY' }, { role: 'assistant', content: 'RALPH_WIGGUM_COMPLETE final' }]);
-      await new Promise(r => setTimeout(r, 600));
-      const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: Object.assign({ PERMISSION_MODE: 'bypass' }, env), cwd });
-      const refined = r.out.includes('fulfilled at iteration 2');
-      record('ralph: ' + label, refined === expectRefine, 'refined=' + refined);
-      stopMock(m);
+    for (const variant of IRalph.cases) {
+      const cwd = freshCwd('i8-' + variant.key), fixture = IRalph.create(variant), m = startMock(fixture.script, { MOCK_STRICT: '1' });
+      try {
+        await readyMock(m);
+        const r = await runCli({ port: m.port, args: ['--prompt', fixture.prompt], env: Object.assign({ PERMISSION_MODE: 'bypass',
+          HEAVY_MODEL: fixture.model, LIGHT_MODEL: 'i-ralph-light', SUMMARY_MODEL: 'i-ralph-summary', MAX_RETRIES: '1',
+          DREAM_ALLOW: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false', EXECUTION_TIMEOUT_MS: '8000' }, variant.env), cwd, timeoutMs: 12000 });
+        record('ralph: ' + variant.label + ' completes with final business reply', r.code === 0 && r.out.includes(fixture.replies[fixture.replies.length - 1]) && !/\[ERROR\]|MOCK_PROTOCOL/.test(r.out), 'exit=' + r.code);
+        record('ralph: ' + variant.key + ' has exact round count and complete refinement history', fixture.evidence(readLog(m.log)), 'requests=' + readLog(m.log).length);
+        record('ralph: ' + variant.key + ' progress matches actual limit/completion with no short-reply summary', fixture.progress(r.out) && !fs.existsSync(path.join(cwd, '7CODER.md')), '');
+      } finally { stopMock(m); }
     }
   }
 });

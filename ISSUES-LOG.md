@@ -32,12 +32,12 @@
 | runner-f.js | 23 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
-| runner-i.js | 72 |
+| runner-i.js | 74 |
 | runner-j.js | 18 |
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **686** |
+| **合计** | **688** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2192,3 +2192,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - worker模型严格两请求、唯一bg工具参数/ID/完整stderr、audit唯一ok，最终答复仅在worker完成日志中出现一次、不会误取bootstrap输出，无隐藏协议/任务/丢日志错误；不用stdout启动预览中的marker替代模型实际结果。原有20KB reply和stderr业务目标保留，新增身份/顺序/close证据。
 - 新i-flush-oracles首跑22/22，包括完整正例、空/少/多请求、辅助模型偷步、tools/transport、摘要截尾、正文重复/截断、错ID/命令/重复结果、audit缺失/重复/blocked、拒绝内容和多余stderr。仅RUN_ONLY=flush首跑7/7（另1条INFO，0skip），实际Node13 CLI及worker均退出；本批无测试失败/复跑，不重复I1或其它场景。
 - Node13语法/JSON/diff、标准入口登记、静态计数更新；问题文档头改为当前执行状态，旧10-13明确历史，并纠正C5“Node13等价Win7”的错误表述。未产品/native改动、未全套/真实模型/桌面/Win7/长稳/打包，不因workerclose宣称后代/外部资源全部清理。T22-33其余旧mock及真实模型证据仍开放；按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 I8循环上限与提前完成分离
+
+- I2退出证据已提交2d6b3aa。**确认测试假阳性缺口**：原I8的iterations=0/MAX_RETRIES=3用例在第二轮即返回COMPLETE，只查一次fulfilled横幅；即使错误地把上限固定成2也会通过，无法证明回退到3。新批不修改循环产品代码。
+- 新_i-ralph-fixture严格覆盖1轮、2轮、0→3轮回退、配置5轮但第2轮完成、功能关闭只1轮共五场景；上限用例不提前COMPLETE，提前完成另立案例。逐请求固定主模型/工具/stream、完整初始任务、每个精确refine轮号及前序回复，要求请求数恰好，不让辅助模型/重复兜底消耗位置脚本。每例还核对CLI真实退出/最终回复、准确循环横幅和完成位置、短回复不写无谓摘要，实际mock就绪替代600ms等待。
+- 新i-ralph-oracles首跑21/21，包含五类正例和旧两轮夹具不能证明三轮的直接反例、空/少/多请求、辅助模型偷步、tools/transport、错误轮号/任务/回复、幽灵tool结果、只看横幅/次数不足/完成轮错/完成后继续/重复完成。仅RUN_ONLY=ralph-bounds首跑15/15，五个隔离CLI均结束，0skip/无失败或重跑；未重复I1/I2等通过场景。
+- Node13语法/JSON/diff、默认入口和静态计数块更新；动态15与静态record调用数分别记录。未产品/native改动、A–J/UI/全套、真实模型/Win7/长稳/打包，不声称真实模型一定遵守完成约定。T22-33其余旧mock、跨执行ID及模型质量仍开放，按授权本地提交后继续，不推送。
