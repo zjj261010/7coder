@@ -2160,3 +2160,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 初始化校验/initialized通知、callTool格式化及listTools页处理迁入request消费回调，处理/异步回调结束才归还；发现页将接受schema转交原cache预算，仅向外返回小型分页状态。raw request供诊断/测试的快照保留不在此预算；格式化后的字符串/历史、解析膨胀、V8 heap及其它状态仍开放，不能从wire-byte限额推断全Agent内存已封顶。不新增timer或后台循环。
 - 新mcp-delivery-budget首跑22/22：4个精确4MiB结果/额外拒绝、退役不提前归还、async消费持有/完成、consumer throw、remote error、坏帧/未关联、128小结果与129拒绝、三生产方法lease及schema转移、消费前取消、全部资源归零；真实受管Node peer连续8个3MiB响应，5个保留15MiB、3个明确超额，Job完成后费用仍在消费方，放行消费后全部归零。
 - 因本批直接改变三方法及raw request交付时序，先前结果不再作为当前版本证据，仅各重验一次受影响专项：initialize20、tools-generation15、call-result30、aggregate26、inbound30，均首跑通过；含新项共143项，本批零失败/重试。未重复工具历史/其它进程或Git套件。Node13语法/JSON/diff、Windows默认登记，CS/exe/json不变；未全套/Win7/第三方/真实模型/长稳或打包。T22-15保持🔶，按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— INC-MCP-08 工具发现schema分配前预检
+
+- 响应交付批已提交e352369。继续T22-15局部缺口：**Medium／确认先分配后准入，高可信峰值风险**，listTools此前JSON.stringify整页再计量1MiB缓存；短数字字面量被JSON.parse规范化后可放大，深层结构也会进入原生stringify栈。异步异常会被发现调用捕获，不能将其说成已确认全进程崩溃/OOM；真正已确认的是预算检查晚于完整分配。
+- 发现页改为复用原序列化计量器的measureOnly路径，先按剩余缓存字节、64层/每页10万值预检，无需构造整页JSON；保留256工具/8页、跨页comma/数组封装、空页/缓存等既有规则。失败MCP_SCHEMA_BUDGET/无完整列表，不携带模型专用requestNotSent字段或自动重试；已发送tools/list的事实不被掩盖。取消和所有权隔离在包装前再检查，仍抛原控制错误。复杂合法schema超过结构门槛也会拒绝，第三方适配不能从本地通过直接推断。
+- 新mcp-schema-preflight首跑17/17：精确1MiB/多1字节、保持别的缓存、短数字展开后超额、2万深度/10万值、64/65层边界、UTF8/转义/孤立surrogate、分页精确/溢出/满页后的空尾页、取消/所有权终态和所有额度。注入JSON.stringify计数证明页校验期间零整页序列化；真实受管Node peer先回展开后超限schema，明确失败且client仍活，下一显式发现成功，Job及费用收尾归零。
+- 因实际页计量路径改变，仅各重验一次受影响mcp-retention22/22、mcp-inbound-budget30/30，含新项69项，本批零失败/重跑；未重复响应交付/初始化/工具历史等通过套件。Node13语法/JSON/diff与Windows默认登记，native物料不变。未全套、Win7/第三方协议矩阵/真实模型/长稳/打包；解析后对象、历史和总heap仍不受此缓存预算覆盖，T22-15保持🔶。按授权本地提交后继续，不推送。

@@ -122,6 +122,7 @@
     "test:mcp-initialize": "node test/mcp-initialize.js",
     "test:mcp-tools-generation": "node test/mcp-tools-generation.js",
     "test:mcp-delivery-budget": "node test/mcp-delivery-budget.js",
+    "test:mcp-schema-preflight": "node test/mcp-schema-preflight.js",
     "test:mcp-launch-routing": "node test/mcp-launch-routing.js",
     "test:mcp-launch-integration": "node test/mcp-launch-integration.js",
     "test:mcp-explicit-batch": "node test/mcp-explicit-batch.js",

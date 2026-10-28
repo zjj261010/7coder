@@ -832,7 +832,17 @@ function createMcpStdioClient(name, cfg) {
           checkDiscovery();
           if (!res || !Array.isArray(res.tools)) throw new Error('MCP tools/list must return a tools array');
           if (tools.length + res.tools.length > 256) throw new Error('MCP tool discovery exceeds 256 tools; no complete list cached');
-          const added = Buffer.byteLength(JSON.stringify(res.tools), 'utf8') - 2 + (tools.length && res.tools.length ? 1 : 0);
+          const separator = tools.length && res.tools.length ? 1 : 0;
+          let added;
+          try {
+            // Measure parsed schemas before allocating a complete JSON copy.
+            // Numeric normalization can expand a short wire representation.
+            added = serializeModelRequest(res.tools, cancelled, 1024 * 1024 - bytes + 2 - separator, true) - 2 + separator;
+          } catch (error) {
+            checkExecution(cancelled); // retain cancellation/owner quarantine
+            const detail = String(error.message).replace(/^Model request rejected before sending: /, '');
+            throw Object.assign(new Error('MCP tool discovery exceeds 1MiB cache budget or structural limits; no complete list cached: ' + detail), { code: 'MCP_SCHEMA_BUDGET' });
+          }
           if (bytes + added > 1024 * 1024) throw new Error('MCP tool discovery exceeds 1MiB cache budget; no complete list cached');
           reserveSchemas(added);
           for (const tool of res.tools) {
