@@ -2152,3 +2152,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 已准入并写入assistant的批次现在finally为每个ID保留唯一结果：已完成内容优先，未开始明确not executed，已进入调用但无完整结果明确outcome unknown并提醒复查副作用。先记录真实结果再通知consumer；历史修复不伪造audit/UI完成、不自动重放工具、不吞所有权隔离错误。并行等待全部已启动调用结算后再传播首个所有权错误；其它错误保留旧有Tool error兼容路径。全批预检失败仍零history/回调/执行，未更改64调用上限。
 - 新tool-history-recovery首跑前10项通过，真实REPL尾部因夹具错误等待读取审批超时（实际read_file自动放行、写入审批已正常超时）；只移除错误等待并以real selector续跑尾部4/4，不重复通过10项。覆盖取消前未开始、已完成后取消、串行fatal三态、结果后guard、两类consumer异常、并行fatal等待受控悬挂兄弟调用、普通错误兼容。真实Node13持久REPL读文件成功→写入审批截止→第三项未开始，下一任务实际通过本地严格配对endpoint；零写文件、仅两条真实audit、无工具重放，正常/bye退出。
 - 仅受影响旧tool-batch14/14、tool-step-limit20/20各首跑一次，保留无效批准入、64边界及0/1步上限契约。Node13语法/JSON/diff检查、标准test-all登记；native物料不变。未跑A–J/UI/全套、真实模型、Win7/关机/24–72h；未增加全局历史清洗或改变磁盘存档格式。工具本身永久不结算的风险仍依赖各自deadline/所有权监督，不因等待全部结果而宣称解决全部异步挂死。按授权本地提交后继续，不推送。
+
+### 2026-10-28 —— T22-15 MCP完整响应交付额度
+
+- 上批历史/并行结算已提交ec178e4。继续已有T22-15“解析后pending结果”缺口：输入frame在JSON.parse前后即归还input额度，匹配响应也立即归还pending项；同一stdout事件同步分派多个响应时，已resolve但尚未轮到consumer的结果可同时保留。本项是**高可信内存峰值风险止损**，没有实机OOM/数周泄漏复现，不将其冒称已确认崩溃。
+- 新增跨客户端delivery上限128项/16MiB原始帧UTF8字节，诊断同时给共享/per-client deliveries和deliveryBytes。完整有效result/error在交给Promise前收费，超过只拒绝本次已发请求并提示不完整/复查副作用；不退休健康会话、不自动重试。未关联/畸形封包不创建lease。response已交付后，die/Job关闭不能回收仍被消费协程持有的数据费用，finally只释放自身且幂等。
+- 初始化校验/initialized通知、callTool格式化及listTools页处理迁入request消费回调，处理/异步回调结束才归还；发现页将接受schema转交原cache预算，仅向外返回小型分页状态。raw request供诊断/测试的快照保留不在此预算；格式化后的字符串/历史、解析膨胀、V8 heap及其它状态仍开放，不能从wire-byte限额推断全Agent内存已封顶。不新增timer或后台循环。
+- 新mcp-delivery-budget首跑22/22：4个精确4MiB结果/额外拒绝、退役不提前归还、async消费持有/完成、consumer throw、remote error、坏帧/未关联、128小结果与129拒绝、三生产方法lease及schema转移、消费前取消、全部资源归零；真实受管Node peer连续8个3MiB响应，5个保留15MiB、3个明确超额，Job完成后费用仍在消费方，放行消费后全部归零。
+- 因本批直接改变三方法及raw request交付时序，先前结果不再作为当前版本证据，仅各重验一次受影响专项：initialize20、tools-generation15、call-result30、aggregate26、inbound30，均首跑通过；含新项共143项，本批零失败/重试。未重复工具历史/其它进程或Git套件。Node13语法/JSON/diff、Windows默认登记，CS/exe/json不变；未全套/Win7/第三方/真实模型/长稳或打包。T22-15保持🔶，按授权本地提交后继续，不推送。

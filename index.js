@@ -504,6 +504,8 @@ function createMcpStdioClient(name, cfg) {
     nextId: 1,
     pending: new Map(), // id -> { resolve, reject, timer }
     queuedBytes: 0, // encoded writes whose callbacks have not completed
+    deliveries: 0,
+    deliveryBytes: 0, // wire bytes held through response consumption
     incomingBytes: 0, // incomplete frame, charged before concatenation
     toolsCache: null,
     toolsCacheBytes: 0,
@@ -698,8 +700,26 @@ function createMcpStdioClient(name, cfg) {
           Number.isInteger(msg.error.code) && typeof msg.error.message === 'string');
         if (has('result') === has('error') || !validError || (has('jsonrpc') && msg.jsonrpc !== '2.0')) {
           p.reject(Object.assign(new Error('Invalid MCP response; sent request result unknown, check side effects before retrying.'), { code: 'MCP_PROTOCOL_ERROR' }));
-        } else if (has('error')) p.reject(new Error(msg.error.message));
-        else p.resolve(msg.result);
+        } else {
+          // Clearing the input frame does not free its parsed response: the
+          // Promise may still be waiting for its consumer's microtask. Charge
+          // that handoff separately, including already-answered requests.
+          const bytes = Buffer.byteLength(line, 'utf8');
+          if (resources.deliveries >= resources.deliveriesLimit || resources.deliveryBytes + bytes > resources.deliveryBytesLimit) {
+            p.reject(Object.assign(new Error('MCP aggregate response delivery budget exceeded; sent request result incomplete, check side effects before retrying.'), { code: 'MCP_RESULT_BUDGET' }));
+            continue;
+          }
+          resources.deliveries++; resources.deliveryBytes += bytes;
+          client.deliveries++; client.deliveryBytes += bytes;
+          let released = false;
+          const release = () => {
+            if (released) return;
+            released = true;
+            resources.deliveries--; resources.deliveryBytes -= bytes;
+            client.deliveries--; client.deliveryBytes -= bytes;
+          };
+          p.resolve({ value: msg.result, error: has('error') ? new Error(msg.error.message) : null, release });
+        }
       }
       // server notifications (logging etc): ignored
     }
@@ -712,7 +732,7 @@ function createMcpStdioClient(name, cfg) {
     client.stderrTail = tailUtf8(client.stderrTail + tailUtf8(text, 4096), 4096);
     if (!logDiagnostic(client.stderrTail)) client.stderrSuppressedChunks = Math.min(Number.MAX_SAFE_INTEGER, client.stderrSuppressedChunks + 1);
   });
-  client.request = function (method, params, timeoutMs, cancelled) {
+  client.request = function (method, params, timeoutMs, cancelled, consume) {
     return new Promise((resolve, reject) => {
       if (cancelled && cancelled()) return reject(executionCancelledError(cancelled));
       if (client.dead) return reject(new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')'));
@@ -740,6 +760,14 @@ function createMcpStdioClient(name, cfg) {
         client.pending.delete(id);
         reject(e);
       }
+    }).then(async delivery => {
+      try {
+        if (delivery.error) throw delivery.error;
+        // Production methods consume/validate inside this lease and transfer
+        // accepted schemas to their separately charged cache. Raw diagnostic
+        // callers receive a snapshot; retaining it is outside this budget.
+        return consume ? await consume(delivery.value) : delivery.value;
+      } finally { delivery.release(); }
     });
   };
   client.ensureInit = function (cancelled) {
@@ -750,7 +778,7 @@ function createMcpStdioClient(name, cfg) {
       protocolVersion: '2024-11-05',
       capabilities: {},
       clientInfo: { name: '7coder', version: APP_VERSION }
-    }, 15000, cancelled).then(result => {
+    }, 15000, cancelled, result => {
       checkExecution(cancelled);
       if(!result||typeof result!=='object'||Array.isArray(result)||
           (result.capabilities!==undefined&&(!result.capabilities||typeof result.capabilities!=='object'||Array.isArray(result.capabilities)))||
@@ -799,27 +827,32 @@ function createMcpStdioClient(name, cfg) {
       for (let page = 0; page < 8; page++) {
         checkExecution(cancelled);
         checkDiscovery();
-        const res = await client.request('tools/list', cursor === undefined ? {} : { cursor }, 15000, cancelled);
+        const next = await client.request('tools/list', cursor === undefined ? {} : { cursor }, 15000, cancelled, res => {
+          checkExecution(cancelled);
+          checkDiscovery();
+          if (!res || !Array.isArray(res.tools)) throw new Error('MCP tools/list must return a tools array');
+          if (tools.length + res.tools.length > 256) throw new Error('MCP tool discovery exceeds 256 tools; no complete list cached');
+          const added = Buffer.byteLength(JSON.stringify(res.tools), 'utf8') - 2 + (tools.length && res.tools.length ? 1 : 0);
+          if (bytes + added > 1024 * 1024) throw new Error('MCP tool discovery exceeds 1MiB cache budget; no complete list cached');
+          reserveSchemas(added);
+          for (const tool of res.tools) {
+            if (!tool || typeof tool !== 'object' || Array.isArray(tool) || typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 256 || names.has(tool.name)) throw new Error('MCP tools/list has invalid or duplicate tool names');
+            names.add(tool.name); tools.push(tool);
+          }
+          bytes += added;
+          if (res.nextCursor === undefined || res.nextCursor === null || res.nextCursor === '') return { done: true };
+          if (typeof res.nextCursor !== 'string' || res.nextCursor.length > 1024 || cursors.has(res.nextCursor)) throw new Error('MCP tool discovery has invalid or repeated cursor');
+          return { done: false, cursor: res.nextCursor };
+        });
         checkExecution(cancelled);
         checkDiscovery();
-        if (!res || !Array.isArray(res.tools)) throw new Error('MCP tools/list must return a tools array');
-        if (tools.length + res.tools.length > 256) throw new Error('MCP tool discovery exceeds 256 tools; no complete list cached');
-        const added = Buffer.byteLength(JSON.stringify(res.tools), 'utf8') - 2 + (tools.length && res.tools.length ? 1 : 0);
-        if (bytes + added > 1024 * 1024) throw new Error('MCP tool discovery exceeds 1MiB cache budget; no complete list cached');
-        reserveSchemas(added);
-        for (const tool of res.tools) {
-          if (!tool || typeof tool !== 'object' || Array.isArray(tool) || typeof tool.name !== 'string' || !tool.name.trim() || tool.name.length > 256 || names.has(tool.name)) throw new Error('MCP tools/list has invalid or duplicate tool names');
-          names.add(tool.name); tools.push(tool);
-        }
-        bytes += added;
-        if (res.nextCursor === undefined || res.nextCursor === null || res.nextCursor === '') {
+        if (next.done) {
           client.toolsCache = tools; client.toolsCacheBytes = bytes;
           client.toolsCacheGeneration=generation;
           published = true;
           return client.toolsCache;
         }
-        if (typeof res.nextCursor !== 'string' || res.nextCursor.length > 1024 || cursors.has(res.nextCursor)) throw new Error('MCP tool discovery has invalid or repeated cursor');
-        cursors.add(res.nextCursor); cursor = res.nextCursor;
+        cursors.add(next.cursor); cursor = next.cursor;
       }
       throw new Error('MCP tool discovery exceeds 8 pages; no complete list cached');
     } finally { if (!published) clearSchemas(); client.listingTools = false; }
@@ -827,10 +860,13 @@ function createMcpStdioClient(name, cfg) {
   client.callTool = async function (toolName, toolArgs, cancelled) {
     await client.ensureInit(cancelled);
     checkExecution(cancelled);
-    const res = await client.request('tools/call', { name: toolName, arguments: toolArgs || {} }, MCP_CALL_TIMEOUT, cancelled);
+    const text = await client.request('tools/call', { name: toolName, arguments: toolArgs || {} }, MCP_CALL_TIMEOUT, cancelled, res => {
+      checkExecution(cancelled);
+      const text = mcpContentToText(res);
+      if (res && res.isError) throw new Error(text || 'tool reported isError with no content');
+      return text;
+    });
     checkExecution(cancelled);
-    const text = mcpContentToText(res);
-    if (res && res.isError) throw new Error(text || 'tool reported isError with no content');
     return text;
   };
   return client;
@@ -838,6 +874,7 @@ function createMcpStdioClient(name, cfg) {
 function mcpResourceBudget() {
   return createMcpStdioClient.resources || (createMcpStdioClient.resources = {
     pending: 0, pendingLimit: 128, queuedBytes: 0, queuedBytesLimit: 16 * 1024 * 1024,
+    deliveries: 0, deliveriesLimit: 128, deliveryBytes: 0, deliveryBytesLimit: 16 * 1024 * 1024,
     incomingBytes: 0, incomingBytesLimit: 16 * 1024 * 1024,
     schemaBytes: 0, schemaBytesLimit: 4 * 1024 * 1024
   });
@@ -868,6 +905,7 @@ function mcpDiagnosticsSnapshot() {
     const c = mcpClients[name];
     return { name: String(name).slice(0, 80), pid: c.child && c.child.pid || null,
       initialized: !!c.initialized, protocolVersion:c.protocolVersion, pending: c.pending.size, queuedBytes: c.queuedBytes, incomingBytes: c.incomingBytes,
+      deliveries: c.deliveries, deliveryBytes: c.deliveryBytes,
       tools: c.toolsCache ? c.toolsCache.length : null, toolsCacheBytes: c.toolsCacheBytes, discovering: !!c.listingTools,
       toolsGeneration:c.toolsGeneration, toolsCacheGeneration:c.toolsCacheGeneration,
       schemaBytes: c.schemaBytes,
