@@ -2127,3 +2127,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 格式化新增4096块/4MiB总输出预算（包括换行），先检查再parts/join。非文本块复用现有serializeModelRequest的64层/10万值/转义字节预检再JSON.stringify，避免深层栈溢出和JSON.parse数值规范化后比原帧大幅膨胀；预算错误明确MCP_RESULT_BUDGET/结果不完整，不带“工具未执行”误导字段，不自动重放。不等于MCP解析后对象或所有caller保留已具总heap预算。
 - 新mcp-call-result首次30/30：8种外形、6种块类型、合法空输出/UTF8/资源扩展、块数/换行/精确字节边界、深层和原帧<4MiB但数值展开超限时零原生stringify；实际原工具分支的错误/空成功/isError/恢复与预算归还。最后真实受管Node stdio peer返回null后下一调用正确，ToolResult明确error再ok，同一客户端保留可用，关闭后Job及MCP计数归零。
 - Node13语法/JSON/diff通过，Windows默认专项登记。共享序列化器本身未改，没有重复此前消息/队列/管道、启动器、Git等已通过套件；测试只读真实源码，私有配置/peer，不用模型/桌面/外部PID或下载。native物料未变，未打包/全套/Win7/第三方MCP/长稳验收。T22-15总内存与能力协商/目标协议矩阵仍开放；按授权本地提交后继续，不推送。
+
+
+### 2026-10-28 —— INC-MCP-06 初始化握手与半会话退役
+
+- 方法结果批已提交500869e后继续检查初始化。**High／确认状态错误路径**：旧ensureInit丢弃initialize.result，不论null/数组/已声明的不支持版本都发initialized并置true；非取消失败仅清initPromise，留下半初始化连接可被下一调用再次初始化。现在在通知和任何tools/call前检查返回对象、已提供capabilities/serverInfo的基本类型，以及显式protocolVersion必须为当前支持的2024-11-05。
+- 协议/元数据错误MCP_PROTOCOL_ERROR，明确未发送tools/call；初始化失败统一退役并停止对应客户端，原cache身份保护不变，不在原连接自动重放initialize。退休原因只保留有界错误前缀。成功诊断新增protocolVersion，dispose清空；有真实支持版本才记录它。出于旧shim兼容保留缺省元数据的对象结果，但版本显示null，不能冒称已经协商或已做完整能力/schema验证。
+- 依据[MCP 2024初始化生命周期](https://modelcontextprotocol.io/specification/2024-11-05/basic/lifecycle)：版本/能力先于正常工作，不支持响应版本应断开。这里只落实当前版本/显式元数据及失败状态边界，没有新增2025协议支持或强制迁移所有旧测试的{}初始化夹具。
+- 新mcp-initialize首跑在0/20因VM夹具漏console.log失败，未执行产品断言、无实际目标；补齐日志接口后仅这条专项续测20/20，不重复任何通过项。覆盖11种畸形初始化、显式远端拒绝、legacy缺省标记、并发首操作只初始化/通知一次、预取消零请求、回复后退出不复活、同名替换不受旧回调影响、全部MCP计数归还；最后真实受管peer返回不支持版本即关闭Job且零工具marker，改正确配置后新会话只执行一次，诊断版本正确，收尾归零。
+- Node13语法/JSON/diff与物料绑定静态检查，Windows默认专项登记。没有重跑此前MCP方法/消息/管道或启动器/Git套件；CS/exe/json不改。无真实模型/桌面/第三方服务/环境配置写入或在线安装。Win7/完整协议及能力矩阵、全Agent内存/磁盘、长稳与打包仍开放，按授权本地提交后继续，不推送。

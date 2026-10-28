@@ -515,6 +515,7 @@ function createMcpStdioClient(name, cfg) {
     stderrSuppressedChunks: 0,
     stderrLastLogAt: null,
     initialized: false,
+    protocolVersion: null,
     initPromise: null,
     dead: false,
     deadErr: ''
@@ -537,6 +538,7 @@ function createMcpStdioClient(name, cfg) {
     client.dead = true;
     client.deadErr = String(err);
     client.initialized = false;
+    client.protocolVersion = null;
     clearSchemas();
     clearIncoming();
     client.queuedBytes = 0;
@@ -737,13 +739,25 @@ function createMcpStdioClient(name, cfg) {
       protocolVersion: '2024-11-05',
       capabilities: {},
       clientInfo: { name: '7coder', version: APP_VERSION }
-    }, 15000, cancelled).then(() => {
+    }, 15000, cancelled).then(result => {
       checkExecution(cancelled);
+      if(!result||typeof result!=='object'||Array.isArray(result)||
+          (result.capabilities!==undefined&&(!result.capabilities||typeof result.capabilities!=='object'||Array.isArray(result.capabilities)))||
+          (result.serverInfo!==undefined&&(!result.serverInfo||typeof result.serverInfo!=='object'||Array.isArray(result.serverInfo)||
+            (result.serverInfo.name!==undefined&&typeof result.serverInfo.name!=='string')||
+            (result.serverInfo.version!==undefined&&typeof result.serverInfo.version!=='string')))){
+        throw Object.assign(new Error('Invalid MCP initialize result; session state unknown. No tools/call was sent.'),{code:'MCP_PROTOCOL_ERROR'});
+      }
+      if(result.protocolVersion!==undefined&&result.protocolVersion!=='2024-11-05'){
+        const version=typeof result.protocolVersion==='string'?result.protocolVersion.slice(0,80):typeof result.protocolVersion;
+        throw Object.assign(new Error('Unsupported MCP initialize protocol '+version+'. No tools/call was sent.'),{code:'MCP_PROTOCOL_ERROR'});
+      }
       send({ jsonrpc: '2.0', method: 'notifications/initialized' });
+      client.protocolVersion=result.protocolVersion||null; // Missing legacy metadata is not a negotiated-version proof.
       client.initialized = true;
     }).catch(e => {
       client.initPromise = null;
-      if (cancelled && cancelled()) die('initialization cancelled; session retired');
+      die(cancelled&&cancelled()?'initialization cancelled; session retired':'initialization failed; session retired: '+String(e.message).slice(0,500));
       throw e;
     });
     return client.initPromise;
@@ -835,7 +849,7 @@ function mcpDiagnosticsSnapshot() {
   return Object.keys(mcpClients).slice(0, 32).map(name => {
     const c = mcpClients[name];
     return { name: String(name).slice(0, 80), pid: c.child && c.child.pid || null,
-      initialized: !!c.initialized, pending: c.pending.size, queuedBytes: c.queuedBytes, incomingBytes: c.incomingBytes,
+      initialized: !!c.initialized, protocolVersion:c.protocolVersion, pending: c.pending.size, queuedBytes: c.queuedBytes, incomingBytes: c.incomingBytes,
       tools: c.toolsCache ? c.toolsCache.length : null, toolsCacheBytes: c.toolsCacheBytes, discovering: !!c.listingTools,
       schemaBytes: c.schemaBytes,
       stderr: { receivedBytes: c.stderrBytes, tailBytes: Buffer.byteLength(c.stderrTail, 'utf8'),
