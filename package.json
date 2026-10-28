@@ -76,6 +76,7 @@
     "test:task-budget": "node test/task-budget.js",
     "test:queue-admission": "node test/queue-admission.js",
     "test:startup-readiness": "node test/startup-readiness.js",
+    "test:web-launcher": "node test/web-launcher.js",
     "test:shell-scope": "node test/shell-scope.js",
     "test:shell-deadline": "node test/shell-deadline.js",
     "test:test-runtime": "node test/test-runtime.js",

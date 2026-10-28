@@ -585,7 +585,7 @@
 | 状态 | ID | 严重程度／证据 | 待办与完成条件 | 来源／既有项 |
 |---|---|---|---|---|
 | 🔶 | T22-01 | Medium／确认 | **先隔离测试工装**：所有子进程显式独立 cwd/配置和超时；真实桌面/真实模型单独 opt-in；不临时改安装根权限；清理只针对本次 PID/身份。验收时真实 `.env`、仓库元数据和正在运行的 Agent 不受影响。后续行为测试依赖此项。 | R1 M16；OP5-1 已做基线下沉，但没有覆盖这些例外路径 |
-| 🔶 | T22-02 | High／确认兼容错误路径 | **修 Win7 网页启动器**：替换 PS2/CLR2 不存在的 IsNullOrWhiteSpace；缺运行时/入口/工作区时明确报错并返回非零。默认 Win7 PS2 下通过双击和命令行、中文/空格工作区验收。 | R1 H01；C5 |
+| 🔶 | T22-02 | High／确认兼容错误路径 | **修 Win7 网页启动器**：已替换PS2/CLR2不存在的IsNullOrWhiteSpace，缺运行时/入口/工作区明确失败。10-28再取消PS侧整文件读取.env/猜端口，限定FileSystem工作区，Agent按实际监听地址/端口输出URL并正确格式化IPv6/通配绑定；新14＋旧启动13各单次。实际PS/随包Node隔离链路通过，不等于Win7/PS2双击、权限/代码页及浏览器验收，保持🔶。 | R1 H01；C5；10-28网页启动记录 |
 | 🔶 | T22-03 | High／部署风险 | **固定离线基线**：10-24增加OFFLINE-BASELINE和manifest：Win7 SP1 x64/官方Node13.14 x64 SHA256固定，packer在替换stage前校验；Chrome109.0.5414.120 x64仅候选，未提供浏览器物料/hash/实机验收。页面启动前探测Promise/fetch/AbortSignal/UTF8解码/流读取等，缺失显示原因且零请求/timer。新专项13/13＋DOM15项单次。基础离线模型需预置，非所有网络/npx工具均离线。浏览器实际交付及Win7/DLL/断外网验收仍阻止整项关闭。 | R1 H02/Win7/离线；C5；本日浏览器基线批 |
 | ✅ | T22-04 | High／确认 | **隔离 SSE 解析异常**：10-23完成结构校验、事件回调捕获、统一单次结算、提前close/aborted处理及失败销毁；原解析函数故障矩阵与实际HTTP null帧后下一请求恢复通过。 | R2 N02；index.js parseSSEStream；test/stream-context.js；本批31/31，详见10-23第二批记录；未宣称全部网络异常组合或Win7已验收 |
 | ✅ | T22-05 | High／确认 | **保护压缩前原始上下文**：10-23完成失败/空摘要明确报错且不改原数组；按20K分段全部输入成功后才提交；当前用户要求原文保留，工具参数/已完成副作用进入摘要输入；后续段失败零提交。 | R2 N03；index.js summarizeConversation/compressConversationIfNeeded；test/stream-context.js；31/31＋旧边界2/2；真实模型摘要质量仍有单独限制 |
@@ -2108,3 +2108,13 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新cmd-unc-cwd首次13/13：路径/命名空间分类、盘符/本地名称不误封、六种实际适配器入口零broker/进程/控制线程启动、准入可恢复、非cmd只到fake launcher。夹具还拦截所有UNC stat和全部spawn/spawnSync，回归时也不会真的访问虚构共享或执行命令；本次UNC探测计数为0。只读native物料绑定不变，未向任何外部PID发信号。
 - Node13语法/JSON/diff与native散列通过，默认Windows专项登记。没有重跑此前已通过的本地MCP/命令路径或其它全套；没有Win7/SMB/映射盘/不同账户/提权/断连实测。部署基线/INSTALL明示限制，并去掉INSTALL将历史问题一概称为“不影响核心功能”的旧措辞，改指向当前所有权/发布边界。
 - 实际网络盘、驱动卡死、原生程序UNC与Win7发布门槛仍开放，不能把零启动保护写成共享可用性认证。Microsoft pushd对网络路径的临时映射行为仅作背景，本项目未实施该机制。按授权本地提交后继续，不推送。
+
+
+### 2026-10-28 —— T22-02/22 网页启动目录与真实就绪地址
+
+- UNC限制批已提交0f5e6a9，继续检查双击/PS启动链。CLI bat使用绝对runtime/入口且保留调用cwd，无需为形式统一加入chdir；未修改稳定行为。网页PS脚本重复解析workspace .env猜端口：引号值、父环境或安装配置优先级与Agent不同会显示错误URL；Get-Content对超大文件/行也没有Node侧8MiB准入。旧网页输出还默认127.0.0.1，无法表达实际IPv6或非回环绑定。
+- scripts/start-web.ps1取消.env读取和未监听URL预告，只提示等待Agent的监听地址；工作区Resolve-Path后显式要求FileSystem provider。provider检查属于部署边界止损，未把其它PowerShell宿主在Registry中启动native的行为泛化为已确认Win7故障。仍保留PS2可用写法、Push/Pop finally、实际Node退出码与既有runtime选择，不新增目标机依赖。
+- Agent只在server.listen成功后按server.address的实际地址/端口输出endpoint/UI。IPv6加括号，通配0.0.0.0/::分别给本地浏览器127.0.0.1/[::1]，非回环实际绑定不再宣传未监听的127地址。URL格式化不是IPv6全网络/浏览器或scope-id矩阵认证。
+- 新web-launcher首次14/14：5种地址格式、无PS读.env/端口猜测、缺目录与Registry provider在私有入口marker前失败、真实文本PowerShell通过PATH选择随包Node13、中文空格实际cwd、带引号端口.env与真正HTTP/UI地址一致、强停PS后Agent监听/Job关闭、Node exit23准确传回及生产脚本/native不改。所有运行都用私有安装/配置，仅读HKCU Software目录元数据，不写注册表、不运行真实模型/桌面或改用户PATH。
+- 相关旧startup-readiness首次13/13，覆盖bind失败零启动副作用、dream挂起/抢占/期限与显式任务恢复，连新14共27无失败/复跑。Node13语法、现代PowerShell解析、JSON/diff通过，新Windows专项登记；没有为纯URL/日志重复页面或先前MCP/原生命令套件。
+- 未进行真实Win7/PS2、双击交互窗口、代码页/ACL、IPv6监听/目标浏览器/真实模型、24–72h与打包；T22-02/22保留🔶，仅完成可在本机独立验证的链路。按授权本地提交后继续，不推送。

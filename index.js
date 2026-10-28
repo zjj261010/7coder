@@ -8349,6 +8349,11 @@ function readJsonBody(req, res, limitBytes, then, options = {}) {
   detach = watchExecution(options.cancelled, () => fail(408, options.cancelled.reason || 'Chat cancelled while reading body.'));
 }
 
+function httpListeningUrls(address,port) {
+  const host=value=>value.indexOf(':')>=0?'['+value+']':value;
+  const browserAddress=address==='0.0.0.0'?'127.0.0.1':address==='::'?'::1':address;
+  return { endpoint:'http://'+host(address)+':'+port, ui:'http://'+host(browserAddress)+':'+port+'/' };
+}
 function startHttpServer() {
   const sessionHistoryPager = createSessionHistoryPager();
   const isLoopback = ['127.0.0.1', 'localhost', '::1'].includes(HTTP_BIND);
@@ -8938,9 +8943,10 @@ function startHttpServer() {
   server.listen(HTTP_PORT, HTTP_BIND, () => {
     listening = true;
     recordRuntimeEvent('http-ready', 'ok');
-    console.log(`7coder HTTP OpenAI-compatible endpoint ready at http://${HTTP_BIND}:${HTTP_PORT}`);
+    const bound=server.address(),urls=httpListeningUrls(bound.address,bound.port);
+    console.log('7coder HTTP OpenAI-compatible endpoint ready at '+urls.endpoint);
     if (HTTP_API_KEY) console.log('[AUTH] API key required (Authorization: Bearer <HTTP_API_KEY>).');
-    if (webuiHtml) console.log('Built-in web UI: open http://127.0.0.1:' + HTTP_PORT + '/ in your browser (Chinese-friendly chat).');
+    if (webuiHtml) console.log('Built-in web UI: open '+urls.ui+' in your browser (Chinese-friendly chat).');
     else console.warn('[UI] API is ready; built-in page is unavailable. Inspect /api/info.ui and repair the installation before opening the UI.');
     console.log('Streaming (stream: true) and multi-turn client histories are supported.');
     console.log('Note: in default permission mode non-interactive approvals are declined - use PERMISSION_MODE=auto for server-driven tool use.');

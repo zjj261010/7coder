@@ -19,16 +19,12 @@ if (-not $Workspace -or $Workspace.Trim().Length -eq 0) {
 }
 
 if (-not (Test-Path -LiteralPath $Workspace -PathType Container)) { throw "Workspace directory not found: $Workspace" }
-$Workspace = (Resolve-Path -LiteralPath $Workspace).Path
+$WorkspaceLocation = Resolve-Path -LiteralPath $Workspace
+if ($WorkspaceLocation.Provider.Name -ne 'FileSystem') { throw 'Workspace must be a FileSystem directory. No Agent was started.' }
+$Workspace = $WorkspaceLocation.Path
 $Entry = Join-Path $Repo 'index.js'
 if (-not (Test-Path -LiteralPath $Entry -PathType Leaf)) { throw "Entry file not found: $Entry" }
-$HttpPort = 7103
-$WorkspaceEnv = Join-Path $Workspace '.env'
-if (Test-Path -LiteralPath $WorkspaceEnv -PathType Leaf) {
-  $PortLine = Get-Content -LiteralPath $WorkspaceEnv | Where-Object { $_ -match '^\s*HTTP_PORT\s*=' } | Select-Object -Last 1
-  if ($PortLine -match '^\s*HTTP_PORT\s*=\s*(\d+)') { $HttpPort = $Matches[1] }
-}
-Write-Host "7coder web UI: http://127.0.0.1:$HttpPort/"
+Write-Host 'Starting 7coder. Use the listening address printed by the Agent after startup succeeds.'
 Write-Host "Workspace: $Workspace"
 Write-Host "Runtime: $Node"
 Write-Host 'Press Ctrl+C to stop the server.'
