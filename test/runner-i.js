@@ -10,6 +10,7 @@ const path = require('path');
 const http = require('http');
 const IContext = require('./_i-context-fixture');
 const ISummary = require('./_i-summary-fixture');
+const ICommand = require('./_i-command-fixture');
 const { create: createEndpoint } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
@@ -41,24 +42,23 @@ const scenarios = [];
 scenarios.push({
   name: 'chcp',
   fn: async () => {
+    if (process.platform !== 'win32') { S.skip('chcp: requires actual Windows cmd.exe'); return; }
     const cwd = freshCwd('i1');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'node -e "process.exit(5)"' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'c2', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'echo one & echo two' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'c3', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'echo redirect > i1out.txt' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'c4', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'echo "quoted & ampersand"' }) } }] },
-      { role: 'assistant', content: 'I1-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
+    const fixture = ICommand.create(NODE_BIN), m = startMock(fixture.script, { MOCK_STRICT: '1' });
+    try {
+    await readyMock(m);
+    const r = await runCli({ port: m.port, args: ['--prompt', fixture.prompt], env: { PERMISSION_MODE: 'bypass', AUDIT_LOG: 'true',
+      HEAVY_MODEL: fixture.model, LIGHT_MODEL: fixture.model, SUMMARY_MODEL: fixture.model, ENABLE_RALPH_MODE: 'false', DREAM_ALLOW: 'false' }, cwd, timeoutMs: 15000 });
     const log = readLog(m.log);
-    const f1 = tr(log, 'c1'), f2 = tr(log, 'c2'), f3 = tr(log, 'c3'), f4 = tr(log, 'c4');
-    record('chcp: failing command still reports failure (exit code propagates)', f1 && /Command failed/.test(f1.c) && /exit/.test(f1.c + ''), f1 ? f1.c.substring(0, 80) : 'no result');
-    record('chcp: multi-command chains work', f2 && f2.c.includes('one') && f2.c.includes('two'), f2 ? f2.c.substring(0, 60) : 'no result');
-    record('chcp: redirection scoped to the user command', fs.existsSync(path.join(cwd, 'i1out.txt')) && fs.readFileSync(path.join(cwd, 'i1out.txt'), 'utf8').includes('redirect'), '');
-    record('chcp: quoted ampersand passthrough', f4 && f4.c.includes('quoted & ampersand'), f4 ? f4.c.substring(0, 60) : 'no result');
+    const audits = readLog(path.join(cwd, '.7coder', 'audit.jsonl')), runtime = readLog(path.join(cwd, '.7coder', 'runtime.jsonl'));
+    record('chcp: full strict five-request transcript completes without auxiliary step theft', fixture.transcript(log) && r.code === 0 && r.out.includes(fixture.done), 'exit=' + r.code + ' requests=' + log.length);
+    record('chcp: every unique command ID has exactly its expected audit status', fixture.audit(audits), JSON.stringify(audits.filter(row => row.type === 'tool').map(row => [row.callId, row.status])));
+    record('chcp: command failure retains actual exit code 5 rather than a matching word', fixture.failure(log, audits, runtime), JSON.stringify(runtime));
+    record('chcp: multi-command chain has only the two expected output lines', fixture.stdout(log, 'c2') === 'one\ntwo', String(fixture.result(log, 'c2')));
+    record('chcp: successful redirection has empty stdout and exact intended single-line content', fixture.stdout(log, 'c3') === '' && fs.existsSync(path.join(cwd, 'i1out.txt')) && fs.readFileSync(path.join(cwd, 'i1out.txt'), 'utf8').trim() === 'redirect', '');
+    record('chcp: quoted ampersand stays in one literal output value', fixture.stdout(log, 'c4') === '"quoted & ampersand"', String(fixture.result(log, 'c4')));
     S.info('chcp: this scenario covers run_command only; Bash is tested separately');
-    stopMock(m);
+    } finally { stopMock(m); }
   }
 });
 

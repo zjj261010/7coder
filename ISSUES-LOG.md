@@ -30,12 +30,12 @@
 | runner-f.js | 23 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
-| runner-i.js | 54 |
+| runner-i.js | 67 |
 | runner-j.js | 18 |
 | runner-k.js | 13 |
 | runner-r.js | 12 |
-| runner.js | 59 |
-| **合计** | **667** |
+| runner.js | 60 |
+| **合计** | **681** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2174,3 +2174,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - send先复用measureOnly按转义UTF8/64层/10万值计量（包含末尾换行），再检查原4MiB/client及16MiB共享队列，准入后才JSON.stringify和长度一致性核对。帧/结构拒绝改MCP_REQUEST_BUDGET、requestNotSent=true；取消和所有权检查保持控制错误身份。request将原token传入计量，写入前再检查。requestNotSent不表示对应MCP进程未启动；已经写出的原请求继续按真实write callback/close归还费用，未改未知结果/物理管道规则。
 - 新mcp-outgoing-preflight首跑前10项通过，正常UTF8往返项因夹具在nextTick写回调前要求待写额度归零而失败；保持产品先收费直到回调的规则，补一次事件轮转后仅tail续测10/10，不重跑前10。覆盖精确4MiB（含换行）、大参数/数字/深度/值数/cycle/accessor/toJSON/BigInt零整串分配和零write；不执行getter/serializer、正常UTF8/control/surrogate、单client与六client总队列拒绝前零JSON、计量中取消/owner、timer/费用归零。真实受管peer拒超额后仅接收到有效initialize及tools/call，原值往返且Job关闭归零。
 - 四个独立VM夹具接入真实序列化器，schema故障注入限定Array以免新增出站预检先消费其取消/owner触发点；未用stub伪造准入。因本批改变全部send，仅各重验一次直接受影响mcp-budget11、message-routing23、schema-preflight17、explicit-batch7、launch-integration8，全部首跑通过。含新项有效证据共86项；未重复其它MCP/进程/Git/历史及A–J/UI全套。Node13语法/JSON/diff与Windows默认登记，native物料不变，未Win7/第三方/长稳或打包；T22-15总heap与外部caller保留仍开放。按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 I1 CMD回归业务证据
+
+- 出站准入批已提交054bba9后继续旧测试迁移，**测试覆盖缺口**：I1原来按位置消费mock，只查exit字样/one和two等片段/重定向文件存在，未同时核对完整请求链、实际退出码及四个callId的权威状态。当前process-capture的错误消息也不保证带数字退出码，匹配exit单词不能证明5。此批只补证据，不因测试薄弱臆造新的产品Bug。
+- 新_i-command-fixture为I1固定主模型、原始任务、四条精确命令/ID和五个请求的完整history；strict mock逐步检查模型、可用工具和累计结果，oracle进一步验证完整参数、结果不漂移、五次恰好完成。全部audit逐ID唯一且error/ok/ok/ok，runtime中对应唯一失败工具的真实exitCode须5；成功命令要求Command OK及精确规范化行、重定向空stdout＋预期单行文件、引号内ampersand不拆命令。
+- 第一条失败命令使用随包Node绝对路径，不假设系统PATH；等待现有readyMock实际就绪，替换固定600ms等待。仅Windows执行，其它平台明确skip。保留测试隔离和finally只关闭本测试mock，不接真实模型/桌面或工作区配置。此场景证明现代Windows上的cmd，不等于Win7/CP936/PS2实机验收。
+- 新i-command-oracles首跑20/20，反例包括空/少/多请求、轻模型偷步、错transport/命令/ID/重复结果、跨请求漂移、audit错状态/缺失/重复/错工具、退出码缺失/错误/重复、仅命中输出词/引号丢失/拒绝结果。I1首跑在0断言因调用名误写awaitMockReady失败；修为现有readyMock后仅重跑RUN_ONLY=chcp，6/6通过且1条INFO未冒算断言，零skip；未重跑20项oracle或其它I场景。
+- Node13语法/JSON/diff、默认脚本登记，静态断言计数块按现有脚本更新；不把静态record数当本次实际通过数。未A–J/UI/全套、真实模型/Win7/长稳/打包，产品源码和native物料不变。T22-33其余旧位置mock、跨执行ID及真实模型质量仍开放；按授权本地提交后继续，不推送。
