@@ -168,3 +168,11 @@ cfg.env在Windows按不区分大小写覆盖父变量，查找与实际spawn共�
 batch shim仍使用用户配置的既有shell语义，本批不宣称其任意参数已全部字面化，也不改变Windows批处理文件正文编码；常见离线shim可用ASCII正文、%~dp0扩展Unicode路径。PATH文件探测仍是同步IO，网络盘/驱动卡死不由本批解决；不能据查找到解释器就承诺版本支持Win7。
 
 验证与夹具失败后仅尾段续测见ISSUES-LOG.md。真实原生解释器用隔离复制的随包Node代替Python，真实batch也是本地受管夹具；未运行npx下载、未安装Python/编译器、未修改父进程真实PATH或用户配置，native物料保持不变。Win7/真实第三方MCP/PS2及长稳仍待验收。
+
+### 显式批处理完整路径
+
+后续实测发现：当前托管路径的隐式批处理回退会错误解释带空格和&的完整文件名，返回1且目标脚本未执行，虽然Job目标组证明存在。这不是“绝对.cmd一概无法启动”或一律193；裸shim、原生可执行文件和不同运行时不能混为同一个断言。
+
+MCP显式.cmd/.bat（含显式相对路径）现构造独立cmd.exe `/d /v:off /s /c`启动，文件路径解析到实际child cwd，路径和支持的参数分别引用，windowsVerbatimArguments保留构造的命令行；仍经严格Job拥有解释器与目标。只接受有效环境中绝对cmd.exe（ComSpec或SystemRoot回退）。百分号会在引号内展开，内嵌引号/换行/NUL也不能对任意batch转发可靠表示，因此这些路径/参数启动前明确拒绝；可改用原生解释器或自备ASCII包装。不能说任意batch内部处理都会保持参数不变。
+
+当前现代主机实际MCP专项7项通过：Unicode/空格/&路径、支持参数、延迟展开关闭、相对路径、非法参数零启动、Job关闭与计数归还；没有实际npx下载或真实第三方/Win7矩阵。API背景见[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)，实际行为以隔离运行证据为准。

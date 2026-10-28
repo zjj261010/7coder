@@ -425,7 +425,8 @@ function mcpContentToText(result) {
 // that is the only reliable way to start .cmd shims like npx. The quoting
 // hazards of shell:true are accepted by design: .7coder/mcp.json is
 // user-authored config, the same trust boundary as the run_command tool.
-// Non-Windows platforms and explicit paths are untouched (returns false).
+// Non-Windows and explicit native paths stay direct. Explicit batch paths
+// get a separately quoted interpreter invocation in the factory below.
 function resolveCommandOnWindows(command, env = process.env, cwd = process.cwd()) {
   if (process.platform !== 'win32') return false;
   const cmd = String(command || '').trim();
@@ -455,11 +456,27 @@ function createMcpStdioClient(name, cfg) {
     env[key]=cfg.env[key];
   }
   const cwd=cfg.cwd||launchDir;
-  const child = child_process.spawn(cfg.command, Array.isArray(cfg.args) ? cfg.args : [], {
+  let command=cfg.command,argv=Array.isArray(cfg.args)?cfg.args:[],shell=resolveCommandOnWindows(command,env,cwd),verbatim=false;
+  if(process.platform==='win32'&&/[\\/]/.test(command)&&/\.(?:cmd|bat)$/i.test(command)){
+    const value=name=>{const key=Object.keys(env).find(k=>k.toLowerCase()===name);return key?env[key]:'';};
+    const interpreter=value('comspec')||(value('systemroot')?path.join(value('systemroot'),'System32','cmd.exe'):'');
+    if(!path.isAbsolute(interpreter)||path.basename(interpreter).toLowerCase()!=='cmd.exe')throw Error('MCP explicit batch requires an absolute cmd.exe in ComSpec or SystemRoot. No process was started.');
+    const quote=value=>{
+      const text=String(value);
+      // % expansion happens even inside quotes; embedded quotes/newlines
+      // cannot be forwarded reliably through arbitrary batch %* shims.
+      if(/["%\r\n\0]/.test(text))throw Error('MCP explicit batch path/argument contains unsupported quote, percent or newline. Use a native executable or an ASCII wrapper. No process was started.');
+      return '"'+text+'"';
+    };
+    const line=[quote(path.resolve(cwd,command))].concat(argv.map(quote)).join(' ');
+    command=interpreter;argv=['/d','/v:off','/s','/c','"'+line+'"'];shell=false;verbatim=true;
+  }
+  const child = child_process.spawn(command, argv, {
     cwd,
     env,
     stdio: ['pipe', 'pipe', 'pipe'],
-    shell: resolveCommandOnWindows(cfg.command,env,cwd)
+    shell,
+    windowsVerbatimArguments:verbatim
   });
   const client = {
     child: child,

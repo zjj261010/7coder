@@ -117,6 +117,7 @@
     "test:mcp-message-integration": "node test/mcp-message-integration.js",
     "test:mcp-launch-routing": "node test/mcp-launch-routing.js",
     "test:mcp-launch-integration": "node test/mcp-launch-integration.js",
+    "test:mcp-explicit-batch": "node test/mcp-explicit-batch.js",
     "test:mcp-aggregate-budget": "node test/mcp-aggregate-budget.js",
     "test:mcp-inbound-budget": "node test/mcp-inbound-budget.js",
     "test:model-response-budget": "node test/model-response-budget.js",

@@ -2090,3 +2090,12 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 随后batch夹具启动失败（stdout ended）。首版batch正文包含无BOM UTF8中文绝对路径，未保存该次stderr，不能将具体失败阶段无证据定为产品故障。改常见ASCII/%~dp0相对shim、Node读取UTF8脚本，并补stderr诊断；仅batch-tail失败/未跑5项通过，先前原生3项不重跑。尾项验证仅cfg.env的相对PATH能发现并实际运行batch，cwd/env正确、缺命令ENOENT零目标、全部MCP/owner归零及父PATH/native物料不变。不是Python/npx或Win7第三方环境认证。
 - 共享native路径解析变化后旧owner仅basic10/10本批首次一次，覆盖argv/中文/stdio/空PATH/cmd及批处理启动/创建失败与记录回收；没有再跑此前MCP消息/预算/pipe等通过项。新增专项登记npm/test-all；Node13语法、JSON/diff、native绑定通过，后续路径优先级与测试注释仅静态检查。未改CS/exe/json、未打包/全套/Win7实机/长稳，未下载/安装依赖或改用户PATH/真实配置。
 - 同步PATH文件探测与异常网络盘仍属T22-06，解释器版本/Win7依赖矩阵仍属T22-23。本批修启动选择/参数数据破坏，不据此关闭这些整项；按授权提交后自动继续，不推送。
+
+
+### 2026-10-28 —— INC-MCP-04 显式批处理路径的隐式命令解释
+
+- f2fd4ef已提交后继续实测此前只静态保持的显式.cmd路径。**High／确认特定路径错误**：在当前v2适配器＋现代Windows/Node13上，包含空格和&的完整batch文件名通过隐式cmd路径被拆开解释；code1、bound=true/closed=true，但预期脚本marker未生成。Job清理证明不能证明业务脚本正确执行。
+- 纠正本轮诊断过程：先据CreateProcessW文档假定这里会返回193，该探针在0/1失败，未记录详情；加输出并续测后实际看到code1和被拆开的路径诊断，第二个“只有成功或193”断言同样在0/1失败。两次都是诊断假设不充分，不能当产品回归通过项，也不恢复历史撤回的“绝对.cmd必然失败”。据真实结果改为只修此MCP显式batch命令行。原生API自动回退的全部版本矩阵未验证。
+- 显式.cmd/.bat及显式相对路径构造绝对cmd.exe＋`/d /v:off /s /c`，文件路径相对实际child cwd规范化，路径/支持参数各自引用，windowsVerbatimArguments保持命令行；走原严格Job，既有裸shim/原生exe分支不改。ComSpec或SystemRoot须可提供绝对cmd.exe；%/内嵌引号/换行/NUL会导致不能可靠传递的输入，在任何进程前明确拒绝，而不是变量展开或执行错命令。batch自身后续转义行为不在保证内。
+- 新mcp-explicit-batch最终产品路径首次7/7：实际独立MCP调用完成、Unicode/空格/&文件名与支持的空格/中文/&/!/caret/括号/管道样式数据到达、延迟展开关闭、解释器和目标Job关闭、4种拒绝零新增进程、相对路径与cwd、计数归零及生产物料不改。使用隔离Node复制品＋ASCII/%~dp0本地shim；native层行为诊断分支已从默认测试移除，不把它写成Node通用兼容性断言。收尾仅缩窄一个测试标签为实际验证的native散列，不为文字重跑。
+- 新专项默认仅Windows登记，Node13语法/JSON/diff及物料绑定通过；没有重复此前15/3+5/10、消息31或队列/管道通过项。未打包、全套、Win7/第三方npx/CLR矩阵或长期运行；无真实桌面/外部PID/在线依赖安装。按授权本地提交后继续，不推送。
