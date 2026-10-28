@@ -150,3 +150,11 @@ lib目录已有打包/隔离复制覆盖新文件；INSTALL修正v2 probe和依�
 本批还确认debug实际清理出现terminate-member/Win32 5：结束上游进程后另一个Job可同时触发成员终止，TerminateProcess失败与句柄变为信号之间存在时序差。现在保存错误码，5且仍未信号时继续原5秒总预算内的Job成员/活动数复核；不把5直接当成功，其它错误仍失败。持续拒绝依然未知。参见[Microsoft TerminateProcess 文档](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)。生产CLR2物料已重建绑定，exe SHA256为71ae9983108bc2d140157b3c8d2eb0702456cb442fb61b95e36fbeb78a4001dc。
 
 验证记录与首跑失败/分段续测见ISSUES-LOG.md；没有重新执行整个旧套件，也没有Win7实机、系统注销/关机、24/72h或离线打包。旧章节的“下一阶段处理未知终态”是此前停点；软件隔离已落地，硬IO/父死亡/持久化失败等剩余边界仍不能据此关闭。
+
+## 异步命令输出的共享采集预算（2026-10-28）
+
+Windows受管exec/execFile在原有各流maxBuffer之外，共用32MiB输出缓冲分配预算。stdout/stderr均计入；16KiB独占块合并小片段，不对每个单字节write保留单独Buffer/数组成员，也不以slice保留较大输入的底层存储。诊断processOwner.outputCapture区分allocatedBytes、retainedBytes、blocks、active，快照不能修改预算。
+
+已有命令输出导致超限时仅停止该命令，ERR_PROCESS_OUTPUT_BUDGET明确说明它可能已执行，仍等close/证明或进入既有未知终态；不提前归零、不自动重放。已完全占满时，新采集命令在实际spawn前拒绝，提示request not started。其它在运行的命令保留自己的缓冲；容量归还后可以继续。停止请求本身不释放存储，正常/错误close或明确未知回调结算才释放，迟到事件幂等。
+
+预算只覆盖未结算采集器拥有的缓冲块，不包括返回给调用方的stdout/stderr、拼接/解码瞬时副本、spawn流式MCP/Bash、同步调用、模型/页面/内核缓冲，不能说Agent总RSS受32MiB限制。T22-15整体仍开放。新单元16、实际原生集成9、受影响collector9/恢复23/故障21本批各首跑一次，共78项通过，无失败复跑；native物料未改。没有全套、Win7/长稳或重新打包。

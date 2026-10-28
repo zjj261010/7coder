@@ -17,6 +17,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
   .concat([
     { name: 'stream-context.js', args: [path.join(ROOT, 'test', 'stream-context.js')] },
     { name: 'process-capture.js', args: [path.join(ROOT, 'test', 'process-capture.js')] },
+    { name: 'process-output-budget.js', args: [path.join(ROOT, 'test', 'process-output-budget.js')] },
     { name: 'process-recovery-guards.js', args: [path.join(ROOT, 'test', 'process-recovery-guards.js')] },
     { name: 'selection-guards.js', args: [path.join(ROOT, 'test', 'selection-guards.js')] },
     { name: 'context-budget.js', args: [path.join(ROOT, 'test', 'context-budget.js')] },
@@ -112,7 +113,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
 if (process.platform === 'win32') {
-  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js','process-owner-sync.js','process-owner-git.js','process-owner-control-errors.js','process-recovery.js','process-recovery-integration.js','process-recovery-exit.js','desktop-lifecycle.js','desktop-integration.js']) {
+  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js','process-owner-sync.js','process-owner-git.js','process-owner-control-errors.js','process-recovery.js','process-recovery-integration.js','process-recovery-exit.js','process-output-integration.js','desktop-lifecycle.js','desktop-integration.js']) {
     targets.push({name:file,args:[path.join(ROOT,'test',file)]});
   }
 }
