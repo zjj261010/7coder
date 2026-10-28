@@ -606,22 +606,35 @@ function createMcpStdioClient(name, cfg) {
       let msg;
       try { msg = JSON.parse(line); } catch (e) { continue; }
       if (!msg || typeof msg !== 'object' || Array.isArray(msg)) continue;
+      const has = key => Object.prototype.hasOwnProperty.call(msg, key);
+      // MCP is bidirectional: a peer's request ID may equal one of ours.
+      // Classify its method before consulting our response correlation map.
+      if (has('method')) {
+        if (!has('id')) continue; // Notifications never get a response.
+        if (!(typeof msg.id === 'string' || Number.isInteger(msg.id))) continue;
+        const valid = typeof msg.method === 'string' && msg.method.trim() && !has('result') && !has('error') &&
+          (!has('jsonrpc') || msg.jsonrpc === '2.0');
+        const known = { 'roots/list': { roots: [] }, 'ping': {} };
+        const out = !valid
+          ? { jsonrpc: '2.0', id: msg.id, error: { code: -32600, message: 'Invalid server request' } }
+          : Object.prototype.hasOwnProperty.call(known, msg.method)
+            ? { jsonrpc: '2.0', id: msg.id, result: known[msg.method] }
+            : { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found: ' + msg.method.slice(0, 256) } };
+        try { send(out); } catch (error) { die(error.message); }
+        continue;
+      }
       if (msg.id !== undefined && client.pending.has(msg.id)) {
         const p = client.pending.get(msg.id);
         client.pending.delete(msg.id);
         clearTimeout(p.timer);
         p.detach();
         p.release();
-        if (msg.error) p.reject(new Error(typeof msg.error.message === 'string' ? msg.error.message : JSON.stringify(msg.error)));
+        const validError = !has('error') || (msg.error && typeof msg.error === 'object' && !Array.isArray(msg.error) &&
+          Number.isInteger(msg.error.code) && typeof msg.error.message === 'string');
+        if (has('result') === has('error') || !validError || (has('jsonrpc') && msg.jsonrpc !== '2.0')) {
+          p.reject(Object.assign(new Error('Invalid MCP response; sent request result unknown, check side effects before retrying.'), { code: 'MCP_PROTOCOL_ERROR' }));
+        } else if (has('error')) p.reject(new Error(msg.error.message));
         else p.resolve(msg.result);
-      } else if (typeof msg.method === 'string' && msg.id !== undefined) {
-        // server -> client request (roots/list etc). Answer what we can,
-        // method-not-found for the rest; never leave the server hanging.
-        const known = { 'roots/list': { roots: [] }, 'ping': {} };
-        const out = Object.prototype.hasOwnProperty.call(known, msg.method)
-          ? { jsonrpc: '2.0', id: msg.id, result: known[msg.method] }
-          : { jsonrpc: '2.0', id: msg.id, error: { code: -32601, message: 'Method not found: ' + msg.method } };
-        try { send(out); } catch (e2) { die(e2.message); }
       }
       // server notifications (logging etc): ignored
     }

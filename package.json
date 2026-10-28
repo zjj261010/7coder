@@ -113,6 +113,8 @@
     "test:tool-batch": "node test/tool-batch.js",
     "test:read-window": "node test/read-window.js",
     "test:mcp-budget": "node test/mcp-budget.js",
+    "test:mcp-message-routing": "node test/mcp-message-routing.js",
+    "test:mcp-message-integration": "node test/mcp-message-integration.js",
     "test:mcp-aggregate-budget": "node test/mcp-aggregate-budget.js",
     "test:mcp-inbound-budget": "node test/mcp-inbound-budget.js",
     "test:model-response-budget": "node test/model-response-budget.js",
