@@ -158,3 +158,13 @@ Windows受管exec/execFile在原有各流maxBuffer之外，共用32MiB输出缓�
 已有命令输出导致超限时仅停止该命令，ERR_PROCESS_OUTPUT_BUDGET明确说明它可能已执行，仍等close/证明或进入既有未知终态；不提前归零、不自动重放。已完全占满时，新采集命令在实际spawn前拒绝，提示request not started。其它在运行的命令保留自己的缓冲；容量归还后可以继续。停止请求本身不释放存储，正常/错误close或明确未知回调结算才释放，迟到事件幂等。
 
 预算只覆盖未结算采集器拥有的缓冲块，不包括返回给调用方的stdout/stderr、拼接/解码瞬时副本、spawn流式MCP/Bash、同步调用、模型/页面/内核缓冲，不能说Agent总RSS受32MiB限制。T22-15整体仍开放。新单元16、实际原生集成9、受影响collector9/恢复23/故障21本批各首跑一次，共78项通过，无失败复跑；native物料未改。没有全套、Win7/长稳或重新打包。
+
+## MCP 启动查找与参数语义（2026-10-28）
+
+MCP裸命令按实际child cwd/PATH寻找首个可用候选：普通exe/com直接传argv，只有batch shim才走既有cmd回退。找到本地候选即停止，不为后续PATH网络目录继续探测；同目录原生文件优先于shim。显式路径和bundled Node特例保持，不恢复“绝对路径.cmd必然启动失败”断言。
+
+cfg.env在Windows按不区分大小写覆盖父变量，查找与实际spawn共用同一份合并环境；POSIX保留区分大小写。相对PATH条目在shim发现和native实际可执行文件解析两侧，都相对于实际child cwd，不再偶然使用Agent主工作区。原生可执行文件的空格/中文/引号/百分号/管道样式参数由CreateProcess argv处理，不经cmd重新解释。
+
+batch shim仍使用用户配置的既有shell语义，本批不宣称其任意参数已全部字面化，也不改变Windows批处理文件正文编码；常见离线shim可用ASCII正文、%~dp0扩展Unicode路径。PATH文件探测仍是同步IO，网络盘/驱动卡死不由本批解决；不能据查找到解释器就承诺版本支持Win7。
+
+验证与夹具失败后仅尾段续测见ISSUES-LOG.md。真实原生解释器用隔离复制的随包Node代替Python，真实batch也是本地受管夹具；未运行npx下载、未安装Python/编译器、未修改父进程真实PATH或用户配置，native物料保持不变。Win7/真实第三方MCP/PS2及长稳仍待验收。

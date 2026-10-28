@@ -416,35 +416,50 @@ function mcpContentToText(result) {
 }
 // A2-19: Windows CreateProcess does no PATHEXT resolution, so spawning a bare
 // 'npx' fails with ENOENT even when npx.cmd is sitting on PATH (only *.exe
-// files are found). resolveCommandOnWindows() answers "is this bare command
-// name present on PATH as a .cmd/.bat/.exe?" (same PATH-scan shape findBash
-// uses). When true, createMcpStdioClient spawns through cmd.exe (shell:true)
+// files are found). resolveCommandOnWindows() selects the shell fallback
+// only when the first usable cwd/PATH candidate is a batch shim. Ordinary
+// executables retain literal argv; don't probe later network paths once a
+// usable local command was found.
+// When true, createMcpStdioClient spawns through cmd.exe (shell:true)
 // with the ORIGINAL command - cmd.exe does its own PATH+PATHEXT lookup and
 // that is the only reliable way to start .cmd shims like npx. The quoting
 // hazards of shell:true are accepted by design: .7coder/mcp.json is
 // user-authored config, the same trust boundary as the run_command tool.
 // Non-Windows platforms and explicit paths are untouched (returns false).
-function resolveCommandOnWindows(command) {
+function resolveCommandOnWindows(command, env = process.env, cwd = process.cwd()) {
   if (process.platform !== 'win32') return false;
   const cmd = String(command || '').trim();
   if (!cmd || /[\\\/]/.test(cmd)) return false; // explicit path: CreateProcess handles it as-is
   const bare = cmd.toLowerCase();
   if (bare === 'node' || bare + '.exe' === path.basename(process.execPath).toLowerCase()) return false;
-  for (const dir of String(process.env.PATH || '').split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of ['.cmd', '.bat', '.exe']) {
-      try { if (fs.existsSync(path.join(dir, cmd + ext))) return true; } catch (e) {}
+  const pathKey=Object.keys(env).sort().find(key=>key.toLowerCase()==='path');
+  const directories=[cwd].concat(String(pathKey?env[pathKey]||'':'').split(path.delimiter).filter(Boolean).map(dir=>dir.replace(/^"|"$/g,'')));
+  const extension=path.extname(cmd).toLowerCase();
+  const fileExists=file=>{try{return fs.statSync(file).isFile();}catch(error){return false;}};
+  for(const directory of directories){
+    const candidate=path.resolve(cwd,directory,cmd);
+    if(extension){
+      if(fileExists(candidate))return extension==='.cmd'||extension==='.bat';
+    }else{
+      if(['.exe','.com',''].some(suffix=>fileExists(candidate+suffix)))return false;
+      if(['.cmd','.bat'].some(suffix=>fileExists(candidate+suffix)))return true;
     }
   }
   return false;
 }
 function createMcpStdioClient(name, cfg) {
   const resources = mcpResourceBudget();
+  const env=Object.assign({},process.env);
+  for(const key of Object.keys(cfg.env||{})){
+    if(process.platform==='win32')for(const existing of Object.keys(env))if(existing.toLowerCase()===key.toLowerCase())delete env[existing];
+    env[key]=cfg.env[key];
+  }
+  const cwd=cfg.cwd||launchDir;
   const child = child_process.spawn(cfg.command, Array.isArray(cfg.args) ? cfg.args : [], {
-    cwd: cfg.cwd || launchDir,
-    env: Object.assign({}, process.env, cfg.env || {}),
+    cwd,
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
-    shell: resolveCommandOnWindows(cfg.command)
+    shell: resolveCommandOnWindows(cfg.command,env,cwd)
   });
   const client = {
     child: child,

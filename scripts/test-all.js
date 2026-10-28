@@ -82,6 +82,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'mcp-budget.js', args: [path.join(ROOT, 'test', 'mcp-budget.js')] },
     { name: 'mcp-message-routing.js', args: [path.join(ROOT, 'test', 'mcp-message-routing.js')] },
     { name: 'mcp-message-integration.js', args: [path.join(ROOT, 'test', 'mcp-message-integration.js')] },
+    { name: 'mcp-launch-routing.js', args: [path.join(ROOT, 'test', 'mcp-launch-routing.js')] },
     { name: 'mcp-aggregate-budget.js', args: [path.join(ROOT, 'test', 'mcp-aggregate-budget.js')] },
     { name: 'mcp-inbound-budget.js', args: [path.join(ROOT, 'test', 'mcp-inbound-budget.js')] },
     { name: 'model-response-budget.js', args: [path.join(ROOT, 'test', 'model-response-budget.js')] },
@@ -115,7 +116,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
 if (process.platform === 'win32') {
-  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js','process-owner-sync.js','process-owner-git.js','process-owner-control-errors.js','process-recovery.js','process-recovery-integration.js','process-recovery-exit.js','process-output-integration.js','desktop-lifecycle.js','desktop-integration.js']) {
+  for (const file of ['task-windows.js','process-owner.js','process-owner-integration.js','process-owner-faults.js','process-owner-sync.js','process-owner-git.js','process-owner-control-errors.js','process-recovery.js','process-recovery-integration.js','process-recovery-exit.js','process-output-integration.js','mcp-launch-integration.js','desktop-lifecycle.js','desktop-integration.js']) {
     targets.push({name:file,args:[path.join(ROOT,'test',file)]});
   }
 }

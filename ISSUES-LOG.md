@@ -2079,3 +2079,14 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新mcp-message-routing首次23/23：同ID ping/roots/未知请求、畸形request、通知/无效ID、合法falsey结果、7种畸形response、深2万层错误（先确认旧stringify会RangeError，再验证监听器不抛）、另一个pending保全、合法远端错误及预算零归还。
 - 新mcp-message-integration首次8/8：实际隔离Agent＋本地模型＋真实受管stdio服务端，在initialize及tools/call发同ID反向ping，必须收到正确响应才返回真正工具结果；SSE/callId审计/实际调用恰一次；未知方法反向请求与畸形最终结果不误成功/重放，同一会话后续可恢复；准入/输入/写入归零，强停Agent后端口心跳停止。生产native物料未改，没有真实桌面/外部模型或外部PID操作。
 - 解析/结算路径实质变化后，相关旧MCP aggregate26/26、inbound30/30、pipe-lifecycle37/37各首次一次，连新31共124，零skip/失败/复跑。Node13语法、package JSON、diff通过，npm/test-all登记。未重复其它Git/下载/页面/桌面/原生创建套件或全套；未打包、未Win7/真实第三方MCP/长稳验收。T22-12历史完成项补本次缺口，不据此关闭T22-15/07或发布门槛。按授权本地提交后继续下一项，不推送。
+
+
+### 2026-10-28 —— INC-MCP-03 原生解释器直传 argv 与有效环境
+
+- 消息分派批已提交5b79150，继续检查Win7命令启动。**High／确认**：旧resolveCommandOnWindows发现普通.exe也返回true，MCP裸python等因此变成shell:true，路径/参数的空格、引号、百分号和cmd元字符被重新解释；与显式路径/bundled node不走shell的行为不一致。发现还用父process.env.PATH而实际启动合并cfg.env，Windows大小写别名可能让覆盖失效；native解析相对PATH用Agent cwd，和实际child cwd不一致。
+- 现在只有首个可用候选是.cmd/.bat时进入原有shell回退；.exe/.com保留argv。发现和spawn共用合并后的env/cwd；Windows变量按不区分大小写覆盖，POSIX不合并不同大小写键。native路径将相对PATH条目解析到child cwd。显式路径/bundled Node特例与批处理信任边界保持，不泛化“绝对.cmd不可启动”，不宣称batch所有参数已字面化。
+- 新mcp-launch-routing首次15项通过（纯Windows虚拟文件/有效环境）；静态复核后放弃“先扫完整PATH找任何exe，再决定早先shim”的临时策略，改首个可用候选即停止，避免有本地shim仍探后续网络盘并改变旧PATH优先级。仅对改变的path-order分支再验1/1，增加确认未探后续位置；没有重复其它14项或借旧结果宣称新策略一次全套。
+- 新mcp-launch-integration首跑3项原生解释器通过：复制的随包Node以裸命令＋相对PATH/另一cwd运行、实际中文空格脚本路径及&/引号/百分号/管道样式参数逐字到达、大小写env覆盖正确，关闭后端口心跳/Job归零。夹具包装层在真实spawn前强断言exe不走shell，回归时不会把测试元字符交给cmd执行。
+- 随后batch夹具启动失败（stdout ended）。首版batch正文包含无BOM UTF8中文绝对路径，未保存该次stderr，不能将具体失败阶段无证据定为产品故障。改常见ASCII/%~dp0相对shim、Node读取UTF8脚本，并补stderr诊断；仅batch-tail失败/未跑5项通过，先前原生3项不重跑。尾项验证仅cfg.env的相对PATH能发现并实际运行batch，cwd/env正确、缺命令ENOENT零目标、全部MCP/owner归零及父PATH/native物料不变。不是Python/npx或Win7第三方环境认证。
+- 共享native路径解析变化后旧owner仅basic10/10本批首次一次，覆盖argv/中文/stdio/空PATH/cmd及批处理启动/创建失败与记录回收；没有再跑此前MCP消息/预算/pipe等通过项。新增专项登记npm/test-all；Node13语法、JSON/diff、native绑定通过，后续路径优先级与测试注释仅静态检查。未改CS/exe/json、未打包/全套/Win7实机/长稳，未下载/安装依赖或改用户PATH/真实配置。
+- 同步PATH文件探测与异常网络盘仍属T22-06，解释器版本/Win7依赖矩阵仍属T22-23。本批修启动选择/参数数据破坏，不据此关闭这些整项；按授权提交后自动继续，不推送。
