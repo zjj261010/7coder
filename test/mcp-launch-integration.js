@@ -26,7 +26,7 @@ const deadline=setTimeout(()=>{console.error('MCP/LAUNCH-NATIVE deadline');for(c
       if(command==='fixture-interpreter')assert.strictEqual(options.shell,false,'native fixture must never enter cmd');
       seen.push({command,options});const child=owner.spawn(command,args,options);children.push(child);child.on('error',()=>{});if(child.pid)fs.appendFileSync(S.manifest,child.pid+'\t'+S.runDir+'\n');return child;
     }}});
-  vm.runInContext(cut('function mcpContentToText(','// A2-19:')+cut('function resolveCommandOnWindows(','// Redact secrets'),context);
+  vm.runInContext(cut('function serializeModelRequest(','function checkExecution(')+cut('function mcpContentToText(','// A2-19:')+cut('function resolveCommandOnWindows(','// Redact secrets'),context);
   if(scope==='all'){
   const firstFile=path.join(cwd,'exe-info.json'),firstHeart=path.join(cwd,'exe-heart.txt');fs.writeFileSync(firstHeart,'');
   const literal=['value & FIXTURE_NOT_A_COMMAND','100%7CODER_TEST_UNSET% ! ^ | < >','空格 a b "quote" \\'];

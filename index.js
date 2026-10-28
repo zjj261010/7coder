@@ -560,17 +560,24 @@ function createMcpStdioClient(name, cfg) {
     try { child.stdin.destroy(); } catch (e) {}
     try { child.kill(); } catch (e) {}
   }
-  function send(message) {
+  function send(message, cancelled) {
     if (client.dead) throw new Error('MCP server "' + name + '" is not running (' + client.deadErr + ')');
-    const line = JSON.stringify(message) + '\n';
-    const bytes = Buffer.byteLength(line, 'utf8');
-    if (bytes > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing frame exceeds 4 MB; request not sent');
+    let bytes;
+    try { bytes = serializeModelRequest(message, cancelled, MCP_MAX_FRAME_BYTES - 1, true) + 1; }
+    catch (error) {
+      checkExecution(cancelled);
+      const detail = String(error.message).replace(/^Model request rejected before sending: /, '');
+      throw Object.assign(new Error('MCP outgoing frame refused by 4 MB/structure budget; request not sent: ' + detail), { code: 'MCP_REQUEST_BUDGET', requestNotSent: true });
+    }
     if (client.queuedBytes + bytes > MCP_MAX_FRAME_BYTES) throw new Error('MCP outgoing queue exceeds 4 MB; request not sent');
     if (resources.queuedBytes + bytes > resources.queuedBytesLimit) throw new Error('MCP aggregate outgoing queue exceeds 16 MiB; request not sent');
     if (child.stdin.destroyed || child.stdin.writableEnded) {
       die('stdin is closed');
       throw new Error(client.deadErr);
     }
+    checkExecution(cancelled);
+    const line = JSON.stringify(message) + '\n';
+    if (Buffer.byteLength(line, 'utf8') !== bytes) throw new Error('MCP outgoing message changed during preparation; request not sent');
     client.queuedBytes += bytes;
     resources.queuedBytes += bytes;
     let released = false;
@@ -752,7 +759,7 @@ function createMcpStdioClient(name, cfg) {
       if (client.dead) return;
       try {
         checkExecution(cancelled);
-        send({ jsonrpc: '2.0', id: id, method: method, params: params || {} });
+        send({ jsonrpc: '2.0', id: id, method: method, params: params || {} }, cancelled);
       } catch (e) {
         clearTimeout(timer);
         entry.detach();

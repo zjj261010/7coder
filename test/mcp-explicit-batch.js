@@ -15,7 +15,7 @@ const deadline=setTimeout(()=>{console.error('MCP/EXPLICIT-BATCH deadline');for(
   fs.writeFileSync(batch,'@echo off\r\n"%~dp0fixture-node.exe" "%~dp0server.js" %*\r\n');
   const seen=[],c=vm.createContext({Buffer,fs,path,process,launchDir:cwd,APP_VERSION:'fixture',MCP_MAX_FRAME_BYTES:4*1024*1024,MCP_CALL_TIMEOUT:5000,mcpClients:{},setTimeout,clearTimeout,console:{warn(){}},
     checkExecution(){},watchExecution:()=>()=>{},executionCancelledError:()=>Error('cancelled'),child_process:{spawn(file,args,opts){seen.push({file,args,opts});const child=owner.spawn(file,args,opts);children.push(child);child.on('error',()=>{});if(child.pid)fs.appendFileSync(S.manifest,child.pid+'\t'+S.runDir+'\n');return child;}}});
-  vm.runInContext(cut('function mcpContentToText(','// A2-19:')+cut('function resolveCommandOnWindows(','// Redact secrets'),c);
+  vm.runInContext(cut('function serializeModelRequest(','function checkExecution(')+cut('function mcpContentToText(','// A2-19:')+cut('function resolveCommandOnWindows(','// Redact secrets'),c);
   const args=['space 中文','value & FIXTURE_NOT_A_COMMAND','literal!^()|<>'];
   const client=c.createMcpStdioClient('explicit',{command:batch,args,cwd});clients.push(client);
   const actual=JSON.parse(await client.callTool('echo',{}));

@@ -6,7 +6,7 @@ function check(label,ok){assert.ok(ok,label);checks++;console.log('PASS '+label)
 const tick=()=>new Promise(r=>setImmediate(r));
 function context(spawn){const a=source.indexOf('function createMcpStdioClient('),b=source.indexOf('function getMcpClient(',a);assert.ok(a>=0&&b>a);
   const c=vm.createContext({child_process:{spawn},launchDir:S.runDir,process,Buffer,MCP_MAX_FRAME_BYTES:4*1024*1024,mcpClients:{},APP_VERSION:'fixture',MCP_CALL_TIMEOUT:5000,
-    resolveCommandOnWindows:()=>false,console:{warn(){}},setTimeout,clearTimeout,checkExecution:()=>{},watchExecution:()=>()=>{},executionCancelledError:()=>Error('cancelled'),mcpContentToText:()=>''});vm.runInContext(source.slice(a,b),c);return c;}
+    resolveCommandOnWindows:()=>false,console:{warn(){}},setTimeout,clearTimeout,checkExecution:()=>{},watchExecution:()=>()=>{},executionCancelledError:()=>Error('cancelled'),mcpContentToText:()=>''});vm.runInContext(source.slice(source.indexOf('function serializeModelRequest('),source.indexOf('function checkExecution('))+source.slice(a,b),c);return c;}
 function fake(stalled){const child=new EventEmitter();child.stdout=new PassThrough();child.stderr=new PassThrough();child.killed=0;child.kill=()=>{child.killed++;return true;};
   const writes=[],callbacks=[];child.stdin=new Writable({write(chunk,encoding,cb){writes.push(chunk.toString());if(stalled)callbacks.push(cb);else cb();}});
   return {child,writes,callbacks};}

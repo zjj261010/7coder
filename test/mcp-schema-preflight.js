@@ -72,11 +72,11 @@ const deadline = setTimeout(() => { console.error('MCP/SCHEMA deadline'); for (c
   check('empty final page consumes no separator or extra cache bytes', f.client.toolsCacheBytes === MiB && f.client.toolsCache.length === 1); f.client.dispose();
 
   let cancelled = false;
-  c.serializeModelRequest = (...args) => { cancelled = true; return measure(...args); };
+  c.serializeModelRequest = (...args) => { if (Array.isArray(args[0])) cancelled = true; return measure(...args); };
   f = fake([{ tools: [{ name: 'cancelled' }] }]);
   await assert.rejects(f.client.listTools(false, () => cancelled), error => error.code === 'EXECUTION_CANCELLED'); c.serializeModelRequest = measure;
   check('cancellation during preflight retains cancellation code and frees partial state', clean(f.client));
-  c.serializeModelRequest = (...args) => { blocked = true; return measure(...args); };
+  c.serializeModelRequest = (...args) => { if (Array.isArray(args[0])) blocked = true; return measure(...args); };
   f = fake([{ tools: [{ name: 'blocked' }] }]); await assert.rejects(f.client.listTools(), error => error === fatal); blocked = false; c.serializeModelRequest = measure;
   check('owner guard during preflight escapes without false request-not-sent wrapper', clean(f.client));
   for (const client of clients) client.dispose();

@@ -117,7 +117,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'webui-dom-sim.js', args: [path.join(ROOT, 'test', 'webui-dom-sim.js')] }
   ]);
 if (process.platform === 'win32') {
-  for (const file of ['task-windows.js','process-owner.js','cmd-unc-cwd.js','web-launcher.js','process-owner-integration.js','process-owner-faults.js','process-owner-sync.js','process-owner-git.js','process-owner-control-errors.js','process-recovery.js','process-recovery-integration.js','process-recovery-exit.js','process-output-integration.js','mcp-launch-integration.js','mcp-explicit-batch.js','mcp-call-result.js','mcp-initialize.js','mcp-tools-generation.js','mcp-delivery-budget.js','mcp-schema-preflight.js','desktop-lifecycle.js','desktop-integration.js']) {
+  for (const file of ['task-windows.js','process-owner.js','cmd-unc-cwd.js','web-launcher.js','process-owner-integration.js','process-owner-faults.js','process-owner-sync.js','process-owner-git.js','process-owner-control-errors.js','process-recovery.js','process-recovery-integration.js','process-recovery-exit.js','process-output-integration.js','mcp-launch-integration.js','mcp-explicit-batch.js','mcp-call-result.js','mcp-initialize.js','mcp-tools-generation.js','mcp-delivery-budget.js','mcp-schema-preflight.js','mcp-outgoing-preflight.js','desktop-lifecycle.js','desktop-integration.js']) {
     targets.push({name:file,args:[path.join(ROOT,'test',file)]});
   }
 }

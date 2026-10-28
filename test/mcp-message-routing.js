@@ -10,7 +10,7 @@ child.stdin=new Writable({write(chunk,encoding,callback){writes.push(JSON.parse(
 const c=vm.createContext({Buffer,process,launchDir:S.runDir,APP_VERSION:'fixture',MCP_MAX_FRAME_BYTES:4*1024*1024,MCP_CALL_TIMEOUT:5000,
   mcpClients:{},child_process:{spawn:()=>child},resolveCommandOnWindows:()=>false,console:{warn(){}},setTimeout,clearTimeout,
   checkExecution(){},watchExecution:()=>()=>{},executionCancelledError:()=>Error('cancelled'),mcpContentToText:()=>''});
-vm.runInContext(cut('function createMcpStdioClient(','function getMcpClient('),c);const client=c.createMcpStdioClient('peer',{});clients.push(client);
+vm.runInContext(cut('function serializeModelRequest(','function checkExecution(')+cut('function createMcpStdioClient(','function getMcpClient('),c);const client=c.createMcpStdioClient('peer',{});clients.push(client);
 function start(){const id=client.nextId;return {id,result:observed(client.request('tools/call',{},5000))};}
 function frame(message){child.stdout.write(JSON.stringify(Object.assign({jsonrpc:'2.0'},message))+'\n');}
 (async()=>{try{

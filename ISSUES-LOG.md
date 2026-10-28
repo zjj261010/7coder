@@ -2167,3 +2167,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 发现页改为复用原序列化计量器的measureOnly路径，先按剩余缓存字节、64层/每页10万值预检，无需构造整页JSON；保留256工具/8页、跨页comma/数组封装、空页/缓存等既有规则。失败MCP_SCHEMA_BUDGET/无完整列表，不携带模型专用requestNotSent字段或自动重试；已发送tools/list的事实不被掩盖。取消和所有权隔离在包装前再检查，仍抛原控制错误。复杂合法schema超过结构门槛也会拒绝，第三方适配不能从本地通过直接推断。
 - 新mcp-schema-preflight首跑17/17：精确1MiB/多1字节、保持别的缓存、短数字展开后超额、2万深度/10万值、64/65层边界、UTF8/转义/孤立surrogate、分页精确/溢出/满页后的空尾页、取消/所有权终态和所有额度。注入JSON.stringify计数证明页校验期间零整页序列化；真实受管Node peer先回展开后超限schema，明确失败且client仍活，下一显式发现成功，Job及费用收尾归零。
 - 因实际页计量路径改变，仅各重验一次受影响mcp-retention22/22、mcp-inbound-budget30/30，含新项69项，本批零失败/重跑；未重复响应交付/初始化/工具历史等通过套件。Node13语法/JSON/diff与Windows默认登记，native物料不变。未全套、Win7/第三方协议矩阵/真实模型/长稳/打包；解析后对象、历史和总heap仍不受此缓存预算覆盖，T22-15保持🔶。按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— INC-MCP-09 出站帧/待写队列分配前准入
+
+- schema预检批已提交7c4c55f。**Medium／确认先分配后准入，高可信峰值风险**：send此前整串JSON.stringify后才检查4MiB帧及client/aggregate待写额度，预算挡住write却挡不住先发生的分配。当前原模型输入有其它限制，但大参数、数字规范化、重复超额请求仍可制造不必要的峰值；没有宣称实机OOM已复现。
+- send先复用measureOnly按转义UTF8/64层/10万值计量（包含末尾换行），再检查原4MiB/client及16MiB共享队列，准入后才JSON.stringify和长度一致性核对。帧/结构拒绝改MCP_REQUEST_BUDGET、requestNotSent=true；取消和所有权检查保持控制错误身份。request将原token传入计量，写入前再检查。requestNotSent不表示对应MCP进程未启动；已经写出的原请求继续按真实write callback/close归还费用，未改未知结果/物理管道规则。
+- 新mcp-outgoing-preflight首跑前10项通过，正常UTF8往返项因夹具在nextTick写回调前要求待写额度归零而失败；保持产品先收费直到回调的规则，补一次事件轮转后仅tail续测10/10，不重跑前10。覆盖精确4MiB（含换行）、大参数/数字/深度/值数/cycle/accessor/toJSON/BigInt零整串分配和零write；不执行getter/serializer、正常UTF8/control/surrogate、单client与六client总队列拒绝前零JSON、计量中取消/owner、timer/费用归零。真实受管peer拒超额后仅接收到有效initialize及tools/call，原值往返且Job关闭归零。
+- 四个独立VM夹具接入真实序列化器，schema故障注入限定Array以免新增出站预检先消费其取消/owner触发点；未用stub伪造准入。因本批改变全部send，仅各重验一次直接受影响mcp-budget11、message-routing23、schema-preflight17、explicit-batch7、launch-integration8，全部首跑通过。含新项有效证据共86项；未重复其它MCP/进程/Git/历史及A–J/UI全套。Node13语法/JSON/diff与Windows默认登记，native物料不变，未Win7/第三方/长稳或打包；T22-15总heap与外部caller保留仍开放。按授权本地提交后继续，不推送。
