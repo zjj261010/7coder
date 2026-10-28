@@ -52,6 +52,7 @@
     "test:task-lifecycle": "node test/task-lifecycle.js",
     "test:task-windows": "node test/task-windows.js",
     "test:process-owner": "node test/process-owner.js",
+    "test:cmd-unc-cwd": "node test/cmd-unc-cwd.js",
     "test:process-capture": "node test/process-capture.js",
     "test:process-output-budget": "node test/process-output-budget.js",
     "test:process-output-integration": "node test/process-output-integration.js",

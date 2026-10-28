@@ -176,3 +176,11 @@ batch shim仍使用用户配置的既有shell语义，本批不宣称其任意�
 MCP显式.cmd/.bat（含显式相对路径）现构造独立cmd.exe `/d /v:off /s /c`启动，文件路径解析到实际child cwd，路径和支持的参数分别引用，windowsVerbatimArguments保留构造的命令行；仍经严格Job拥有解释器与目标。只接受有效环境中绝对cmd.exe（ComSpec或SystemRoot回退）。百分号会在引号内展开，内嵌引号/换行/NUL也不能对任意batch转发可靠表示，因此这些路径/参数启动前明确拒绝；可改用原生解释器或自备ASCII包装。不能说任意batch内部处理都会保持参数不变。
 
 当前现代主机实际MCP专项7项通过：Unicode/空格/&路径、支持参数、延迟展开关闭、相对路径、非法参数零启动、Job关闭与计数归还；没有实际npx下载或真实第三方/Win7矩阵。API背景见[CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw)，实际行为以隔离运行证据为准。
+
+## CMD 与 UNC 工作目录的部署限制
+
+当前受管cmd/cmd.exe及.cmd/.bat不接受UNC作为cwd，包括斜杠写法和扩展UNC命名空间；相对cwd先按实际父目录解析。此为避免命令解释器使用其它目录执行相对写入的止损限制，EUNC_CWD在查找共享文件/控制注册/进程创建前拒绝，明确No process was started，且不隔离整个Agent。原生非cmd程序不被此规则一并禁止，但它们各自的UNC兼容性仍须验证。
+
+cmd任务应使用已验证的本地或盘符工作目录；不会自动改注册表、建立共享、分配映射盘或通过pushd改变全局部署条件。盘符形式不代表映射盘在当前账户/提权会话一定可见。Microsoft说明[pushd对网络路径会创建临时盘符](https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/pushd)，本项目未自动引入该行为。
+
+cmd-unc-cwd专项13项仅验证词法识别、各同步/异步入口零启动、无共享探测、原生入口不被误封和计数/错误终态。UNC文件探测由夹具强制阻断，未访问真实SMB/共享，更不是Win7网络盘认证。真实共享、断连、权限、不同账户和关机仍保持待验收，不从这些局部检查推断真实机器上必然发生目录回退。
