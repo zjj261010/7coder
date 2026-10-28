@@ -507,6 +507,8 @@ function createMcpStdioClient(name, cfg) {
     incomingBytes: 0, // incomplete frame, charged before concatenation
     toolsCache: null,
     toolsCacheBytes: 0,
+    toolsGeneration: 0,
+    toolsCacheGeneration: null,
     schemaBytes: 0, // discovery accumulator or complete cache (one owner)
     listingTools: false,
     stderrTail: '',
@@ -532,6 +534,7 @@ function createMcpStdioClient(name, cfg) {
     client.schemaBytes = 0;
     client.toolsCache = null;
     client.toolsCacheBytes = 0;
+    client.toolsCacheGeneration = null;
   }
   function die(err) {
     if (client.dead) return;
@@ -664,7 +667,15 @@ function createMcpStdioClient(name, cfg) {
       // MCP is bidirectional: a peer's request ID may equal one of ours.
       // Classify its method before consulting our response correlation map.
       if (has('method')) {
-        if (!has('id')) continue; // Notifications never get a response.
+        if (!has('id')) {
+          if(msg.method==='notifications/tools/list_changed'&&!has('result')&&!has('error')&&(!has('jsonrpc')||msg.jsonrpc==='2.0')){
+            client.toolsGeneration++;
+            // A discovery accumulator remains charged until its own finally.
+            // Only completed caches can be released immediately here.
+            if(!client.listingTools)clearSchemas();
+          }
+          continue; // Notifications never get a response.
+        }
         if (!(typeof msg.id === 'string' || Number.isInteger(msg.id))) continue;
         const valid = typeof msg.method === 'string' && msg.method.trim() && !has('result') && !has('error') &&
           (!has('jsonrpc') || msg.jsonrpc === '2.0');
@@ -768,9 +779,14 @@ function createMcpStdioClient(name, cfg) {
     if (client.listingTools) throw new Error('MCP tool discovery already running; request not sent');
     client.listingTools = true;
     if (force) clearSchemas();
+    const generation=client.toolsGeneration;
     let published = false;
+    function checkDiscovery(){
+      if(client.dead)throw new Error('MCP server closed during tool discovery');
+      if(client.toolsGeneration!==generation)throw new Error('MCP tools changed during discovery; no complete list cached. Request a fresh list.');
+    }
     function reserveSchemas(added) {
-      if (client.dead) throw new Error('MCP server closed during tool discovery');
+      checkDiscovery();
       if (resources.schemaBytes + added > resources.schemaBytesLimit) throw new Error('MCP aggregate tool schemas exceed 4MiB budget; no complete list cached');
       resources.schemaBytes += added;
       client.schemaBytes += added;
@@ -782,9 +798,10 @@ function createMcpStdioClient(name, cfg) {
       let cursor, bytes = 2;
       for (let page = 0; page < 8; page++) {
         checkExecution(cancelled);
+        checkDiscovery();
         const res = await client.request('tools/list', cursor === undefined ? {} : { cursor }, 15000, cancelled);
         checkExecution(cancelled);
-        if (client.dead) throw new Error('MCP server closed during tool discovery');
+        checkDiscovery();
         if (!res || !Array.isArray(res.tools)) throw new Error('MCP tools/list must return a tools array');
         if (tools.length + res.tools.length > 256) throw new Error('MCP tool discovery exceeds 256 tools; no complete list cached');
         const added = Buffer.byteLength(JSON.stringify(res.tools), 'utf8') - 2 + (tools.length && res.tools.length ? 1 : 0);
@@ -797,6 +814,7 @@ function createMcpStdioClient(name, cfg) {
         bytes += added;
         if (res.nextCursor === undefined || res.nextCursor === null || res.nextCursor === '') {
           client.toolsCache = tools; client.toolsCacheBytes = bytes;
+          client.toolsCacheGeneration=generation;
           published = true;
           return client.toolsCache;
         }
@@ -851,6 +869,7 @@ function mcpDiagnosticsSnapshot() {
     return { name: String(name).slice(0, 80), pid: c.child && c.child.pid || null,
       initialized: !!c.initialized, protocolVersion:c.protocolVersion, pending: c.pending.size, queuedBytes: c.queuedBytes, incomingBytes: c.incomingBytes,
       tools: c.toolsCache ? c.toolsCache.length : null, toolsCacheBytes: c.toolsCacheBytes, discovering: !!c.listingTools,
+      toolsGeneration:c.toolsGeneration, toolsCacheGeneration:c.toolsCacheGeneration,
       schemaBytes: c.schemaBytes,
       stderr: { receivedBytes: c.stderrBytes, tailBytes: Buffer.byteLength(c.stderrTail, 'utf8'),
         loggedBytes: c.stderrLogBytes, logBudgetRemaining: Math.max(0, 64 * 1024 - c.stderrLogBytes), suppressedChunks: c.stderrSuppressedChunks } };
