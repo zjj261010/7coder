@@ -9,6 +9,7 @@ const http = require('http');
 const { pairingValid } = require('./_protocol');
 const FCrash = require('./_f-crash-fixture');
 const FJourney = require('./_f-journey-fixture');
+const FSubagent = require('./_f-subagent-fixture');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'F', wsPrefix: 'w-f-' });
@@ -165,39 +166,45 @@ scenarios.push({
   }
 });
 
-// --- F4: sub-agent long conversation compresses inside the sub-agent (A4) ---
+// --- F4: exact parent/child isolation and complete child-history compression ---
 scenarios.push({
   name: 'subagent-long',
   fn: async () => {
-    const cwd = freshCwd('f4');
-    const big = 'BIGSUB-'.repeat(780); // ~5460 chars per tool result (capped at 3000)
-    // Deterministic step order: main1 -> agent_tool; sub main1 -> sb0 tool; sub
-    // main2 -> sb1 tool; then compression's light call fires before sub main3
-    // (total ~13k > CONTEXT_CHARS 6000); sub main3 -> digest filler; main2 ->
-    // F4-DONE; main summary. Fillers absorb any drift.
-    const script = [
-      { role: 'assistant', content: null, tool_calls: [{ id: 's0', type: 'function', function: { name: 'agent_tool', arguments: JSON.stringify({ name: 'digger', task: 'dig through files' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'sb0', type: 'function', function: { name: 'read_file', arguments: '{"path":"big0.txt"}' } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'sb1', type: 'function', function: { name: 'read_file', arguments: '{"path":"big1.txt"}' } }] },
-      { role: 'assistant', content: 'dig filler' },
-      { role: 'assistant', content: 'F4-DONE' },
-      { role: 'assistant', content: 'F4-DONE' },
-      { role: 'assistant', content: 'f4 summary' },
-      { role: 'assistant', content: 'f4 filler' }
-    ];
-    const m = startMock(script);
-    await new Promise(r => setTimeout(r, 600));
-    fs.writeFileSync(path.join(cwd, 'big0.txt'), big);
-    fs.writeFileSync(path.join(cwd, 'big1.txt'), big);
-    const r = await runCli({ port: m.port, args: ['--prompt', 'dig'], env: { PERMISSION_MODE: 'bypass', MAX_TOOL_RESULT_CHARS: '3000', CONTEXT_CHARS: '6000' }, cwd, timeoutMs: 60000 });
-    const log = readLog(m.log);
-    const pairing = log.length > 0 && log.every(req => pairingValid(req.messages));
-    const compReqs = log.filter(x => (x.messages || []).some(mm => String(mm.content || '').includes('[CONTEXT COMPRESSION]')));
-    record('subagent-long: sub-agent completes and returns its answer to main', tr(log, 's0') && tr(log, 's0').c.startsWith('Sub-agent'), tr(log, 's0') ? tr(log, 's0').c.substring(0, 60) : 'no result');
-    record('subagent-long: compression fires INSIDE the sub-agent (A4 fixed)', compReqs.length >= 1 && compReqs.some(x => (x.messages || []).length >= 4), 'comp reqs=' + compReqs.length);
-    record('subagent-long: pairing valid through nested conversation', pairing, '');
-    record('subagent-long: context bounded under compression', log.every(x => JSON.stringify(x.messages || []).length < 20000), '');
-    stopMock(m);
+    const cwd = freshCwd('f4'), fixture = FSubagent;
+    const evidenceOnly = process.env.F_SUBAGENT_EVIDENCE_ONLY === '1';
+    fixture.files.forEach((value, i) => fs.writeFileSync(path.join(cwd, 'big' + i + '.txt'), value));
+    const m = startMock(fixture.script, { MOCK_STRICT: '1' });
+    try {
+      const end = Date.now() + 5000; let ready = false;
+      while (Date.now() < end) {
+        if (m.child.exitCode !== null) throw Error('F4 mock exited before ready');
+        try { if ((await httpReq(m.port, 'GET', '/', null)).status === 200) { ready = true; break; } }
+        catch (e) { if (e.code !== 'ECONNREFUSED') throw e; }
+        await new Promise(resolve => setTimeout(resolve, 15));
+      }
+      if (!ready) throw Error('F4 mock readiness deadline');
+      const r = await runCli({ port: m.port, args: ['--prompt', fixture.prompt], env: { PERMISSION_MODE: 'bypass',
+        HEAVY_MODEL: fixture.main, LIGHT_MODEL: fixture.light, SUMMARY_MODEL: 'f-subagent-unused-action-summary', MAX_RETRIES: '1',
+        DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false',
+        AUDIT_LOG: 'true', MAX_TOOL_RESULT_CHARS: '3000', CONTEXT_CHARS: '3500', EXECUTION_TIMEOUT_MS: '12000' }, cwd, timeoutMs: 20000 });
+      const log = readLog(m.log);
+      const diagnostic = JSON.stringify(log.map(request => ({ model: request.model, stream: request.stream,
+        messages: request.messages.map(message => ({ role: message.role, chars: typeof message.content === 'string' ? message.content.length : null,
+          head: String(message.content).slice(0, 90), tail: String(message.content).slice(-35), ids: (message.tool_calls || []).map(call => call.id) })) })));
+      record('subagent-long: exact six-request parent/child/compressor transcript keeps task, complete old read and kept read',
+        fixture.transcript(log), diagnostic);
+      if (!evidenceOnly) {
+      record('subagent-long: nested reads and parent result have exactly three unique successful audit identities',
+        fixture.audit(readLog(path.join(cwd, '.7coder', 'audit.jsonl'))), '');
+      record('subagent-long: one real child compression finishes and returns only its answer to parent',
+        (r.out.match(/\[CTX\] Context compressed:/g) || []).length === 1 &&
+        r.out.includes('Sub-agent "digger" finished') && r.out.split(fixture.done).length === 2 && r.code === 0, r.out.slice(-1800));
+      record('subagent-long: fixture source files remain exact and no unrelated action summary is written',
+        fixture.files.every((value, i) => fs.readFileSync(path.join(cwd, 'big' + i + '.txt'), 'utf8') === value) &&
+        !fs.existsSync(path.join(cwd, '7CODER.md')) && !/MOCK_PROTOCOL|EXECUTION_DEADLINE|\[ERROR\]/.test(r.out), r.out.slice(-900));
+      } else S.info('subagent-long: scenario reconstructed only failed transcript evidence; previous three assertions NOT RUN');
+      S.info('subagent-long: complete retained read and known compression boundary verified; no claim that the full system/schema fit 3500 units');
+    } finally { stopMock(m); }
   }
 });
 

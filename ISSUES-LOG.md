@@ -2246,3 +2246,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新_f-journey-fixture固定单主模型、原任务、四调用完整参数和五请求累积结果，使用随包Node绝对路径两次执行同一test.js。audit逐ID唯一ok/error/ok/ok；失败结果要求真实错误前缀＋完整stderr行，并匹配唯一run_command runtime错误exitCode=1；成功结果要求完整Command OK与唯一预期stdout，编辑后文件逐字节和单次替换结果。短最终回复不触发摘要，拒绝多余辅助模型偷步；正常CLI必须真实close0、最终回复一次。
 - 新f-journey-oracles首跑20/20：空/缺/多请求、错模型/参数/ID/配对/跨请求漂移、错误audit状态/缺失/重复/工具、缺失/错误实际退出码、成功文本夹带失败词及拒绝/额外stdout反例。仅RUN_ONLY=e2e-journey首跑6/6、0skip、约2秒，真实第一测试故意exit1，编辑后真实第二测试通过，整场景无失败/重跑；不把故意失败的业务测试当测试套件失败。
 - 移除固定600ms就绪等待，保留私有fixture/finally清理；不改全局PATH/真实.env、无真实模型/桌面/Win7/长稳/全套/打包，产品/native不变。runtime成功工具本就不重复记日志，因此不伪造“成功runtime exit0”证据，成功依据audit状态及完整受管命令结果。T22-33继续部分完成，标准入口/静态计数登记，按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 F4子任务压缩的完整作用域证据
+
+- F2已提交acb4a42。F4原有多条“filler absorbs drift”位置回复，且仅以任意请求含压缩字样及messages数量判子任务内发生，不能证明父子会话隔离/完整历史去向；JSON消息<20000也不等于CONTEXT_CHARS或全请求字节上限。本批不修改产品压缩算法，不声称存在新增压缩Bug。
+- 新_f-subagent-fixture严格六请求：父调用→子读0→子读1→独立轻模型摘要→压缩后子回答→父最终回答；固定完整task/参数/ID和每层system身份。两个独立约2KB单行文件低于窗口上限，首个完整带行号读取连同原调用全部送摘要，摘要后保留当前子任务及第二完整读取/配对，父会话只收到子最终答复、不混入子读工具链。三条audit各ID唯一ok，原文件保持不变、短答不产生动作摘要，实际CLI close0且只一次压缩。移除固定就绪睡眠及漂移填充。
+- 新oracle首版17项通过；阅读实际callOpenAI接线发现子任务无onDelta走buffered、父CLI走stream，先修夹具transport并只验transport2项。F4实际首跑3/4，唯一完整transcript失败：SSE父tool-call accumulator的content为空字符串，而非夹具null；buffered子回复的null原样保留。修正仅父内容，content定向2/2；仅F_SUBAGENT_EVIDENCE_ONLY重建场景并完成原失败transcript1/1，不重复首跑另3项判定。当前四个业务判据为3＋1分段证据，不把初版17＋两组2重叠累计成21个独立最终用例，也未冒称最终默认oracle又全跑一次。
+- 保留测试协议反例：空/缺/多请求、父子/主轻混淆、错误参数/配对、摘要丢首文件尾、当前task丢失、保留读丢失、旧读重放、父子答复替换、audit缺失/重复/状态；原17中与新增transport/content正例依赖有关的最终证据由上述定向及真实请求比对补充，未重复其它套件。新测试含应用自身agent_tool流程，不是Codex多代理委派或真实模型任务。
+- Node13语法/JSON/diff、标准入口与静态计数登记；无产品/native改动、真实模型/桌面/Win7/长稳/全套/打包。不宣称含system和schema的实际请求被3500 weighted units完全容纳，原零进展保护仍允许保留大system/尾部；全请求有独立序列化准入。T22-33/真实模型质量仍部分完成，按授权本地提交，不推送。
