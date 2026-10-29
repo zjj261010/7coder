@@ -13,6 +13,7 @@ const GPrototype = require('./_g-prototype-fixture'), GPrototypeDriver = require
 const GEconomics = require('./_g-economics-fixture'), GEconomicsDriver = require('./_g-economics-driver');
 const GSupply = require('./_g-supply-audit');
 const GDifferential = require('./_g-differential-fixture'), GDifferentialDriver = require('./_g-differential-driver');
+const GBinary = require('./_g-binary-fixture'), GBinaryDriver = require('./_g-binary-driver');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -164,22 +165,15 @@ scenarios.push({
 scenarios.push({
   name: 'binary-backup',
   fn: async () => {
-    const cwd = freshCwd('g7');
-    const png = Buffer.alloc(4096);
-    for (let i = 0; i < png.length; i++) png[i] = (i * 31 + 7) % 256;
-    fs.writeFileSync(path.join(cwd, 'img.png'), png);
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'bb1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'img.png', content: 'text overwritten' }) } }] },
-      { role: 'assistant', content: 'BB-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd,
-      stdinSteps: [{ t: 'overwrite\n', d: 100 }, { t: '/execute-task-now\n', d: 3000 }, { t: '/undo img.png\n', d: 800 }, { t: '/bye\n', d: 400 }]
-    });
-    const restored = fs.readFileSync(path.join(cwd, 'img.png'));
-    record('binary-backup: /undo restores binary EXACTLY (byte compare)', Buffer.compare(png, restored) === 0, 'len=' + restored.length);
-    stopMock(m);
+    const result = await GBinaryDriver.run(S), before = result.states[2].evidence, records = before.records.map(row => row.directory);
+    record('binary: seven exact main requests retain actual write refusal two downloads and subsequent binary read', result.spec.transcript(result.log, records) && result.errors.length === 0 && JSON.stringify(result.payloads) === JSON.stringify(['/payload/one.bin', '/payload/two.bin']), 'requests=' + result.log.length);
+    record('binary: actual refusal leaves original and no backup then each download changes bytes and publishes correct prior snapshot', GBinary.stagesValid(result.states), '');
+    record('binary: two actual undo commands restore newest previous generation and remain idempotent without model work', GBinary.undosValid(result.undos, before), '');
+    record('binary: next task preserves restored bytes and all original snapshot identities payloads digests and metadata', result.finalBytes.equals(GBinary.first) && GBinary.sameEvidence(before, result.finalEvidence), '');
+    record('binary: authoritative audit joins four tools to three successful tasks with one expected write refusal', result.spec.audit(result.audits, result.runtime, records), '');
+    record('binary: three exact replies two restore confirmations normal exit and no auxiliary summary', GBinary.output(result.output, result.code) && result.signal === null && !result.hasWorklog, 'exit=' + result.code);
+    const expected = result.log[6] && result.log[6].messages.filter(message => message.role !== 'tool').map(message => message.tool_calls ? { role: 'assistant', content: message.content || '' } : message).concat({ role: 'assistant', content: GBinary.replies[2] });
+    record('binary: complete CLI archive preserves all three real task histories without orphan tools or undo phantom tasks', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
   }
 });
 
