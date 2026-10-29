@@ -12,6 +12,7 @@ const GBatch = require('./_g-batch-fixture'), GBatchDriver = require('./_g-batch
 const GPrototype = require('./_g-prototype-fixture'), GPrototypeDriver = require('./_g-prototype-driver');
 const GEconomics = require('./_g-economics-fixture'), GEconomicsDriver = require('./_g-economics-driver');
 const GSupply = require('./_g-supply-audit');
+const GDifferential = require('./_g-differential-fixture'), GDifferentialDriver = require('./_g-differential-driver');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -143,29 +144,19 @@ scenarios.push({
   }
 });
 
-// --- G6: differential oracles ---
+// --- G6: exact numbered windows, real global versus sequential edits ---
 scenarios.push({
   name: 'differential',
   fn: async () => {
-    const cwd = freshCwd('g6');
-    const lines = [];
-    for (let i = 1; i <= 100; i++) lines.push('LINE-' + String(i).padStart(3, '0'));
-    fs.writeFileSync(path.join(cwd, 'hundred.txt'), lines.join('\n') + '\n');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'd1', type: 'function', function: { name: 'read_file', arguments: JSON.stringify({ path: 'hundred.txt', offset: 10, limit: 20 }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'd2', type: 'function', function: { name: 'edit_file', arguments: JSON.stringify({ path: 'multi.txt', old_string: 'TOKEN', new_string: 'REPLACED', replace_all: true }) } }] },
-      { role: 'assistant', content: 'DIFF-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    fs.writeFileSync(path.join(cwd, 'multi.txt'), 'a-TOKEN-b\nTOKEN\nxx-TOKEN-yy');
-    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
-    const log = readLog(m.log);
-    const paged = tr(log, 'd1').c;
-    const manual = lines.slice(9, 29).join('\n');
-    const rePaged = paged.split('\n').map(l => l.replace(/^\s*\d+\t/, '')).join('\n');
-    record('diff: read_file offset/limit equals manual line slice', rePaged === manual, JSON.stringify(rePaged.substring(0, 60)) + ' vs ' + JSON.stringify(manual.substring(0, 60)));
-    record('diff: replace_all equals sequential singles oracle', fs.readFileSync(path.join(cwd, 'multi.txt'), 'utf8') === 'a-REPLACED-b\nREPLACED\nxx-REPLACED-yy', '');
-    stopMock(m);
+    const result = await GDifferentialDriver.run(S);
+    record('diff: eleven exact model requests preserve numbered pages Unicode empty lines EOF and every actual tool result', GDifferential.transcript(result.log) && result.errors.length === 0, 'requests=' + result.log.length);
+    record('diff: actual held file stages prove rejected edit is unchanged then global and three unique edits progress exactly', GDifferential.states(result.states), '');
+    record('diff: all first-task tools finish normally after expected ambiguous rejection', result.firstProof, '');
+    record('diff: actual global and sequential files equal independent literal golden bytes after next-task readback', result.global.equals(Buffer.from(GDifferential.finalFile)) && result.serial.equals(Buffer.from(GDifferential.finalFile)) && result.pages.equals(Buffer.from(GDifferential.pageText)), '');
+    record('diff: nine audit rows and expected unique tool failure join correct successful task identities', GDifferential.audit(result.audits, result.runtime), '');
+    record('diff: same Agent returns two exact replies once and closes normally without extra summary work', GDifferential.output(result.output, result.code) && result.signal === null && !result.hasWorklog, 'exit=' + result.code);
+    const expected = result.log[10] && result.log[10].messages.filter(message => message.role !== 'tool').map(message => message.tool_calls ? { role: 'assistant', content: message.content || '' } : message).concat({ role: 'assistant', content: GDifferential.recovered });
+    record('diff: CLI archive retains both complete tasks and actual final replies without orphan tools', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
   }
 });
 
