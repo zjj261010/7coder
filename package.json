@@ -128,6 +128,7 @@
     "test:g-batch-oracles": "node test/g-batch-oracles.js",
     "test:g-prototype-oracles": "node test/g-prototype-oracles.js",
     "test:g-economics-oracles": "node test/g-economics-oracles.js",
+    "test:g-supply-oracles": "node test/g-supply-oracles.js",
     "test:tool-declaration-oracles": "node test/tool-declaration-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",

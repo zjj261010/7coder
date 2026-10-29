@@ -11,6 +11,7 @@ const GInput = require('./_g-input-fixture'), GInputDriver = require('./_g-input
 const GBatch = require('./_g-batch-fixture'), GBatchDriver = require('./_g-batch-driver');
 const GPrototype = require('./_g-prototype-fixture'), GPrototypeDriver = require('./_g-prototype-driver');
 const GEconomics = require('./_g-economics-fixture'), GEconomicsDriver = require('./_g-economics-driver');
+const GSupply = require('./_g-supply-audit');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -127,27 +128,18 @@ scenarios.push({
   }
 });
 
-// --- G5: supply-chain audit ---
+// --- G5: literal product imports, full locked install and real Node loading ---
 scenarios.push({
   name: 'supply-chain',
   fn: async () => {
-    // The real invariant: OUR code loads only axios+dotenv plus Node builtins.
-    // (axios 1.x ships transitive packages in node_modules - that is its tree,
-    // managed by npm; what matters is what index.js itself pulls in.)
-    const src = fs.readFileSync(path.join(ROOT, '..', 'index.js'), 'utf8');
-    const builtins = new Set(['fs', 'path', 'http', 'readline', 'child_process', 'os', 'crypto', 'util', 'stream', 'events', 'net', 'tls', 'url', 'querystring', 'zlib', 'buffer', 'string_decoder', 'assert']);
-    const requires = [];
-    const re = /(?:^|[^.\w])require\(\s*['"]([^'"]+)['"]\s*\)/g;
-    let mm;
-    while ((mm = re.exec(src))) requires.push(mm[1]);
-    const foreign = requires.filter(r => !builtins.has(r) && !/^node:/.test(r) && !/^\.\.?[/\\]/.test(r));
-    record('supply: index.js requires only axios+dotenv+builtins', [...new Set(foreign)].sort().join(',') === 'axios,dotenv', 'unique=' + [...new Set(foreign)].sort().join(','));
-    const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, '..', 'package.json'), 'utf8'));
-    record('supply: direct dependencies are exactly axios+dotenv', JSON.stringify(Object.keys(pkg.dependencies).sort()) === JSON.stringify(['axios', 'dotenv']), JSON.stringify(Object.keys(pkg.dependencies)));
-    record('supply: axios upgraded off the CVE-affected 0.x line', !/^0\./.test(pkg.dependencies.axios.replace(/^[\^~]/, '')), pkg.dependencies.axios);
-    const lock = JSON.parse(fs.readFileSync(path.join(ROOT, '..', 'package-lock.json'), 'utf8'));
-    record('supply: package.json version matches lockfile', pkg.version === lock.version, pkg.version + ' vs ' + lock.version);
-    record('supply: bin target exists', fs.existsSync(path.join(ROOT, '..', pkg.bin['7coder'])), pkg.bin['7coder']);
+    const root = path.join(ROOT, '..'), snapshot = GSupply.capture(root), errors = GSupply.validate(snapshot);
+    record('supply: complete locked installed graph metadata actual resolution and literal product imports agree', errors.length === 0, errors.join('; '));
+    if (process.env.G_SUPPLY_ONLY === 'inventory') return;
+    record('supply: audit includes entrypoint and every current helper plus all locked packages', snapshot.sources.length === 1 + fs.readdirSync(path.join(root, 'lib')).filter(file => file.endsWith('.js')).length && Object.keys(snapshot.installed).length === Object.keys(snapshot.lock.packages).length - 1, 'sources=' + snapshot.sources.length + ' packages=' + Object.keys(snapshot.installed).length + ' resolved-edges=' + snapshot.resolutions.length);
+    const script = 'const r=require("module").createRequire(require("path").join(process.argv[1],"package.json"));const a=r("axios"),d=r("dotenv");console.log(JSON.stringify({node:process.version,axios:typeof a.request,dotenv:typeof d.parse}));';
+    const child = spawnSync(NODE_BIN, ['-e', script, root], { encoding: 'utf8', timeout: 10000 }); let proof;
+    try { proof = JSON.parse(child.stdout); } catch (error) {}
+    record('supply: actual runtime loads installed axios request and dotenv parse without npm install or env reads', child.status === 0 && !child.signal && proof && proof.axios === 'function' && proof.dotenv === 'function', 'runtime=' + (proof && proof.node) + ' ' + (child.error ? child.error.message : child.stderr || ''));
   }
 });
 
