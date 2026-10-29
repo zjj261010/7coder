@@ -15,6 +15,7 @@ const IFlush = require('./_i-flush-fixture');
 const IRalph = require('./_i-ralph-fixture');
 const ToolDeclarations = require('./_tool-declarations');
 const ICronExit = require('./_i-cron-exit-fixture');
+const IWorklog = require('./_i-worklog-fixture');
 const crypto = require('crypto');
 const { create: createEndpoint } = require('./_endpoint');
 
@@ -203,33 +204,38 @@ scenarios.push({
 scenarios.push({
   name: 'marker-isolation',
   fn: async () => {
-    const cwd = freshCwd('i5');
-    // user pre-seeds their own 7CODER.md with a dream-style section AND their own bullets
-    fs.writeFileSync(path.join(cwd, '7CODER.md'), '# My project notes\n\n- my own bullet stays\n\n## Plan\n- plan step\n');
-    const m = startMock([
-      // AST-R1: replies padded past the 200-char summary floor so both scripted
-      // summaries are consumed and land as bullets inside the marker section.
-      { role: 'assistant', content: 'T1-REPLY ' + 'first task reply padded past the summary floor. '.repeat(6) },
-      { role: 'assistant', content: 'first task summary' },
-      { role: 'assistant', content: 'T2-REPLY ' + 'second task reply padded past the summary floor. '.repeat(6) },
-      { role: 'assistant', content: 'second task summary' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd,
-      stdinSteps: [
-        { t: 'one\n', d: 80 }, { t: '/execute-task-now\n', d: 3000 },
-        { t: 'two\n', d: 80 }, { t: '/execute-task-now\n', d: 3000 },
-        { t: '/bye\n', d: 400 }
-      ]
-    });
-    const md = fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8');
-    const inside = md.substring(md.indexOf('auto-log:start'), md.indexOf('auto-log:end'));
-    record('markers: user bullets outside section are NOT merged into log', !inside.includes('my own bullet stays'), inside);
-    record('markers: dream/user sections preserved verbatim', md.includes('# My project notes') && md.includes('## Plan') && md.includes('- plan step'), '');
-    record('markers: task summaries accumulate inside section', inside.includes('- first task summary') && inside.includes('- second task summary'), inside);
-    record('markers: exactly one log section after repeated tasks', (md.match(/auto-log:start/g) || []).length === 1, '');
-    stopMock(m);
+    const cwd = freshCwd('i5'), file = path.join(cwd, '7CODER.md');
+    fs.writeFileSync(file, IWorklog.notes);
+    const m = startMock(IWorklog.script, { MOCK_STRICT: '1' });
+    let child, closed = false, output = '', code;
+    const wait = async (predicate, label) => {
+      const end = Date.now() + 10000;
+      while (Date.now() < end) { if (predicate()) return; if (closed) throw Error('I5 closed early: ' + output.slice(-2000)); await new Promise(resolve => setTimeout(resolve, 15)); }
+      throw Error(label + ': ' + output.slice(-2000));
+    };
+    try {
+      await readyMock(m);
+      child = spawn(NODE_BIN, [IDX], { cwd, env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1',
+        HEAVY_MODEL: IWorklog.main, LIGHT_MODEL: IWorklog.summary, SUMMARY_MODEL: IWorklog.summary, PERMISSION_MODE: 'bypass', MAX_RETRIES: '1',
+        DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false', EXECUTION_TIMEOUT_MS: '8000' }) });
+      child.stdout.on('data', data => { output = (output + data).slice(-16384); }); child.stderr.on('data', data => { output = (output + data).slice(-16384); }); child.stdin.on('error', () => {});
+      child.once('close', value => { closed = true; code = value; });
+      await wait(() => output.includes('Commands:'), 'I5 REPL not ready');
+      child.stdin.write(IWorklog.tasks[0] + '\n/execute-task-now\n');
+      await wait(() => (output.match(/\[USAGE\]/g) || []).length === 1, 'I5 first task not complete');
+      const first = fs.readFileSync(file), originalBackup = fs.readFileSync(file + '.7coder-prev');
+      record('markers: first real summary preserves BOM/CRLF and complete original notes', first.equals(Buffer.from(IWorklog.document(0))), '');
+      child.stdin.write(IWorklog.tasks[1] + '\n/execute-task-now\n');
+      await wait(() => (output.match(/\[USAGE\]/g) || []).length === 2, 'I5 second task not complete');
+      record('markers: next real summary preserves all multiline details and exact outside bytes', fs.readFileSync(file).equals(Buffer.from(IWorklog.document(1))), '');
+      record('markers: prior versions preserve original and first complete worklog bytes', originalBackup.equals(Buffer.from(IWorklog.notes)) && fs.readFileSync(file + '.7coder-prev').equals(first), '');
+      record('markers: strict four-request history keeps actual task/summary model and content', IWorklog.evidence(readLog(m.log)), 'requests=' + readLog(m.log).length);
+      child.stdin.write('/bye\n'); await wait(() => closed, 'I5 quit did not close');
+      record('markers: real REPL finishes both writes and quits without hidden failures', code === 0 && output.includes('Goodbye!') && !/\[ERROR\]|Error writing to 7CODER|MOCK_PROTOCOL|UnhandledPromiseRejection/.test(output), 'exit=' + code);
+    } finally {
+      if (child && !closed) { child.kill(); await new Promise(resolve => { if (closed) resolve(); else child.once('close', resolve); }); }
+      stopMock(m);
+    }
   }
 });
 

@@ -1339,10 +1339,17 @@ scenarios.push({
     record('autolog-dedup: two identical consecutive summaries leave exactly one bullet',
       bullets.length === 1 && bullets[0] === '- ' + summaryText && r2.out.indexOf('summary unchanged - dedup') >= 0,
       'bullets=' + bullets.length + ' first=' + (bullets[0] || 'none') + ' dedupMsg=' + (r2.out.indexOf('summary unchanged - dedup') >= 0) + ' r1code=' + r1.code);
-    // Cap: source-level grep on the updateCompleteSummary cap line.
+    // Exercise retention rather than matching one implementation spelling.
     const src = fs.readFileSync(IDX, 'utf8');
-    record('autolog-dedup: auto-log capped at newest 60 via slice(-60) in updateCompleteSummary',
-      src.indexOf('summaries = summaries.slice(-60)') >= 0, 'note: 61-bullet end-to-end not constructed');
+    const begin = src.indexOf('function composeCompleteSummary('), end = src.indexOf('function updateCompleteSummary(', begin);
+    if (begin < 0 || end <= begin) throw Error('worklog composition region not found');
+    const cap = { LOG_START: '<!-- 7coder:auto-log:start -->', LOG_END: '<!-- 7coder:auto-log:end -->' };
+    require('vm').runInNewContext(src.slice(begin, end), cap);
+    let capped = '';
+    for (let i = 0; i < 61; i++) capped = cap.composeCompleteSummary(capped, 'cap-entry-' + i);
+    const kept = capped.split('\n').filter(line => line.startsWith('- '));
+    record('autolog-dedup: actual composition retains exactly newest 60 complete entries',
+      JSON.stringify(kept) === JSON.stringify(Array.from({ length: 60 }, (_, i) => '- cap-entry-' + (i + 1))), 'composition only; not 61 Agent runs');
     stopMock(m);
   }
 });

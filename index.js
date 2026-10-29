@@ -8245,50 +8245,52 @@ function createActionSummaryQueue(options = {}) {
   };
 }
 const actionSummaryQueue = createActionSummaryQueue();
+function composeCompleteSummary(existing, newSummary) {
+  if (typeof existing !== 'string' || typeof newSummary !== 'string') throw Error('Worklog and summary must be text.');
+  const summary = newSummary.replace(/\r\n?/g, '\n').trim();
+  if (!summary) return existing;
+  if (summary.includes(LOG_START) || summary.includes(LOG_END)) throw Error('Summary contains reserved worklog markers; existing notes preserved.');
+  const start = existing.indexOf(LOG_START), end = existing.indexOf(LOG_END);
+  if ((start < 0) !== (end < 0) || (start >= 0 && (end < start ||
+      existing.indexOf(LOG_START, start + LOG_START.length) >= 0 || existing.indexOf(LOG_END, end + LOG_END.length) >= 0))) {
+    throw Error('Worklog markers are incomplete, reversed or duplicated; repair the retained file before appending.');
+  }
+  const inner = start >= 0 ? existing.slice(start + LOG_START.length, end) : '';
+  const summaries = [];
+  let entry = null;
+  const finish = () => { if (entry !== null) { const value = entry.join('\n').trim(); if (value) summaries.push(value); } };
+  for (const line of inner.split(/\r\n|\r|\n/)) {
+    if (line.startsWith('- ')) { finish(); entry = [line.slice(2)]; }
+    else if (entry !== null) entry.push(line.startsWith('  ') ? line.slice(2) : line);
+    else if (line.trim()) throw Error('Unrecognized content inside worklog markers; existing notes preserved.');
+  }
+  finish();
+  if (summaries.length && summaries[summaries.length - 1] === summary) return existing;
+  summaries.push(summary);
+  const retained = summaries.slice(-60);
+  const newline = start >= 0 ? (inner.startsWith('\r\n') ? '\r\n' : '\n') : (existing.includes('\r\n') ? '\r\n' : '\n');
+  const section = LOG_START + newline + retained.map(value => '- ' + value.split('\n').join(newline + '  ')).join(newline) + newline + LOG_END;
+  // Replace only the owned marker span. User bytes on either side, including
+  // indentation, final spaces/newlines and a file-start BOM, stay unchanged.
+  if (start >= 0) return existing.slice(0, start) + section + existing.slice(end + LOG_END.length);
+  const bom = existing.startsWith('\uFEFF') ? '\uFEFF' : '', outside = existing.slice(bom.length);
+  return bom + section + (outside ? newline + newline + outside : newline);
+}
 function updateCompleteSummary(newSummary) {
-  // AST-R1: null means summarizeAction skipped the call (short reply) - leave
-  // 7CODER.md untouched instead of appending "null".
   if (!newSummary) return;
   const mdPath = managedWorkspacePath('7CODER.md');
-  let existing = '';
+  let current, existing = '';
   try {
-    const record = readStateRecord(mdPath);
-    if (record) existing = record.value;
+    current = readStateRecord(mdPath);
+    if (current) existing = current.value;
   } catch (e) {
     console.error('Error reading 7CODER.md; summary not written:', e.message);
     return;
   }
-  // Bullets from the previous auto-log section (if present)
-  let summaries = [];
-  const startIdx = existing.indexOf(LOG_START);
-  const endIdx = existing.indexOf(LOG_END);
-  if (startIdx >= 0 && endIdx > startIdx) {
-    const inner = existing.substring(startIdx + LOG_START.length, endIdx);
-    summaries = inner.split('\n')
-      .map(l => l.trim())
-      .filter(l => l.startsWith('- '))
-      .map(l => l.slice(2).trim())
-      .filter(Boolean);
-  }
-  // OP5-5: a repeated task that produces the identical summary (retry, same
-  // output) must not grow the bullet log - if the last bullet already says
-  // exactly this, leave the file untouched.
-  if (summaries.length && summaries[summaries.length - 1] === newSummary) {
-    console.log('[OK] summary unchanged - dedup');
-    return;
-  }
-  summaries.push(newSummary);
-  // OP5-5: cap the auto-log at the newest 60 bullets so a long-lived
-  // workspace's 7CODER.md cannot grow without bound.
-  if (summaries.length > 60) summaries = summaries.slice(-60);
-  // Free-form content outside the markers survives (dream sessions, user notes)
-  const outside = (startIdx >= 0 && endIdx > startIdx)
-    ? (existing.substring(0, startIdx) + existing.substring(endIdx + LOG_END.length)).trim()
-    : existing.trim();
-  const autoSection = LOG_START + '\n' + summaries.map(s => '- ' + s).join('\n') + '\n' + LOG_END;
-  const next = outside ? autoSection + '\n\n' + outside + '\n' : autoSection + '\n';
   try {
-    writeStateFile(mdPath, next);
+    const next = composeCompleteSummary(existing, newSummary);
+    if (next === existing) { console.log('[OK] summary unchanged - dedup'); return; }
+    writeStateFile(mdPath, next, parseStateText, current ? current.bytes : null);
     console.log('[OK] 7CODER.md updated with complete summary');
   } catch (e) {
     console.error('Error writing to 7CODER.md:', e);
