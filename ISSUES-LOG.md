@@ -29,7 +29,7 @@
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
-| runner-f.js | 37 |
+| runner-f.js | 38 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
@@ -37,7 +37,7 @@
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **708** |
+| **合计** | **709** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2289,3 +2289,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新私有HTTP fixture只接受POST /v1/chat/completions，完整核对固定主模型、真实stream分支、system＋唯一任务、工具schema及零旧tool history；依次真实CLI运行/v1、/v1/、/v1///三配置，各自空工作区/精确独立回复/exit0，最终必须恰三次请求、零错误/摘要/重试。仅剥尾斜杠符合当前base端点语义，不擅自宣称支持传完整chat/completions URL或任意provider规则。
 - f-endpoint-oracles12/12、RUN_ONLY=endpoint-variants4/4均首跑通过，无skip；反例包含单/多个斜杠未清除、任意路径、错误method/模型/transport/schema/任务、旧history混入、空缺多请求、重复/缺回复与非零exit。客户端保留原隔离runCli的10秒期限，自有fixture sockets finally关闭，移除固定启动等待。
 - Node13语法/JSON/diff、默认登记及静态计数更新，无产品/native改动、其它F场景/全套/真实模型/Win7/长稳/打包，不推送；按授权本地提交后继续。
+
+### 2026-10-29 —— T22-33 F6逐块协议证据与损坏帧反例
+
+- F6旧解析catch后filter(Boolean)丢弃损坏帧，正文拼接也吞解析错误；只查部分字段与末尾DONE，可能让中间错误/错ID/重复结束蒙混通过。本批替换此测试证据，不将验证器弱点冒报为Agent实际已发送坏帧。
+- 新私有严格两请求固定JSON/流任务、主模型、完整system＋任务与transport；JSON核对完整中文/emoji/换行正文、请求模型、执行身份、正整数created及唯一stop choice。SSE逐块不可跳过损坏JSON/error/未知记录，所有object/model/id/created/index/delta一致、正文精确，唯一最终空delta＋stop和唯一末尾DONE，零意外tool活动；两请求ID须不同，完成后任务/工具/准入/门/摘要全部归零。删去仅旧F6使用的吞错assembleSSE与未用lastData。
+- f-schema-oracles首跑22/22，RUN_ONLY=schema首跑5/5且零skip；反例包括损坏中间JSON、错误事件、少/多/提前DONE、DONE后数据、身份/时钟/模型漂移、错choice/delta/stop、截断正文、意外工具、末帧藏数据及缺/多/transport错请求。客户端依私有_endpoint期限/体积预算及自有句柄关闭，不接真实模型。
+- Node13语法/JSON/diff、默认入口/静态计数登记，无产品/native改动、其它场景/全套/Win7/长稳/打包。只核对本项目当前所实现的单choice JSON/SSE协议，不宣称全OpenAI规范或其它provider扩展都获认证；按授权本地提交后继续，不推送。

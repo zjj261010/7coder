@@ -1,0 +1,34 @@
+'use strict';
+const assert = require('assert'), F = require('./_f-schema-fixture'); let checks = 0;
+function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
+const id = 'chatcmpl-exec-' + 'ab'.repeat(12) + '-1';
+const base = { id, object: 'chat.completion.chunk', created: 1234, model: F.model };
+const chunks = [{ ...base, choices: [{ index: 0, delta: { content: F.replies[1] }, finish_reason: null }] }, { ...base, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] }];
+const encode = value => value.map(chunk => 'data: ' + JSON.stringify(chunk) + '\n\n').join('') + 'data: [DONE]\n\n';
+const raw = encode(chunks);
+check('complete exact Unicode stream and one terminal marker are accepted', !!F.stream(raw));
+function rejects(label, mutate) { const copy = JSON.parse(JSON.stringify(chunks)); mutate(copy); check(label, !F.stream(encode(copy))); }
+check('malformed intermediate JSON must never be silently discarded', !F.stream('data: {broken}\n\n' + raw));
+check('SSE error event cannot substitute completion', !F.stream('data: {"error":{"message":"failed"}}\n\n' + raw));
+check('missing and duplicated DONE are rejected', !F.stream(raw.replace('data: [DONE]\n\n', '')) && !F.stream(raw + 'data: [DONE]\n\n'));
+check('data after DONE and unknown records are rejected', !F.stream(raw + 'data: {}\n\n') && !F.stream('broken frame\n' + raw));
+rejects('response identity drift cannot pass', rows => rows[1].id = id.slice(0, -1) + '2');
+rejects('response clock field drift cannot pass', rows => rows[1].created++);
+rejects('wrong object cannot pass', rows => rows[0].object = 'chat.completion');
+rejects('wrong requested model cannot pass', rows => rows[0].model = 'wrong');
+rejects('missing delta cannot pass', rows => delete rows[0].choices[0].delta);
+rejects('wrong choice index cannot pass', rows => rows[0].choices[0].index = 1);
+rejects('additional choice cannot pass', rows => rows[0].choices.push(rows[0].choices[0]));
+rejects('early stop cannot pass', rows => rows[0].choices[0].finish_reason = 'stop');
+rejects('missing final stop cannot pass', rows => rows[1].choices[0].finish_reason = null);
+rejects('truncated Unicode body cannot pass', rows => rows[0].choices[0].delta.content = F.replies[1].slice(0, -1));
+rejects('unexpected tool event cannot pass', rows => rows[0].choices[0].delta.tool_result = { status: 'error' });
+rejects('final data cannot be hidden behind stop', rows => rows[1].choices[0].delta = { content: 'extra' });
+const plain = { ...base, object: 'chat.completion', choices: [{ index: 0, message: { role: 'assistant', content: F.replies[0] }, finish_reason: 'stop' }] };
+check('exact buffered response is accepted', F.plain(plain));
+check('buffered response requires exact body and requested model', !F.plain({ ...plain, model: 'wrong' }) && !F.plain({ ...plain, choices: [{ ...plain.choices[0], message: { role: 'assistant', content: 'wrong' } }] }));
+check('buffered response requires valid identity finite timestamp and one choice', !F.plain({ ...plain, id: 'chatcmpl-' }) && !F.plain({ ...plain, created: NaN }) && !F.plain({ ...plain, choices: plain.choices.concat(plain.choices) }));
+const log = F.prompts.map((prompt, i) => ({ model: F.model, ...(i ? { stream: true } : {}), messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: prompt }], tools: [{ type: 'function', function: { name: 'read_file' } }] }));
+check('two isolated exact main requests are accepted', F.transcript(log));
+check('empty missing duplicated and wrong-transport requests are rejected', !F.transcript([]) && !F.transcript(log.slice(1)) && !F.transcript(log.concat(log[0])) && !F.transcript([log[0], { ...log[1], stream: undefined }]));
+console.log('F/SCHEMA/ORACLES ' + checks + '/' + checks);

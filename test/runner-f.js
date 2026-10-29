@@ -13,6 +13,7 @@ const FSubagent = require('./_f-subagent-fixture');
 const FDisconnect = require('./_f-disconnect-fixture');
 const FPerf = require('./_f-perf-fixture');
 const FEndpoint = require('./_f-endpoint-fixture');
+const FSchema = require('./_f-schema-fixture');
 const { create: createEndpoint, parseSSE } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
@@ -20,16 +21,6 @@ const S = require('./_shared').create({ suite: 'F', wsPrefix: 'w-f-' });
 const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18250;
 function startMock(scriptObj, env) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj, env); }
-function assembleSSE(body) {
-  let out = '';
-  for (const line of body.split('\n')) {
-    if (!line.startsWith('data:')) continue;
-    const payload = line.substring(5).trim();
-    if (!payload || payload === '[DONE]') continue;
-    try { const c = JSON.parse(payload); if (c.choices && c.choices[0].delta && c.choices[0].delta.content) out += c.choices[0].delta.content; } catch (e) {}
-  }
-  return out;
-}
 
 const scenarios = [];
 
@@ -277,32 +268,25 @@ for (const [scenario, kind] of [['disconnect', 'partial'], ['disconnect-cancel',
 scenarios.push({
   name: 'schema',
   fn: async () => {
-    const cwd = freshCwd('f6');
-    const m = startMock([{ role: 'assistant', content: 'SCHEMA-OK' }]);
-    await new Promise(r => setTimeout(r, 600));
-    const srvPort = port + 290;
-    const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
-      cwd, stdio: 'ignore'
-    });
-    await new Promise(r => setTimeout(r, 2500));
+    const m = startMock(FSchema.script, { MOCK_STRICT: '1' });
+    const agent = createEndpoint({ suite: 'F6-schema', endpoint: 'http://127.0.0.1:' + m.port, key: '', model: FSchema.model, permissionMode: 'bypass' });
     try {
-      const plain = JSON.parse((await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] })).body);
-      record('schema: non-stream response fields conform', plain.object === 'chat.completion' && typeof plain.created === 'number'
-        && Array.isArray(plain.choices) && plain.choices[0].index === 0 && plain.choices[0].message.role === 'assistant'
-        && plain.choices[0].finish_reason === 'stop' && typeof plain.id === 'string' && plain.id.startsWith('chatcmpl-'), JSON.stringify(plain).substring(0, 120));
-      const sse = (await httpReq(srvPort, 'POST', '/v1/chat/completions', { stream: true, messages: [{ role: 'user', content: 'x' }] })).body;
-      const lines = sse.split('\n').filter(l => l.startsWith('data:')).map(l => l.substring(5).trim());
-      const lastData = lines[lines.length - 2];
-      const chunks = lines.slice(0, -1).map(l => { try { return JSON.parse(l); } catch (e) { return null; } }).filter(Boolean);
-      record('schema: SSE terminates with [DONE] exactly', lines[lines.length - 1] === '[DONE]', '');
-      record('schema: chunk objects conform (object/delta/finish_reason)',
-        chunks.length >= 2 && chunks.every(c => c.object === 'chat.completion.chunk' && c.choices && c.choices[0].index === 0)
-        && chunks[chunks.length - 1].choices[0].finish_reason === 'stop', '');
-      record('schema: content fully delivered across chunks', assembleSSE(sse) === 'SCHEMA-OK', '');
+      const deadline = Date.now() + 5000; let ready = false;
+      while (Date.now() < deadline) { if (m.child.exitCode !== null) throw Error('F6 fixture exited'); try { ready = (await httpReq(m.port, 'GET', '/', null)).status === 200; if (ready) break; } catch (e) { if (e.code !== 'ECONNREFUSED') throw e; } await new Promise(r => setTimeout(r, 10)); }
+      if (!ready) throw Error('F6 fixture readiness');
+      const cwd = freshCwd('f6'); await agent.start(cwd);
+      const plain = JSON.parse((await agent.request({ messages: [{ role: 'user', content: FSchema.prompts[0] }] }, 8000)).body);
+      record('schema: JSON response retains exact body model identity timestamp and single terminal choice', FSchema.plain(plain), '');
+      const sse = (await agent.request({ stream: true, messages: [{ role: 'user', content: FSchema.prompts[1] }] }, 8000)).body;
+      const parsed = FSchema.stream(sse);
+      record('schema: every SSE chunk conforms without silently dropping malformed frames', !!parsed, '');
+      record('schema: entire Unicode body and one final stop/DONE share one response identity', !!parsed && parsed.content === FSchema.replies[1] && parsed.id !== plain.id, '');
+      record('schema: exactly two independent main model histories with no auxiliary work', FSchema.transcript(readLog(m.log)), 'requests=' + readLog(m.log).length);
+      const deadlineIdle = Date.now() + 5000; let idle = false;
+      while (Date.now() < deadlineIdle) { const info = JSON.parse((await agent.api('/api/info')).body); idle = FDisconnect.idle(info); if (idle) break; await new Promise(r => setTimeout(r, 10)); }
+      record('schema: both completed requests release task tool admission gate and summary resources', idle, '');
     } finally {
-      try { srv.kill(); } catch (e) {}
-      stopMock(m);
+      try { await agent.stop(); } finally { agent.S.cleanup(); stopMock(m); }
     }
   }
 });
