@@ -114,6 +114,7 @@
     "test:i-ralph-oracles": "node test/i-ralph-oracles.js",
     "test:i-cron-exit-oracles": "node test/i-cron-exit-oracles.js",
     "test:worklog-boundaries": "node test/worklog-boundaries.js",
+    "test:worklog-context": "node test/worklog-context.js",
     "test:tool-declaration-oracles": "node test/tool-declaration-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",

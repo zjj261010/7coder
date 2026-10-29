@@ -6813,8 +6813,10 @@ function buildTaskUserContent(rawPrompt) {
   {
     try {
       const record = readStateRecord(mdPath);
-      const completeSummary = record ? record.value.trim() : '';
-      if (completeSummary) {
+      // A file-start BOM is encoding metadata, but Markdown indentation and
+      // trailing whitespace are content. Use trim only to detect empty notes.
+      const completeSummary = record ? record.value.replace(/^\uFEFF/, '') : '';
+      if (completeSummary.trim()) {
         content += `\n\nthis is what's already been done.\n${completeSummary}`;
       }
     } catch (e) {

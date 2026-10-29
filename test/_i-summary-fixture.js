@@ -5,7 +5,7 @@ const replies = ['STREAM_REPLY_中文😀\n' + 'Complete streamed response. '.re
   'JSON_REPLY_中文😀\n' + 'Complete JSON response. '.repeat(12) + 'JSON_TAIL'];
 const summaries = ['I4_FIRST_SUMMARY_中文😀', 'I4_SECOND_SUMMARY_中文😀'];
 function document(count) { return '<!-- 7coder:auto-log:start -->\n' + summaries.slice(0, count).map(s => '- ' + s).join('\n') + '\n<!-- 7coder:auto-log:end -->\n'; }
-function task(index) { return tasks[index] + (index ? "\n\nthis is what's already been done.\n" + document(1).trim() : ''); }
+function task(index) { return tasks[index] + (index ? "\n\nthis is what's already been done.\n" + document(1) : ''); }
 function summaryPrompt(index) {
   return `Create a short, concise summary (1-2 sentences) of what has been done in response to the user's task. Do not list tools, just describe the output/effect.\nUser task: "${task(index)}"\nAction/Response: "${replies[index]}"`;
 }

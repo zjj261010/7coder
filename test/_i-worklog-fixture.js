@@ -9,7 +9,7 @@ const sections = [
   '<!-- 7coder:auto-log:start -->\r\n- first task summary\r\n  continued 中文😀\r\n- second task summary\r\n  - nested detail\r\n<!-- 7coder:auto-log:end -->'
 ];
 const document = index => '\uFEFF' + sections[index] + '\r\n\r\n' + notes.slice(1);
-const firstUser = tasks[0] + '\n\nthis is what\'s already been done.\n' + notes.trim();
+const firstUser = tasks[0] + '\n\nthis is what\'s already been done.\n' + notes.slice(1);
 const summaryPrompt = index => 'Create a short, concise summary (1-2 sentences) of what has been done in response to the user\'s task. Do not list tools, just describe the output/effect.\nUser task: "' + tasks[index] + '"\nAction/Response: "' + replies[index] + '"';
 const script = [0, 1, 2, 3].map(step => { const index = Math.floor(step / 2), auxiliary = step % 2 === 1;
   return { expect: { model: auxiliary ? summary : main, tools: !auxiliary, toolIds: [], lastUserIncludes: auxiliary ? summaryPrompt(index) : index ? tasks[index] : firstUser }, reply: auxiliary ? summaries[index] : replies[index] };
