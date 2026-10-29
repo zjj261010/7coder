@@ -93,6 +93,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'endpoint-oracles.js', args: [path.join(ROOT, 'test', 'endpoint-oracles.js')] },
     { name: 'tool-correlation.js', args: [path.join(ROOT, 'test', 'tool-correlation.js')] },
     { name: 'execution-correlation.js', args: [path.join(ROOT, 'test', 'execution-correlation.js')] },
+    { name: 'execution-entrypoints.js', args: [path.join(ROOT, 'test', 'execution-entrypoints.js')] },
     { name: 'tool-batch.js', args: [path.join(ROOT, 'test', 'tool-batch.js')] },
     { name: 'tool-history-recovery.js', args: [path.join(ROOT, 'test', 'tool-history-recovery.js')] },
     { name: 'read-window.js', args: [path.join(ROOT, 'test', 'read-window.js')] },

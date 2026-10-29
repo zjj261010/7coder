@@ -8311,8 +8311,10 @@ function updateCompleteSummary(newSummary) {
 // ====================== CORE EXECUTION ======================
 async function executeTask(modelContext = createModelContext()) {
   if (shuttingDown) return;
+  const executionId = nextExecutionId();
   const cancelled = createExecutionControl();
-  const finishRuntime = beginRuntimeOperation('cli-task');
+  cancelled.executionId = executionId;
+  const finishRuntime = beginRuntimeOperation('cli-task', { executionId });
   try {
     resetTaskChanges(); // GAP-12: the [CHANGES] summary covers exactly this task
     await createTaskGitCheckpoint(cancelled);
@@ -9024,18 +9026,18 @@ function startHttpServer() {
           actionSummaryQueue.enqueue({ id: responseId, rawPrompt, result, modelContext, deadlineAt: execution.deadlineAt });
         } catch (e) {
           if (finishRuntime) finishRuntime(execution() ? 'cancelled' : 'error', e);
-          else recordRuntimeEvent('http-request', execution() ? 'cancelled' : 'error', e);
+          else recordRuntimeEvent('http-request', execution() ? 'cancelled' : 'error', e, { executionId: execution.executionId });
           console.error('HTTP error:', e);
           if (res.destroyed || res.writableEnded) return;
           if (wantsStream && res.headersSent) {
             try {
-              res.write('data: ' + JSON.stringify({ error: { message: e.message } }) + '\n\n');
+              res.write('data: ' + JSON.stringify({ error: { message: e.message, executionId: execution.executionId } }) + '\n\n');
               res.write('data: [DONE]\n\n');
               res.end();
             } catch (e2) {}
           } else {
             res.writeHead(e.code === 'EXECUTION_CANCELLED' ? 408 : 500, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: { message: e.message } }));
+            res.end(JSON.stringify({ error: { message: e.message, executionId: execution.executionId } }));
           }
         } finally {
           if (finishRuntime) finishRuntime('cancelled', { message: 'Client disconnected before task completion.' });

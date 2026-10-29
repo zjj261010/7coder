@@ -630,7 +630,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-30 | Low／确认＋后续High风险修复 | **搜索输入与扫描预算**：10-24单文件grep、实际访问/深度/不匹配预算、失败incomplete及旧sentinel保留；INC-24-04补grep正则期限。10-25 INC-25-04再补glob pattern4096/匹配100ms/opts扫描5s或更早deadline与取消，匹配失败明确error，不改无pattern备份遍历scope。新glob14/14＋扫描21/21本批首次单次；**/零目录/问号/Win分隔符原语义验证。同步IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20；各扫描/期限批记录 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
-| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例及B2–B7身份迁移见各批。10-29前后新增I3/I11完整压缩/JSON与HTTP错误恢复、I4正常请求结束后的摘要门控、I1 CMD实际退出码、I2真实worker close、I5完整原文/备份、I8上限与提前完成分离、I9自然到期与Job停止区分、元数据实际声明/guard接线；再补F1精确20轮/实际正文时延、F2真实创建/失败/编辑/成功、F3等待中强终止及重启、F4精确父子/摘要六请求、F5真实断线与同Agent恢复。HTTP执行身份现已贯穿响应/SSE/audit/页面历史/runtime故障，CLI等其它入口及子调用独立身份仍待补。每批首跑失败、受影响分段和未重跑部分保留文末，不合并重复断言冒充全套通过。仍待其它旧位置mock和真实模型质量验收；本地fixture不代替全套/Win7/真实端点。 | R1 §10.3；R2 N01/N02/N03；10-29各定向记录；HTTP身份475053c/deb31f9 |
+| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例及B2–B7身份迁移见各批。10-29前后新增I3/I11完整压缩/JSON与HTTP错误恢复、I4正常请求结束后的摘要门控、I1 CMD实际退出码、I2真实worker close、I5完整原文/备份、I8上限与提前完成分离、I9自然到期与Job停止区分、元数据实际声明/guard接线；再补F1精确20轮/实际正文时延、F2真实创建/失败/编辑/成功、F3等待中强终止及重启、F4精确父子/摘要六请求、F5真实断线与同Agent恢复。HTTP执行身份现已贯穿响应/SSE/audit/页面历史/runtime故障，CLI任务/audit及HTTP解析/任务error身份已补；后台入口及子调用独立身份仍待补。每批首跑失败、受影响分段和未重跑部分保留文末，不合并重复断言冒充全套通过。仍待其它旧位置mock和真实模型质量验收；本地fixture不代替全套/Win7/真实端点。 | R1 §10.3；R2 N01/N02/N03；10-29各定向记录；HTTP身份475053c/deb31f9 |
 
 ### V22：验证与发布门槛（已有局部执行，整项尚未验收）
 
@@ -2303,3 +2303,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 同一Agent随后用合法key完成精确中文/emoji答复、exit协议/模型/执行身份校验；唯一实际模型请求必须完整system＋合法task且无拒绝task污染，唯一ok HTTP终态执行ID与响应相同，完成后资源归零、零tool audit与工作日志/幽灵摘要。测试_endpoint新增可选httpKey供ready/api/chat自动携带，仅测试进程使用；未配置仍保持原无key分支。负向请求另有5秒/32KiB边界。
 - 新f-key-oracles10/10与仅RUN_ONLY=key-brute6/6均首跑通过，零skip；反例含少/多/坏JSON或其它401、非200错误里夹回复词、错误模型/身份/正文、额外历史/transport、额外/取消/错ID终态。随后只合并测试helper重复HTTP_API_KEY键至原字段位置，保留已验证值与行为，不重复业务测试。
 - Node13语法/JSON/diff、默认专项与静态计数登记，无产品/native改动，未重复其它F或全套、真实模型/Win7/浏览器/长稳/打包。至此F1/F6/F7/F8本轮各定向完成，F2–F5保留各自先前分段记录；不能宣称最终当前F全套在一次运行全绿。T22-33其余套件旧mock及真实模型仍开放，按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-32/33 CLI执行与HTTP解析/任务失败的身份补齐
+
+- executeTask在建立控制器前分配执行ID，原token传给工具/工作流继承，与CLI终态runtime关联；无每次随机调用/缓存/额外timer。HTTP在requestGate之前的catch现在也带原执行ID，JSON/SSE error增加同名executionId，既有message与状态语义保留，已准入任务原runtime关联不变。readJsonBody自身拒绝（如413/读超时）、无key路由拒绝、后台cron/dream及独立子span等仍不在该catch覆盖，不宣称所有入口/所有错误都有完整身份。
+- execution-entrypoints首跑11/11：同一真实CLI进程执行两次read_file，明确/clear后第二次模型复用同一callId/相同结果；严格四次主模型完整history、每条答复恰一次及exit0，验证nonce稳定且序号1→2、两audit分别唯一join自己的CLI ok终态，成功工具不重复写runtime。明确/clear是为了隔离两次对话，不冒称普通连续history中重复模型callId的兼容性已验证。
+- 同专项真实HTTP先发坏JSON，0次模型调用、500 error身份与唯一http-request失败对应且没有任务事件；随后上游503造成真实流式任务失败（固定两次相同重试body），SSE error身份/唯一DONE与唯一任务error对应；再由同一Agent精确完成正常JSON请求并全部归零。CLI两身份＋HTTP三身份实际不同，全部七个模型请求均完整核对，fixture无错误，零真实端点/桌面。
+- 只跑新增集成一次，之后仅修正断言标签“四个”为实际断言/证据的“五个”；未重复原execution-correlation/tool-correlation/runtime/F等已通过项。Node13语法/JSON/diff、默认入口登记，无native改动、全套/Win7/长稳/打包。下表当前进度同步CLI及HTTP身份范围，历史475053c/deb31f9时的限定保留；T22-33总项继续部分完成，按授权本地提交，不推送。
