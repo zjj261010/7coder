@@ -1140,10 +1140,13 @@ function runtimeText(value, limit = 500) {
     .replace(/Bearer\s+\S+/gi, 'Bearer ***').replace(/sk-[A-Za-z0-9_-]+/g, 'sk-***')
     .replace(/((?:api[_-]?key|token|password|secret)\s*[:=]\s*)[^\s,;]+/gi, '$1***').slice(0, limit);
 }
-function recordRuntimeEvent(scope, status, details = {}) {
+function recordRuntimeEvent(scope, status, details = {}, correlation = {}) {
   // Logging is best effort and must never change an operation's outcome.
   try {
     const event = { ts: new Date().toISOString(), scope: runtimeText(scope, 80), status: runtimeText(status, 40) };
+    for (const key of ['executionId', 'callId']) {
+      if (typeof correlation[key] === 'string' && correlation[key]) event[key] = runtimeText(correlation[key], key === 'executionId' ? 41 : 256);
+    }
     for (const key of ['message', 'code', 'syscall', 'path', 'signal', 'id']) {
       if (details[key] != null) event[key] = runtimeText(details[key], key === 'path' ? 1000 : 500);
     }
@@ -1166,14 +1169,19 @@ function recordRuntimeEvent(scope, status, details = {}) {
     }
   }
 }
-function beginRuntimeOperation(scope) {
+function beginRuntimeOperation(scope, identity = {}) {
+  // Snapshot only bounded scalar metadata; do not retain the cancellation token.
+  const correlation = {};
+  for (const key of ['executionId', 'callId']) {
+    if (typeof identity[key] === 'string' && identity[key]) correlation[key] = runtimeText(identity[key], key === 'executionId' ? 41 : 256);
+  }
   const counter = scope === 'tool' ? 'activeTools' : 'activeTasks';
   runtimeDiagnostics[counter]++;
   let finished = false;
   return (status, details) => {
     if (finished) return;
     finished = true; runtimeDiagnostics[counter]--;
-    recordRuntimeEvent(scope, status, details);
+    recordRuntimeEvent(scope, status, details, correlation);
   };
 }
 function runtimeSnapshot() {
@@ -5852,7 +5860,7 @@ let lastDeclineReason = '';
 // Auditing wrapper: records every tool call (args preview, status, duration)
 // to .7coder/audit.jsonl, then delegates to the real implementation.
 async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled, modelContext) {
-  const finishRuntime = beginRuntimeOperation('tool');
+  const finishRuntime = beginRuntimeOperation('tool', { executionId: cancelled && cancelled.executionId, callId: toolCallIdentity(toolCall.id) });
   try {
   const t0 = Date.now();
   const func = toolCall.function;
@@ -8950,7 +8958,7 @@ function startHttpServer() {
             // interval (keep-alive writes on a dead response) and the approvals.
             try {
               releaseGate = await requestGate(execution); // AST-03: permission globals remain serialized
-              finishRuntime = beginRuntimeOperation('http-task');
+              finishRuntime = beginRuntimeOperation('http-task', { executionId: execution.executionId });
               if (clientGone) return;
               checkExecution(execution);
               await createTaskGitCheckpoint(execution);
@@ -8987,7 +8995,7 @@ function startHttpServer() {
           }
 
           const releaseGate = await requestGate(execution); // AST-03
-          finishRuntime = beginRuntimeOperation('http-task');
+          finishRuntime = beginRuntimeOperation('http-task', { executionId: execution.executionId });
           let result;
           try {
             checkExecution(execution);

@@ -2268,3 +2268,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - HTTP executionId随原取消token进入工具／workflow子步骤；响应ID为chatcmpl-加该身份，SSE调用/结果、正常与所有权未知审计、页面活动及真实session保存/恢复保留同值。模型原callId与消息协议不改，以(executionId,callId)关联；内部workflow步骤没有模型ID时仍为null，旧历史／非法executionId不伪造。CLI、后台、runtime事件及所有子调用独立身份仍不在本批闭环范围，不将T22-33整体关闭。
 - 新execution-correlation首跑24/24：10,000个同源ID、nonce仅取一次、base36进位、禁用时钟、非法熵与字段；同一Agent实际接收并排队两个JSON任务，再完成两个流式任务（含workflow），四请求刻意复用同一callId，严格八次模型history与完整工具结果／五条权威audit／全部SSE响应ID／任务归零；原页面模拟DOM连接真实私有HTTP session，保存、恢复、重存保留执行与turn身份，旧记录不补造。原tool-correlation一次10/10保持长ID散列、成功/失败、内部nullID与历史保存行为。
 - 两专项均仅一次通过；之后只完善新专项超时路径的自有句柄清理，不重复已通过业务测试。Node13语法、JSON、diff与默认入口登记；未全套/真实模型/真实浏览器/Win7/长稳/打包，native不变。测试私有应用与归属manifest按隔离规则保留，不宣称Temp整目录全部删除。按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-32/33 HTTP任务与失败工具的runtime关联
+
+- 上批475053c后，runtime故障事件仍缺HTTP执行身份；audit关闭、上游失败或断线时，页面响应与runtime不能直接对应。beginRuntimeOperation现在只快照有界executionId/callId标量，任务/工具结束时随原Error对象独立交给recordRuntimeEvent；不复制整个取消token或覆盖Error.message等非枚举诊断字段。HTTP任务及其工具共享执行身份，工具另保留正规化模型callId；旧CLI/无身份事件不补造。正常工具仍只audit、不额外写成功runtime，日志轮转/活跃计数/幂等finish规则保持。
+- runtime-diagnostics首跑前25项通过，覆盖原计数、脱敏、真实Error/errno、上下文后续修改不能改关联、字段边界、轮转/磁盘满恢复、自有子进程、实际排队/上游失败/流式恢复及audit关闭时工具失败与JSON响应精确关联。随后取消夹具原本零上游数据，新增“先读响应ID”条件无法满足而超时；这是夹具协议不成立，未将其误报为产品挂死。
+- 改为上游发送精确正文后保持未完成，等实际正文和响应ID后断开；仅RUNTIME_DIAGNOSTICS_ONLY=cancel续验4/4，证明同ID cancelled事件、唯一终态落盘、计数归零、无DONE及日志不泄露任务/API配置。前25项与取消4项是分段证据；未重跑前25或默认全套，首次中止后末尾“同一次运行六任务全量落盘join”三项及综合持久日志检查尚未执行，不能宣称默认最终33项全绿。
+- Node13静态检查/diff，无native改动、全套/Win7/真实模型/长稳/打包。本批只贯通HTTP父执行；CLI/cron/dream等入口、子调用独立span及进程回收未知窗口仍开放，不关闭T22-06/07/32/33整项。按授权本地提交后继续，不推送。
