@@ -119,6 +119,7 @@
     "test:f-journey-oracles": "node test/f-journey-oracles.js",
     "test:f-subagent-oracles": "node test/f-subagent-oracles.js",
     "test:f-disconnect-oracles": "node test/f-disconnect-oracles.js",
+    "test:f-perf-oracles": "node test/f-perf-oracles.js",
     "test:tool-declaration-oracles": "node test/tool-declaration-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",

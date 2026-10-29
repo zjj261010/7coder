@@ -11,7 +11,8 @@ const FCrash = require('./_f-crash-fixture');
 const FJourney = require('./_f-journey-fixture');
 const FSubagent = require('./_f-subagent-fixture');
 const FDisconnect = require('./_f-disconnect-fixture');
-const { create: createEndpoint } = require('./_endpoint');
+const FPerf = require('./_f-perf-fixture');
+const { create: createEndpoint, parseSSE } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'F', wsPrefix: 'w-f-' });
@@ -35,51 +36,66 @@ const scenarios = [];
 scenarios.push({
   name: 'perf',
   fn: async () => {
-    const cwd = freshCwd('f1');
-    // AST-R1: padded past the 200-char summary floor so each of the 20 REPL
-    // tasks below still fires its summary call and prints the update line.
-    const m = startMock([{ role: 'assistant', content: 'PERF-OK ' + 'perf scenario reply padded past the summary floor. '.repeat(6) }]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
-    record('perf: cold startup + one-shot task under 4s', r.elapsedMs < 4000 && r.out.includes('PERF-OK'), 'elapsed=' + r.elapsedMs + 'ms firstOut=' + r.firstOutMs + 'ms');
-    // stream first-byte latency via HTTP
-    const srvPort = port + 270;
-    const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
-      cwd, stdio: 'ignore'
-    });
-    await new Promise(r2 => setTimeout(r2, 2500));
+    const m = startMock(FPerf.startupScript, { MOCK_STRICT: '1' });
+    let roundsMock, H, child, closed = false, code, output = '';
+    const env = { PERMISSION_MODE: 'bypass', HEAVY_MODEL: FPerf.main, LIGHT_MODEL: FPerf.summary, SUMMARY_MODEL: FPerf.summary,
+      MAX_RETRIES: '1', DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false',
+      AUDIT_LOG: 'true', CONTEXT_CHARS: '200000', EXECUTION_TIMEOUT_MS: '10000' };
+    const elapsed = start => { const delta = process.hrtime(start); return delta[0] * 1000 + delta[1] / 1e6; };
+    async function until(predicate, label, allowClosed) {
+      const start = process.hrtime();
+      while (elapsed(start) < 10000) { if (await predicate()) return; if (closed && !allowClosed) throw Error('F1 closed early: ' + output.slice(-2000)); await new Promise(r => setTimeout(r, 10)); }
+      throw Error(label + ': ' + output.slice(-2000));
+    }
+    async function ready(mock) { await until(async () => { if (mock.child.exitCode !== null) throw Error('F1 fixture exited'); try { return (await httpReq(mock.port, 'GET', '/', null)).status === 200; } catch (e) { if (e.code !== 'ECONNREFUSED') throw e; return false; } }, 'F1 fixture readiness'); }
     try {
-      const t0 = Date.now();
-      let firstChunkMs = null;
-      await new Promise((resolve, reject) => {
-        const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path: '/v1/chat/completions',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] })) } },
-          res => {
-            res.on('data', d => { if (firstChunkMs === null) firstChunkMs = Date.now() - t0; });
-            res.on('end', resolve);
+      await ready(m);
+      const cold = await runCli({ port: m.port, args: ['--prompt', FPerf.coldPrompt], env, cwd: freshCwd('f1-cold'), timeoutMs: 10000 });
+      record('perf: actual cold CLI completes exact short reply with exit zero under 4s', cold.code === 0 && cold.out.split(FPerf.coldReply).length === 2 && FPerf.within(cold.elapsedMs, 4000), 'elapsed=' + cold.elapsedMs + 'ms exit=' + cold.code);
+      H = createEndpoint({ suite: 'F1-http', endpoint: 'http://127.0.0.1:' + m.port, key: '', model: FPerf.main, permissionMode: 'bypass' });
+      await H.start(freshCwd('f1-http'));
+      let firstBodyMs = null;
+      const stream = await new Promise((resolve, reject) => {
+        const start = process.hrtime(), body = JSON.stringify({ stream: true, messages: [{ role: 'user', content: FPerf.httpPrompt }] });
+        let response, text = '', settled = false;
+        const finish = (error, value) => { if (settled) return; settled = true; clearTimeout(timer); if (error) { if (response) response.destroy(); req.destroy(); reject(error); } else resolve(value); };
+        const req = http.request({ host: '127.0.0.1', port: H.port, method: 'POST', path: '/v1/chat/completions', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } }, res => {
+          response = res; res.setEncoding('utf8');
+          res.on('data', chunk => { text += chunk; if (Buffer.byteLength(text) > 65536) { finish(Error('F1 stream budget')); return; }
+            if (firstBodyMs === null && text.split('\n').some(line => { try { const event = JSON.parse(line.slice(6)); return line.startsWith('data: ') && event.choices[0].delta.content && FPerf.httpReply.startsWith(event.choices[0].delta.content); } catch (e) { return false; } })) firstBodyMs = elapsed(start);
           });
-        req.on('error', reject);
-        req.write(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] }));
-        req.end();
+          res.on('error', finish); res.on('aborted', () => finish(Error('F1 stream aborted')));
+          res.on('end', () => { try { if (res.statusCode !== 200) throw Error('F1 HTTP ' + res.statusCode); finish(null, parseSSE(text)); } catch (e) { finish(e); } });
+        });
+        const timer = setTimeout(() => finish(Error('F1 stream deadline')), 5000); req.on('error', finish); req.end(body);
       });
-      record('perf: SSE first chunk under 2s (mock upstream)', firstChunkMs !== null && firstChunkMs < 2000, 'firstChunk=' + firstChunkMs + 'ms');
-      // 20 sequential tasks, all complete, total time bounded
-      const steps = [];
-      for (let i = 0; i < 20; i++) { steps.push({ t: 'task ' + i + '\n', d: 60 }); steps.push({ t: '/execute-task-now\n', d: 550 }); }
-      steps.push({ t: '/bye\n', d: 400 });
-      const t1 = Date.now();
-      const r20 = await runCli({
-        port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd: freshCwd('f1b'), stdinSteps: steps, timeoutMs: 120000
-      });
-      // OP5-5: a task whose summary is identical to the previous one now ends
-      // with 'summary unchanged - dedup' instead of a fresh write - both lines
-      // prove the task's summary step ran, so count either.
-      const done20 = (r20.out.match(/7CODER\.md updated with complete summary|summary unchanged - dedup/g) || []).length;
-      const total = Date.now() - t1;
-      record('perf: 20 sequential REPL tasks all complete under 25s', done20 >= 20 && total < 25000, 'completed=' + done20 + ' total=' + Math.round(total / 1000) + 's');
+      record('perf: first actual assistant content under 2s with complete exact SSE and DONE', FPerf.within(firstBodyMs, 2000) && stream.content === FPerf.httpReply && stream.tools.length === 0, 'firstBody=' + firstBodyMs + 'ms');
+      record('perf: cold and HTTP stages consume exactly their own two model requests', FPerf.startup(readLog(m.log)), '');
+      await H.stop(); H.S.cleanup(); H = null;
+
+      roundsMock = startMock(FPerf.script, { MOCK_STRICT: '1' }); await ready(roundsMock);
+      const cwd = freshCwd('f1-rounds'), file = path.join(cwd, '7CODER.md'), runtime = path.join(cwd, '.7coder', 'runtime.jsonl');
+      const start = process.hrtime();
+      child = spawn(NODE_BIN, [IDX], { cwd, env: Object.assign({}, process.env, env, { OPENAI_API_KEY: 'fixture', OPENAI_ENDPOINT: 'http://127.0.0.1:' + roundsMock.port + '/v1' }) });
+      for (const pipe of [child.stdout, child.stderr]) { pipe.setEncoding('utf8'); pipe.on('data', text => { output = (output + text).slice(-65536); }); }
+      child.stdin.on('error', () => {}); child.once('error', error => { output += error.message; }); child.once('close', value => { code = value; closed = true; });
+      await until(() => output.includes('Commands:'), 'F1 REPL readiness');
+      for (let i = 0; i < FPerf.count; i++) {
+        child.stdin.write(FPerf.tasks[i] + '\n/execute-task-now\n');
+        await until(() => readLog(runtime).filter(row => row.scope === 'cli-task').length >= i + 1, 'F1 round ' + (i + 1) + ' terminal');
+        if (readLog(runtime).some(row => row.scope === 'cli-task' && row.status !== 'ok')) throw Error('F1 actual task failure: ' + output.slice(-2000));
+      }
+      child.stdin.end('/bye\n'); await until(() => closed, 'F1 normal REPL close', true);
+      const total = elapsed(start), log = readLog(roundsMock.log);
+      record('perf: twenty unique REPL tasks preserve full main history and exact summary requests', FPerf.transcript(log), 'requests=' + log.length);
+      record('perf: twenty terminal successes and each complete reply exactly once before exit zero', FPerf.terminal(readLog(runtime)) && FPerf.output(output, code), 'exit=' + code);
+      record('perf: final worklog contains all twenty exact independent summaries', fs.readFileSync(file, 'utf8') === FPerf.document(20), '');
+      record('perf: previous worklog snapshot contains exactly the first nineteen summaries', fs.readFileSync(file + '.7coder-prev', 'utf8') === FPerf.document(19), '');
+      record('perf: actual startup plus twenty gated tasks and normal close under 25s', FPerf.within(total, 25000), 'total=' + Math.round(total) + 'ms');
     } finally {
-      try { srv.kill(); } catch (e) {}
+      if (child && !closed) { child.kill(); await until(() => closed, 'F1 cleanup close unconfirmed', true); }
+      if (H) { await H.stop(); H.S.cleanup(); }
+      stopMock(roundsMock);
       stopMock(m);
     }
   }
