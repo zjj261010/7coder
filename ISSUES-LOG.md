@@ -29,7 +29,7 @@
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
-| runner-f.js | 38 |
+| runner-f.js | 42 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
@@ -37,7 +37,7 @@
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **709** |
+| **合计** | **713** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2296,3 +2296,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新私有严格两请求固定JSON/流任务、主模型、完整system＋任务与transport；JSON核对完整中文/emoji/换行正文、请求模型、执行身份、正整数created及唯一stop choice。SSE逐块不可跳过损坏JSON/error/未知记录，所有object/model/id/created/index/delta一致、正文精确，唯一最终空delta＋stop和唯一末尾DONE，零意外tool活动；两请求ID须不同，完成后任务/工具/准入/门/摘要全部归零。删去仅旧F6使用的吞错assembleSSE与未用lastData。
 - f-schema-oracles首跑22/22，RUN_ONLY=schema首跑5/5且零skip；反例包括损坏中间JSON、错误事件、少/多/提前DONE、DONE后数据、身份/时钟/模型漂移、错choice/delta/stop、截断正文、意外工具、末帧藏数据及缺/多/transport错请求。客户端依私有_endpoint期限/体积预算及自有句柄关闭，不接真实模型。
 - Node13语法/JSON/diff、默认入口/静态计数登记，无产品/native改动、其它场景/全套/Win7/长稳/打包。只核对本项目当前所实现的单choice JSON/SSE协议，不宣称全OpenAI规范或其它provider扩展都获认证；按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 F8拒绝路径零任务与同Agent继续工作
+
+- 旧F8只看五次401及后续200包含F8-OK，未证实拒绝请求没有调用模型/占用准入，也未核对后续任务完整结果/唯一请求。按离线部署的故障路径审阅处理，不扩展成公网攻击审计。新固定合法任务、私有HTTP key与严格单步模型；五次错误凭据须完整Unauthorized JSON、零模型请求、活跃任务/工具/准入/队列/摘要归零，runtime成功/失败计数不因拒绝变化。
+- 同一Agent随后用合法key完成精确中文/emoji答复、exit协议/模型/执行身份校验；唯一实际模型请求必须完整system＋合法task且无拒绝task污染，唯一ok HTTP终态执行ID与响应相同，完成后资源归零、零tool audit与工作日志/幽灵摘要。测试_endpoint新增可选httpKey供ready/api/chat自动携带，仅测试进程使用；未配置仍保持原无key分支。负向请求另有5秒/32KiB边界。
+- 新f-key-oracles10/10与仅RUN_ONLY=key-brute6/6均首跑通过，零skip；反例含少/多/坏JSON或其它401、非200错误里夹回复词、错误模型/身份/正文、额外历史/transport、额外/取消/错ID终态。随后只合并测试helper重复HTTP_API_KEY键至原字段位置，保留已验证值与行为，不重复业务测试。
+- Node13语法/JSON/diff、默认专项与静态计数登记，无产品/native改动，未重复其它F或全套、真实模型/Win7/浏览器/长稳/打包。至此F1/F6/F7/F8本轮各定向完成，F2–F5保留各自先前分段记录；不能宣称最终当前F全套在一次运行全绿。T22-33其余套件旧mock及真实模型仍开放，按授权本地提交后继续，不推送。

@@ -21,12 +21,12 @@ function parseSSE(body) {
   if (!done) throw Error('Agent SSE ended without DONE');
   return {content,reasoning,tools,models:Array.from(models),raw:body};
 }
-function request(port, route, body, timeout = 180000) {
+function request(port, route, body, timeout = 180000, extraHeaders = {}) {
   return new Promise((resolve,reject)=>{
     let settled=false, response, timer;
     const data=body===null?null:JSON.stringify(body);
     const finish=(error,value)=>{if(settled)return;settled=true;clearTimeout(timer);if(error){if(response)response.destroy();req.destroy();reject(error);}else resolve(value);};
-    const req=http.request({host:'127.0.0.1',port,path:route,method:data===null?'GET':'POST',headers:data===null?{}:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)}},res=>{
+    const req=http.request({host:'127.0.0.1',port,path:route,method:data===null?'GET':'POST',headers:Object.assign(data===null?{}:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(data)},extraHeaders)},res=>{
       response=res;res.setEncoding('utf8');let text='',bytes=0;
       res.on('data',chunk=>{bytes+=Buffer.byteLength(chunk);if(bytes>16*1024*1024){finish(Error('Agent response exceeds 16MiB test budget'));return;}text+=chunk;});
       res.on('error',finish);res.on('aborted',()=>finish(Error('Agent response aborted')));
@@ -38,6 +38,7 @@ function request(port, route, body, timeout = 180000) {
 }
 function create(options) {
   const S=require('./_shared').create({suite:options.suite});
+  const clientHeaders=options.httpKey?{Authorization:'Bearer '+options.httpKey}:{};
   let child=null,port=null,output='';const closed=new WeakSet();
   async function stop() {
     if(!child)return;const owned=child;child=null;
@@ -49,7 +50,7 @@ function create(options) {
     const probe=http.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));port=probe.address().port;await new Promise(r=>probe.close(r));
     child=S.spawn(S.NODE_BIN,[S.IDX,'--server'],{cwd,env:Object.assign({},process.env,{
       OPENAI_API_KEY:options.key,OPENAI_ENDPOINT:options.endpoint,HEAVY_MODEL:options.model,LIGHT_MODEL:options.model,SUMMARY_MODEL:options.model,
-      MAX_RETRIES:'2',MAX_TOKENS:'4000',PERMISSION_MODE:options.permissionMode||process.env.REAL_PERM||'auto',HTTP_PORT:String(port),HTTP_BIND:'127.0.0.1',HTTP_API_KEY:'',
+      MAX_RETRIES:'2',MAX_TOKENS:'4000',PERMISSION_MODE:options.permissionMode||process.env.REAL_PERM||'auto',HTTP_PORT:String(port),HTTP_BIND:'127.0.0.1',HTTP_API_KEY:options.httpKey||'',
       DREAM_ALLOW:'false',ENABLE_RALPH_MODE:'false',AUDIT_LOG:'true'
     })});
     const current=child;current.once('close',()=>closed.add(current));
@@ -57,13 +58,13 @@ function create(options) {
     const end=Date.now()+15000;
     while(Date.now()<end){
       if(child.exitCode!==null||child.signalCode!==null)throw Error('Agent exited before ready: '+output);
-      try{const r=await request(port,'/api/info',null,500);JSON.parse(r.body);return;}catch(e){if(e.code!=='ECONNREFUSED'&&!/deadline exceeded/.test(e.message))throw e;}
+      try{const r=await request(port,'/api/info',null,500,clientHeaders);JSON.parse(r.body);return;}catch(e){if(e.code!=='ECONNREFUSED'&&!/deadline exceeded/.test(e.message))throw e;}
       await new Promise(r=>setTimeout(r,20));
     }
     throw Error('Agent readiness deadline: '+output);
   }
-  return {S,start,stop,get port(){return port;},api:(route,body=null,timeout)=>request(port,route,body,timeout),request:(body,timeout)=>request(port,'/v1/chat/completions',body,timeout),
-    chat:async(messages,timeout,model)=>parseSSE((await request(port,'/v1/chat/completions',Object.assign({stream:true,messages},model?{model}:{}),timeout)).body)};
+  return {S,start,stop,get port(){return port;},api:(route,body=null,timeout)=>request(port,route,body,timeout,clientHeaders),request:(body,timeout)=>request(port,'/v1/chat/completions',body,timeout,clientHeaders),
+    chat:async(messages,timeout,model)=>parseSSE((await request(port,'/v1/chat/completions',Object.assign({stream:true,messages},model?{model}:{}),timeout,clientHeaders)).body)};
 }
 function workflowObserved(parsed) {
   const calls=parsed.tools.filter(t=>t.type==='call'&&t.name==='workflow_tool'), results=parsed.tools.filter(t=>t.type==='result'&&t.name==='workflow_tool');

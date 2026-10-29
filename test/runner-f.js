@@ -14,6 +14,7 @@ const FDisconnect = require('./_f-disconnect-fixture');
 const FPerf = require('./_f-perf-fixture');
 const FEndpoint = require('./_f-endpoint-fixture');
 const FSchema = require('./_f-schema-fixture');
+const FKey = require('./_f-key-fixture');
 const { create: createEndpoint, parseSSE } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
@@ -314,27 +315,26 @@ scenarios.push({
 scenarios.push({
   name: 'key-brute',
   fn: async () => {
-    const cwd = freshCwd('f8');
-    const m = startMock([{ role: 'assistant', content: 'F8-OK' }]);
-    await new Promise(r => setTimeout(r, 600));
-    const srvPort = port + 300;
-    const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort), HTTP_API_KEY: 'good-key' }),
-      cwd, stdio: 'ignore'
-    });
-    await new Promise(r => setTimeout(r, 2500));
+    const cwd = freshCwd('f8'), m = startMock(FKey.script, { MOCK_STRICT: '1' });
+    const agent = createEndpoint({ suite: 'F8-key', endpoint: 'http://127.0.0.1:' + m.port, key: '', model: FKey.model, httpKey: 'fixture-good-key', permissionMode: 'bypass' });
     try {
-      let all401 = true;
-      for (let i = 0; i < 5; i++) {
-        const res = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] }, { Authorization: 'Bearer wrong' + i });
-        if (res.status !== 401) all401 = false;
-      }
-      record('key: 5 bad keys all 401', all401, '');
-      const good = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'x' }] }, { Authorization: 'Bearer good-key' });
-      record('key: valid key works after brute-force attempts (no lockout corruption)', good.status === 200 && good.body.includes('F8-OK'), 'status=' + good.status);
+      const deadline = Date.now() + 5000; let ready = false;
+      while (Date.now() < deadline) { if (m.child.exitCode !== null) throw Error('F8 fixture exited'); try { ready = (await httpReq(m.port, 'GET', '/', null)).status === 200; if (ready) break; } catch (e) { if (e.code !== 'ECONNREFUSED') throw e; } await new Promise(r => setTimeout(r, 10)); }
+      if (!ready) throw Error('F8 fixture readiness');
+      await agent.start(cwd); const before = JSON.parse((await agent.api('/api/info')).body), rejected = [];
+      for (let i = 0; i < 5; i++) rejected.push(await FKey.rejectedRequest(agent.port, i));
+      record('key: five incorrect credentials return exact unauthorized JSON', FKey.denied(rejected), '');
+      const after = JSON.parse((await agent.api('/api/info')).body);
+      record('key: rejected tasks never enter model runtime admission or summary queue', readLog(m.log).length === 0 && FDisconnect.idle(after) && after.runtime.completed === before.runtime.completed && after.runtime.failed === before.runtime.failed, '');
+      const good = await agent.request({ messages: [{ role: 'user', content: FKey.prompt }] }, 8000), id = FKey.authorized(good);
+      record('key: same Agent completes exact authorized task after rejection sequence', !!id, '');
+      record('key: only authorized task reaches model with exact isolated history', FKey.transcript(readLog(m.log)), 'requests=' + readLog(m.log).length);
+      const idleDeadline = Date.now() + 5000; let idle = false;
+      while (Date.now() < idleDeadline) { idle = FDisconnect.idle(JSON.parse((await agent.api('/api/info')).body)); if (idle) break; await new Promise(r => setTimeout(r, 10)); }
+      record('key: one successful terminal event joins authorized response identity', FKey.terminal(readLog(path.join(cwd, '.7coder', 'runtime.jsonl')), id), '');
+      record('key: authorized task releases resources without ghost work after rejected requests', idle && readLog(m.log).length === 1 && !readLog(path.join(cwd, '.7coder', 'audit.jsonl')).some(row => row.type === 'tool') && !fs.existsSync(path.join(cwd, '7CODER.md')), '');
     } finally {
-      try { srv.kill(); } catch (e) {}
-      stopMock(m);
+      try { await agent.stop(); } finally { agent.S.cleanup(); stopMock(m); }
     }
   }
 });

@@ -1,0 +1,20 @@
+'use strict';
+const assert = require('assert'), F = require('./_f-key-fixture'); let checks = 0;
+function check(label, ok) { assert.ok(ok, label); checks++; console.log('PASS ' + label); }
+const rejection = { status: 401, body: JSON.stringify({ error: { message: 'Unauthorized' } }) }, rejected = Array.from({ length: 5 }, () => rejection);
+check('five exact authorization rejections are accepted', F.denied(rejected));
+check('missing extra and malformed rejections cannot pass', !F.denied([]) && !F.denied(rejected.slice(1)) && !F.denied(rejected.concat(rejection)) && !F.denied(rejected.map((r, i) => i ? r : { status: 401, body: '{bad' })));
+check('an accepted request or unrelated 401 error cannot masquerade as rejection', !F.denied(rejected.map((r, i) => i ? r : { ...r, status: 200 })) && !F.denied(rejected.map((r, i) => i ? r : { status: 401, body: '{"error":{"message":"other"}}' })));
+const id = 'exec-' + 'ba'.repeat(12) + '-1';
+const body = { id: 'chatcmpl-' + id, object: 'chat.completion', created: 1234, model: F.model, choices: [{ index: 0, message: { role: 'assistant', content: F.reply }, finish_reason: 'stop' }] };
+const response = value => ({ status: 200, body: JSON.stringify(value) });
+check('exact authorized completion exposes validated execution identity', F.authorized(response(body)) === id);
+check('reply keyword inside an error is insufficient', !F.authorized({ status: 500, body: JSON.stringify({ error: F.reply }) }));
+check('wrong body model or execution ID cannot pass', !F.authorized(response({ ...body, model: 'other' })) && !F.authorized(response({ ...body, id: 'chatcmpl-invalid' })) && !F.authorized(response({ ...body, choices: [{ ...body.choices[0], message: { role: 'assistant', content: F.reply + 'wrong' } }] })));
+const log = [{ model: F.model, messages: [{ role: 'system', content: 'SYS' }, { role: 'user', content: F.prompt }], tools: [{ type: 'function', function: { name: 'read_file' } }] }];
+check('one independent authorized model history is accepted', F.transcript(log));
+check('extra rejected task transport or duplicated model traffic cannot pass', !F.transcript([]) && !F.transcript(log.concat(log)) && !F.transcript([{ ...log[0], stream: true }]) && !F.transcript([{ ...log[0], messages: log[0].messages.concat({ role: 'user', content: 'F8_DENIED_TASK_0' }) }]));
+const event = { scope: 'http-task', status: 'ok', executionId: id };
+check('one persisted terminal event joins authorized execution', F.terminal([event], id));
+check('missing extra cancelled and wrong-identity terminal events cannot pass', !F.terminal([], id) && !F.terminal([event, event], id) && !F.terminal([{ ...event, status: 'cancelled' }], id) && !F.terminal([event], id.slice(0, -1) + '2'));
+console.log('F/KEY/ORACLES ' + checks + '/' + checks);
