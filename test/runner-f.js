@@ -12,6 +12,7 @@ const FJourney = require('./_f-journey-fixture');
 const FSubagent = require('./_f-subagent-fixture');
 const FDisconnect = require('./_f-disconnect-fixture');
 const FPerf = require('./_f-perf-fixture');
+const FEndpoint = require('./_f-endpoint-fixture');
 const { create: createEndpoint, parseSSE } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
@@ -310,20 +311,18 @@ scenarios.push({
 scenarios.push({
   name: 'endpoint-variants',
   fn: async () => {
-    // trailing slashes must be normalized
-    const cwd = freshCwd('f7');
-    const m2 = startMock([{ role: 'assistant', content: 'SLASH-OK-2' }]);
-    await new Promise(r => setTimeout(r, 600));
-    const p = spawn(NODE_BIN, [IDX, '--prompt', 't'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m2.port + '/v1///', MAX_RETRIES: '1', PERMISSION_MODE: 'bypass' }),
-      cwd
-    });
-    let out = '';
-    p.stdout.on('data', d => out += d.toString());
-    p.stderr.on('data', d => out += d.toString());
-    await new Promise(resolve => p.on('close', resolve));
-    record('endpoint: trailing slashes normalized', out.includes('SLASH-OK-2'), out.substring(0, 150));
-    stopMock(m2);
+    const fixture = await FEndpoint.start();
+    try {
+      for (let i = 0; i < FEndpoint.suffixes.length; i++) {
+        const reply = await runCli({ port: fixture.port, args: ['--prompt', FEndpoint.prompts[i]], cwd: freshCwd('f7-' + i), timeoutMs: 10000,
+          env: { OPENAI_ENDPOINT: 'http://127.0.0.1:' + fixture.port + FEndpoint.suffixes[i], HEAVY_MODEL: FEndpoint.model,
+            LIGHT_MODEL: 'f7-unused-light', SUMMARY_MODEL: 'f7-unused-summary', PERMISSION_MODE: 'bypass', MAX_RETRIES: '1',
+            DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false' } });
+        record('endpoint: canonical request and exact exit-zero reply for suffix ' + FEndpoint.suffixes[i],
+          FEndpoint.completed(reply.out, reply.code, i) && fixture.log.length === i + 1 && !FEndpoint.stepError(fixture.log[i], i), 'exit=' + reply.code + ' path=' + (fixture.log[i] && fixture.log[i].url));
+      }
+      record('endpoint: exactly three independent model tasks and no extra summary/retry traffic', FEndpoint.transcript(fixture.log) && fixture.errors.length === 0, 'requests=' + fixture.log.length);
+    } finally { await fixture.close(); }
   }
 });
 

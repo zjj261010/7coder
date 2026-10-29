@@ -29,7 +29,7 @@
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
-| runner-f.js | 36 |
+| runner-f.js | 37 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
@@ -37,7 +37,7 @@
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **707** |
+| **合计** | **708** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2282,3 +2282,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 独立冷CLI/HTTP任务的精确两次主模型请求，短答复不触发辅助摘要；流时延仅在有效delta.content与预期正文前缀匹配时计量，HTTP200、完整原文、DONE同时成立，客户端有5秒/64KiB上限。20轮用唯一任务/长答复/摘要、固定主轻模型、严格40请求；每轮等cli-task终态再发下一轮，核对从首轮至当前轮的完整上下文、无工具/摘要混入、每条输出恰一次、20个ok终态及正常exit0。
 - 最终7CODER.md精确20条摘要、previous精确前19条，读写与模型请求分开取证。新f-perf-oracles18/18、仅RUN_ONLY=perf真实场景8/8均首跑通过，无skip；反例覆盖空/缺/多请求、主轻/流错用、早期history丢失/篡改、摘要污染、系统漂移、虚构工具、失败终态、重复/缺回复及非法计时。没有重复F2–F5、A–J/其它专项或已通过项。
 - Node13语法/JSON/diff、默认专项登记与静态计数更新；无产品/native改动、真实模型/Win7/真实浏览器/24–72小时长稳/打包。只证明本次现代Windows＋Node13＋本地fixture的性能阈值和20轮状态，不能外推Win7硬件或数周稳定性。同步修正当前T22-33进度行，历史批次证据保留；按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 F7实际出站路径与尾斜杠
+
+- F7旧mock不检查URL，任意路径都能返回SLASH-OK，故out.includes不能证明尾斜杠被去除；且无退出码/截止时间。属于测试假阳性路径，不因旧证据不足而认定产品规范化有Bug。
+- 新私有HTTP fixture只接受POST /v1/chat/completions，完整核对固定主模型、真实stream分支、system＋唯一任务、工具schema及零旧tool history；依次真实CLI运行/v1、/v1/、/v1///三配置，各自空工作区/精确独立回复/exit0，最终必须恰三次请求、零错误/摘要/重试。仅剥尾斜杠符合当前base端点语义，不擅自宣称支持传完整chat/completions URL或任意provider规则。
+- f-endpoint-oracles12/12、RUN_ONLY=endpoint-variants4/4均首跑通过，无skip；反例包含单/多个斜杠未清除、任意路径、错误method/模型/transport/schema/任务、旧history混入、空缺多请求、重复/缺回复与非零exit。客户端保留原隔离runCli的10秒期限，自有fixture sockets finally关闭，移除固定启动等待。
+- Node13语法/JSON/diff、默认登记及静态计数更新，无产品/native改动、其它F场景/全套/真实模型/Win7/长稳/打包，不推送；按授权本地提交后继续。
