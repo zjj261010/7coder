@@ -123,6 +123,7 @@
     "test:f-endpoint-oracles": "node test/f-endpoint-oracles.js",
     "test:f-schema-oracles": "node test/f-schema-oracles.js",
     "test:f-key-oracles": "node test/f-key-oracles.js",
+    "test:g-command-oracles": "node test/g-command-oracles.js",
     "test:tool-declaration-oracles": "node test/tool-declaration-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",

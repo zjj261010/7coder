@@ -30,14 +30,14 @@
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 42 |
-| runner-g.js | 30 |
+| runner-g.js | 36 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
 | runner-j.js | 18 |
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **713** |
+| **合计** | **719** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2310,3 +2310,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - execution-entrypoints首跑11/11：同一真实CLI进程执行两次read_file，明确/clear后第二次模型复用同一callId/相同结果；严格四次主模型完整history、每条答复恰一次及exit0，验证nonce稳定且序号1→2、两audit分别唯一join自己的CLI ok终态，成功工具不重复写runtime。明确/clear是为了隔离两次对话，不冒称普通连续history中重复模型callId的兼容性已验证。
 - 同专项真实HTTP先发坏JSON，0次模型调用、500 error身份与唯一http-request失败对应且没有任务事件；随后上游503造成真实流式任务失败（固定两次相同重试body），SSE error身份/唯一DONE与唯一任务error对应；再由同一Agent精确完成正常JSON请求并全部归零。CLI两身份＋HTTP三身份实际不同，全部七个模型请求均完整核对，fixture无错误，零真实端点/桌面。
 - 只跑新增集成一次，之后仅修正断言标签“四个”为实际断言/证据的“五个”；未重复原execution-correlation/tool-correlation/runtime/F等已通过项。Node13语法/JSON/diff、默认入口登记，无native改动、全套/Win7/长稳/打包。下表当前进度同步CLI及HTTP身份范围，历史475053c/deb31f9时的限定保留；T22-33总项继续部分完成，按授权本地提交，不推送。
+
+### 2026-10-29 —— T22-33 G1a活动命令、三草稿归属与大写退出分离
+
+- **已确认测试假阳性路径**：旧cmd-while-running按固定延时投递，在/BYE提前退出分支只查Goodbye并将之后检查列INFO；即使clear/undo拒绝与queued文本完全未验证，也能通过。新场景分成queue与quit两个独立真实CLI执行，不以某条分支跳过另一条验收。不据旧测试不足臆造产品状态机Bug；本批未改产品/native。
+- queue私有可控endpoint保持首任务未完成，同时保持BTW轻模型请求未完成；真实输入/clear、/undo、重复execute，必须精确对应拒绝且文件逐字节保全。首任务完成后启动第二草稿，待BTW仍pending时再次clear须拒绝；再输入第三草稿并用另一次busy回复确认已处理，才放行BTW，避免依赖stdin/HTTP的未知到达顺序。四个完整主/轻请求、三段累计history、当前任务/第二草稿摘要/第三草稿各归其主，三个精确回复恰一次，三个唯一executionId的ok终态、完整CLI存档与原note/summary单条落盘同时核对。
+- quit先等真实sleep_tool的60秒等待执行诊断与唯一完整模型请求、尚无任务终态，才发大写/BYE；须由命令自身实际close、exit0、5秒内收敛且没有Slept自然完成，不能靠finally强杀冒充。唯一工具audit、工具runtime与CLI取消终态须按callId/executionId一致，零额外模型/摘要。finally只关闭保留的本测试CLI句柄和私有fixture sockets，不按保存PID清扫。
+- g-command-oracles21/21与仅RUN_ONLY=cmd-while-running10/10均首跑通过，无skip/INFO降级；反例包含缺/多请求、主轻/流混淆、历史丢失/篡改、摘要污染首/第三草稿、第二草稿丢marker、原note冒充摘要、虚构工具、Goodbye单词/重复回复、真实clear或少拒绝、错/重复/取消终态ID、清理强杀/慢close/未dispatch/自然结束、错取消audit及BTW重复/坏时间记录。保留G_COMMAND_ONLY=queue/quit供确有失败时定向诊断，本次未使用或重跑。
+- Node13语法/JSON/diff、默认入口和静态计数登记；未重复其它G/F、A–J/全套、真实模型/桌面/Win7/长稳/打包。只验证模型等待/内置sleep取消与草稿归属，不能外推外部子进程树退出。T22-33仍部分完成，按授权本地提交，不推送。

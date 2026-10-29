@@ -6,6 +6,7 @@
 // Child processes use the isolated shared harness.
 const fs = require('fs');
 const path = require('path');
+const GCommand = require('./_g-command-fixture'), GCommandDriver = require('./_g-command-driver');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -18,37 +19,25 @@ const scenarios = [];
 scenarios.push({
   name: 'cmd-while-running',
   fn: async () => {
-    const cwd = freshCwd('g1a');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 's1', type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":3000}' } }] },
-      { role: 'assistant', content: 'RUN1-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 30000,
-      stdinSteps: [
-        { t: 'go\n', d: 80 }, { t: '/execute-task-now\n', d: 500 },
-        { t: '/btw note while running\n', d: 300 },      // queued as task text? /btw executes its own light call -> appends to currentPrompt
-        { t: '/clear\n', d: 300 },                        // rejected while running
-        { t: '/undo x.txt\n', d: 300 },                   // rejected while running
-        { t: '/BYE\n', d: 300 },                          // ignored while running? /BYE exits! use lowercase check later
-        { t: 'QUEUED-MARKER\n', d: 3500 },
-        { t: '/execute-task-now\n', d: 2500 },
-        { t: '/bye\n', d: 400 }
-      ]
-    });
-    // /BYE (uppercase) must also quit - it lowercases. If it quit, the rest of the
-    // lines never ran; detect via output.
-    const quitAtBye = !r.out.includes('RUN1-DONE');
-    if (quitAtBye) {
-      record('cmd-running: /BYE during run quits (kills task)', r.out.includes('Goodbye'), '');
-      S.info('cmd-running: later lines skipped after quit');
-    } else {
-      record('cmd-running: /clear rejected while running', r.out.includes('A task is running'), r.out.substring(0, 200));
-      record('cmd-running: /undo rejected while running', (r.out.match(/A task is running/g) || []).length >= 2, '');
-      record('cmd-running: queued text survives into next task', r.out.includes('RUN1-DONE'), '');
+    const only = process.env.G_COMMAND_ONLY;
+    if (!only || only === 'queue') {
+      const result = await GCommandDriver.run(S, 'queue');
+      record('cmd-running: actual active task rejects clear undo and duplicate execution without touching file', result.activeProof && result.currentFile === 'CURRENT_FILE中文😀', '');
+      record('cmd-running: next task waits on held BTW while a third draft remains independently queued', result.pendingProof, '');
+      record('cmd-running: exact four main/light requests retain complete three-task history and draft ownership', GCommand.transcript(result.log, 'queue') && result.errors.length === 0, 'requests=' + result.log.length);
+      record('cmd-running: every exact response once with correct guards and normal exit zero', GCommand.queueOutput(result.output, result.code), 'exit=' + result.code);
+      record('cmd-running: three unique successful task terminals without silent dropped or duplicated execution', GCommand.queueRuntime(result.runtime), '');
+      record('cmd-running: original and summarized BTW persist exactly once without tool side effects', GCommand.persistedNote(result.note) && !result.audits.some(row => row.type === 'tool'), '');
+      const expected = result.log[3] && result.log[3].messages.concat({ role: 'assistant', content: GCommand.replies[2] });
+      record('cmd-running: final CLI archive retains all three complete task-response pairs', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
     }
-    stopMock(m);
+    if (!only || only === 'quit') {
+      const result = await GCommandDriver.run(S, 'quit');
+      record('cmd-running: uppercase quit begins only after real 60-second tool dispatch before completion', result.admitted && GCommand.transcript(result.log, 'quit') && result.errors.length === 0, '');
+      record('cmd-running: uppercase BYE itself closes within 5s and cancels matching task/tool identities', GCommand.quitResult(result.forced, result.code, result.elapsed, result.output, result.runtime, result.audits), 'exit=' + result.code + ' ms=' + Math.round(result.elapsed));
+      const tool = result.runtime.filter(row => row.scope === 'tool');
+      record('cmd-running: persisted tool cancellation has exact model call and parent execution identity', tool.length === 1 && tool[0].status === 'cancelled' && tool[0].callId === GCommand.call.id && tool[0].executionId === result.audits[0].executionId && result.log.length === 1, '');
+    }
   }
 });
 
