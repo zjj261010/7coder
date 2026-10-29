@@ -10,6 +10,7 @@ const GCommand = require('./_g-command-fixture'), GCommandDriver = require('./_g
 const GInput = require('./_g-input-fixture'), GInputDriver = require('./_g-input-driver');
 const GBatch = require('./_g-batch-fixture'), GBatchDriver = require('./_g-batch-driver');
 const GPrototype = require('./_g-prototype-fixture'), GPrototypeDriver = require('./_g-prototype-driver');
+const GEconomics = require('./_g-economics-fixture'), GEconomicsDriver = require('./_g-economics-driver');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -106,48 +107,23 @@ scenarios.push({
   }
 });
 
-// --- G4: light-model economics ---
+// --- G4: exact model costs, actual decisions, persisted summary and next task ---
 scenarios.push({
   name: 'economics',
   fn: async () => {
-    const cwd = freshCwd('g4');
-    fs.writeFileSync(path.join(cwd, 'nums.txt'), '42\n');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'q1', type: 'function', function: { name: 'read_file', arguments: '{"path":"nums.txt"}' } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'q2', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'out.txt', content: 'x' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'q3', type: 'function', function: { name: 'list_dir', arguments: '{}' } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'q4', type: 'function', function: { name: 'append_file', arguments: JSON.stringify({ path: 'out.txt', content: 'y' }) } }] },
-      // AST-R1: padded past the 200-char summary floor so the single light
-      // summary call this scenario pins (light===1, heavy===5) still happens.
-      { role: 'assistant', content: 'ECON-DONE ' + 'economics scenario reply padded past the summary floor. '.repeat(6) }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
-    const log = readLog(m.log);
-    const lightCalls = log.filter(x => !x.tools).length;
-    const heavyCalls = log.filter(x => x.tools).length;
-    record('economics: bypass mode adds ZERO light-model calls', lightCalls === 1, 'light=' + lightCalls + ' heavy=' + heavyCalls);
-    record('economics: one summary per task (not per tool call)', lightCalls === 1 && heavyCalls === 5, 'heavy=' + heavyCalls);
-    stopMock(m);
-
-    // default mode with deterministic rules: write_file needs NO light calls
-    // (deterministic risk + explanation + real diff preview)
-    const cwd2 = freshCwd('g4b');
-    const m2 = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'q5', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'w.txt', content: 'x' }) } }] },
-      // AST-R1: padded so the single summary light call (light2===1) still fires.
-      { role: 'assistant', content: 'ECON2-DONE ' + 'default-mode scenario reply padded past the summary floor. '.repeat(6) }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r2 = await runCli({
-      port: m2.port, args: [], cwd: cwd2,
-      stdinSteps: [{ t: 'write it\n', d: 100 }, { t: '/execute-task-now\n', d: 4000 }, { t: 'y\n', d: 2500 }, { t: '/bye\n', d: 400 }]
-    });
-    const log2 = readLog(m2.log);
-    const light2 = log2.filter(x => !x.tools).length;
-    const heavy2 = log2.filter(x => x.tools).length;
-    record('economics: default-mode edit costs ZERO light calls (was 2)', light2 === 1 && heavy2 === 2 && r2.out.includes('Proposed change'), 'light=' + light2 + ' heavy=' + heavy2);
-    stopMock(m2);
+    for (const kind of ['bypass', 'approve', 'decline']) {
+      if (process.env.G_ECONOMICS_ONLY && process.env.G_ECONOMICS_ONLY !== kind) continue;
+      const spec = GEconomics.create(kind), result = await GEconomicsDriver.run(S, spec);
+      if (kind !== 'bypass') record('economics ' + kind + ': actual diff approval waits without file tool or model side effects before explicit answer', result.approvalProof, '');
+      record('economics ' + kind + ': one exact summary begins only after actual tools and final answer while task remains active', result.summaryProof, '');
+      record('economics ' + kind + ': exact main summary models and full requests prohibit hidden approval or duplicate summary calls', spec.transcript(result.log) && result.errors.length === 0, 'requests=' + result.log.length);
+      record('economics ' + kind + ': actual audit result and authoritative decision match mode and first task identity', spec.audit(result.audits, result.runtime), '');
+      record('economics ' + kind + ': resulting file bytes reflect actual approval or refusal and preserve read-only seed', result.finalFile === spec.finalFile && (kind !== 'bypass' || result.seed === spec.seed), '');
+      record('economics ' + kind + ': exact multiline summary persists once and short next task leaves it unchanged', result.afterFirst === spec.worklog && result.worklog === spec.worklog, '');
+      record('economics ' + kind + ': same Agent completes exact short next task and normal exit with no hidden failure', spec.output(result.output, result.code) && result.signal === null, 'exit=' + result.code);
+      const expected = result.log[spec.recoveryStep] && result.log[spec.recoveryStep].messages.filter(message => message.role !== 'tool').map(message => message.tool_calls ? { role: 'assistant', content: message.content || '' } : message).concat({ role: 'assistant', content: spec.recovered });
+      record('economics ' + kind + ': CLI archive preserves full actual history without summary replacing final answer', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
+    }
   }
 });
 
