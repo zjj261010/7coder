@@ -8,6 +8,7 @@ const path = require('path');
 const http = require('http');
 const { pairingValid } = require('./_protocol');
 const FCrash = require('./_f-crash-fixture');
+const FJourney = require('./_f-journey-fixture');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'F', wsPrefix: 'w-f-' });
@@ -81,29 +82,38 @@ scenarios.push({
   }
 });
 
-// --- F2: end-to-end user journey: bootstrap project, fail test, fix, pass ---
+// --- F2: exact create/fail/edit/pass journey with real commands ---
 scenarios.push({
   name: 'e2e-journey',
   fn: async () => {
-    const cwd = freshCwd('f2');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'j1', type: 'function', function: { name: 'write_file', arguments: JSON.stringify({ path: 'test.js', content: 'if (1 + 1 !== 3) { console.error("FAIL: math broken"); process.exit(1); } console.log("all tests passed");' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'j2', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'node test.js' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'j3', type: 'function', function: { name: 'edit_file', arguments: JSON.stringify({ path: 'test.js', old_string: '1 + 1 !== 3', new_string: '1 + 1 !== 2' }) } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'j4', type: 'function', function: { name: 'run_command', arguments: JSON.stringify({ command: 'node test.js' }) } }] },
-      { role: 'assistant', content: 'E2E-COMPLETE: project works' },
-      { role: 'assistant', content: 'journey summary' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({ port: m.port, args: ['--prompt', 'make a project that passes'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
-    const log = readLog(m.log);
-    const failRun = tr(log, 'j2');
-    const passRun = tr(log, 'j4');
-    record('journey: real test execution failed first', failRun && failRun.c.includes('FAIL: math broken'), failRun ? failRun.c.substring(0, 60) : 'no result');
-    record('journey: edit fixed the logic', fs.readFileSync(path.join(cwd, 'test.js'), 'utf8').includes('1 + 1 !== 2'), '');
-    record('journey: real test execution passed after fix', passRun && passRun.c.includes('all tests passed'), passRun ? passRun.c.substring(0, 60) : 'no result');
-    record('journey: full loop completed', r.out.includes('E2E-COMPLETE') && r.code === 0, '');
-    stopMock(m);
+    const cwd = freshCwd('f2'), fixture = FJourney.create(NODE_BIN);
+    const m = startMock(fixture.script, { MOCK_STRICT: '1' });
+    try {
+      const end = Date.now() + 5000;
+      let ready = false;
+      while (Date.now() < end) {
+        if (m.child.exitCode !== null) throw Error('F2 mock exited before ready');
+        try { if ((await httpReq(m.port, 'GET', '/', null)).status === 200) { ready = true; break; } }
+        catch (e) { if (e.code !== 'ECONNREFUSED') throw e; }
+        await new Promise(resolve => setTimeout(resolve, 15));
+      }
+      if (!ready) throw Error('F2 mock readiness deadline');
+      const r = await runCli({ port: m.port, args: ['--prompt', fixture.prompt], env: { PERMISSION_MODE: 'bypass',
+        HEAVY_MODEL: fixture.model, LIGHT_MODEL: 'f-journey-unused-summary', SUMMARY_MODEL: 'f-journey-unused-summary',
+        MAX_RETRIES: '1', DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false',
+        AUDIT_LOG: 'true', EXECUTION_TIMEOUT_MS: '10000' }, cwd, timeoutMs: 20000 });
+      const log = readLog(m.log), audit = readLog(path.join(cwd, '.7coder', 'audit.jsonl'));
+      record('journey: strict five-request chain keeps exact commands, edits and cumulative results', fixture.transcript(log), 'requests=' + log.length);
+      record('journey: unique write/fail/edit/pass IDs have authoritative ok/error/ok/ok audit', fixture.audit(audit), '');
+      record('journey: actual first test fails with exact stderr and numeric exit 1', fixture.failure(log, audit, readLog(path.join(cwd, '.7coder', 'runtime.jsonl'))), String(fixture.result(log, 1)));
+      record('journey: exact fixed file is published by one successful replacement', fs.readFileSync(path.join(cwd, 'test.js'), 'utf8') === fixture.fixed &&
+        fixture.result(log, 0) === 'Written: test.js' && fixture.result(log, 2) === '[OK] Edited test.js (1 replacement(s))', '');
+      record('journey: actual second test succeeds with only expected complete stdout', fixture.passed(log), String(fixture.result(log, 3)));
+      // The expected first test error is a real tool failure, not a CLI failure.
+      record('journey: one final reply and real CLI close0 follow failure recovery without auxiliary calls',
+        r.code === 0 && r.out.split(fixture.done).length === 2 && !/MOCK_PROTOCOL|EXECUTION_DEADLINE|Error writing to 7CODER/.test(r.out) &&
+        !fs.existsSync(path.join(cwd, '7CODER.md')), 'exit=' + r.code);
+    } finally { stopMock(m); }
   }
 });
 

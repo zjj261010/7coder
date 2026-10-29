@@ -29,7 +29,7 @@
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
-| runner-f.js | 26 |
+| runner-f.js | 28 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
@@ -37,7 +37,7 @@
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **697** |
+| **合计** | **699** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2239,3 +2239,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - F3现在预置BOM/CRLF/中文/缩进原文和不同previous，严格固定主/摘要模型、完整任务/三请求，等待真实REPL就绪及sleep_tool绕过审批执行诊断，确认只有首请求、未完成工具/摘要，才对保留ChildProcess句柄SIGKILL。必须kill返回true、实际异常close且整个边界<15秒（sleep60秒），随后同一工作区新进程读完整原文、无旧工具链并完成新任务与唯一摘要，primary/previous逐字节核对。移除固定启动/强杀等待，失败清理仅保留句柄与本测试mock。
 - 新f-crash-oracles首版17/17，但实际F3首跑0业务断言时夹具错误等“Auto-executing safe”提示；sleep_tool未标autoSafe，bypass实际输出“[DANGER MODE] Executing tool”。读取元数据/分支后修正判据，仅F_CRASH_ONLY=admission重验受影响5/5，另12项旧证据不重跑，17为有效分段证据、不把重叠计22。随后仅RUN_ONLY=crash-recovery完成5/5、0skip，约2秒，真实异常关闭及新CLI摘要提交均完成。
 - 只证明内置等待工具中断后的原文保全/工作区锁释放与新任务，不是磁盘rename瞬间断电试验、外部进程树回收或已准入native进程未知结果自动恢复；这些仍由state-store/ownership专项及Win7实机门槛负责。无真实模型、GDI/SendKeys/桌面、Win7、关机/注销、长稳/全套/打包，本批产品/native无变更。标准入口/静态计数登记，按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 F2创建/失败/修复/成功链的业务证据
+
+- F3已提交c149406。F2原来用位置mock，匹配失败/成功词与局部文件片段、命令依赖PATH中node，无法同时证明完整工具history、精确编辑、失败退出码与每个ID的权威状态。本批只修测试，不由覆盖薄弱推断产品已出现新故障。
+- 新_f-journey-fixture固定单主模型、原任务、四调用完整参数和五请求累积结果，使用随包Node绝对路径两次执行同一test.js。audit逐ID唯一ok/error/ok/ok；失败结果要求真实错误前缀＋完整stderr行，并匹配唯一run_command runtime错误exitCode=1；成功结果要求完整Command OK与唯一预期stdout，编辑后文件逐字节和单次替换结果。短最终回复不触发摘要，拒绝多余辅助模型偷步；正常CLI必须真实close0、最终回复一次。
+- 新f-journey-oracles首跑20/20：空/缺/多请求、错模型/参数/ID/配对/跨请求漂移、错误audit状态/缺失/重复/工具、缺失/错误实际退出码、成功文本夹带失败词及拒绝/额外stdout反例。仅RUN_ONLY=e2e-journey首跑6/6、0skip、约2秒，真实第一测试故意exit1，编辑后真实第二测试通过，整场景无失败/重跑；不把故意失败的业务测试当测试套件失败。
+- 移除固定600ms就绪等待，保留私有fixture/finally清理；不改全局PATH/真实.env、无真实模型/桌面/Win7/长稳/全套/打包，产品/native不变。runtime成功工具本就不重复记日志，因此不伪造“成功runtime exit0”证据，成功依据audit状态及完整受管命令结果。T22-33继续部分完成，标准入口/静态计数登记，按授权本地提交后继续，不推送。
