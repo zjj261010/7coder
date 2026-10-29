@@ -8,6 +8,7 @@ const fs = require('fs');
 const path = require('path');
 const GCommand = require('./_g-command-fixture'), GCommandDriver = require('./_g-command-driver');
 const GInput = require('./_g-input-fixture'), GInputDriver = require('./_g-input-driver');
+const GBatch = require('./_g-batch-fixture'), GBatchDriver = require('./_g-batch-driver');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -75,22 +76,17 @@ scenarios.push({
 scenarios.push({
   name: 'batch-round',
   fn: async () => {
-    const cwd = freshCwd('g2');
-    const calls = [];
-    for (let i = 0; i < 25; i++) {
-      calls.push({ id: 'b' + i, type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":1}' } });
+    for (const kind of ['readonly', 'mixed']) {
+      if (process.env.G_BATCH_ONLY && process.env.G_BATCH_ONLY !== kind) continue;
+      const spec = GBatch.create(kind), result = await GBatchDriver.run(S, spec);
+      record('batch ' + kind + ': all twenty-five calls finish in two ordinary model rounds before next task', result.batchProof, '');
+      record('batch ' + kind + ': exact three main requests retain every argument ID ordered result and recovery history', spec.transcript(result.log) && result.errors.length === 0, 'requests=' + result.log.length);
+      record('batch ' + kind + ': every audit row matches actual tool status args result and batch execution identity', spec.audit(result.audits, result.runtime), '');
+      record('batch ' + kind + ': same Agent completes independent next task with distinct terminal identity and no hidden tool failure', spec.terminals(result.runtime) && spec.output(result.output, result.code) && result.signal === null && !result.hasWorklog, 'exit=' + result.code);
+      const expected = result.log[2] && result.log[2].messages.filter(message => message.role !== 'tool').map(message => message.tool_calls ? { role: 'assistant', content: message.content || '' } : message).concat({ role: 'assistant', content: spec.recovered });
+      record('batch ' + kind + ': final CLI archive retains both exact tasks without orphan tool references', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
+      if (kind === 'mixed') record('batch mixed: all dependent append-read results agree with final bytes preserved across recovery', result.afterBatch === spec.finalFile && result.finalFile === spec.finalFile, '');
     }
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: calls },
-      { role: 'assistant', content: 'BATCH-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 60000 });
-    const log = readLog(m.log);
-    const followup = log.find(x => (x.messages || []).filter(mm => mm.role === 'tool').length === 25);
-    record('batch: 25 calls in one round all executed in order', !!followup && followup.messages.filter(mm => mm.role === 'tool').map(mm => mm.tool_call_id).join(',') === calls.map(c => c.id).join(','), followup ? 'count=' + followup.messages.filter(mm => mm.role === 'tool').length : 'no followup');
-    record('batch: only one step consumed (no premature limit)', r.out.includes('BATCH-DONE') && !r.out.includes('step limit'), '');
-    stopMock(m);
   }
 });
 
