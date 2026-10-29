@@ -1010,7 +1010,7 @@ body.dark .primary-btn { color: #231b16; }
     }
     function appendToolCall(call) {
       var name = call.name || 'tool', args = redactedArgs(call.args || {});
-      var record = { type: 'tool_call', callId: call.callId || undefined, name: name, args: args, status: 'requested', turnId: turnId };
+      var record = { type: 'tool_call', executionId: call.executionId || undefined, callId: call.callId || undefined, name: name, args: args, status: 'requested', turnId: turnId };
       reserveBytes(activityBytes(record));
       var tcDiv = document.createElement('div'); tcDiv.className = 'tool-call';
       var title = document.createElement('strong'); title.textContent = '工具请求 · ' + name; tcDiv.appendChild(title);
@@ -1023,7 +1023,7 @@ body.dark .primary-btn { color: #231b16; }
     }
     function appendToolResult(result) {
       var tr = result || {}, status = tr.status || 'completed';
-      var record = { type: 'tool_result', callId: tr.callId || undefined, name: tr.name || 'tool', status: status, result: String(tr.result == null ? '' : tr.result).substring(0, 12000), turnId: turnId };
+      var record = { type: 'tool_result', executionId: tr.executionId || undefined, callId: tr.callId || undefined, name: tr.name || 'tool', status: status, result: String(tr.result == null ? '' : tr.result).substring(0, 12000), turnId: turnId };
       reserveBytes(activityBytes(record));
       var div = document.createElement('div'); div.className = 'tool-call tool-result ' + status;
       var title = document.createElement('strong'); title.textContent = '工具结果 · ' + (tr.name || 'tool') + ' · ' + status; div.appendChild(title);

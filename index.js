@@ -8,6 +8,7 @@ const child_process = require('./lib/process-owner').create(raw_child_process, _
 const http = require('http');
 const { pipeline, Transform } = require('stream');
 const crypto = require('crypto');
+const { nextExecutionId, executionIdentity } = require('./lib/execution-identity');
 const net = require('net');
 const vm = require('vm');
 const { StringDecoder } = require('string_decoder');
@@ -5873,11 +5874,11 @@ async function safeExecuteTool(toolCall, conversation, approvalBridge, cancelled
   }
   // A2-18: scrub BEFORE truncating, so a token cut by the 160-char limit can
   // never survive as a recognizable prefix either.
-  audit({ ts: new Date().toISOString(), type: 'tool', callId: toolCallIdentity(toolCall.id), tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: sanitizeAuditLine(first).substring(0, 160) });
+  audit({ ts: new Date().toISOString(), type: 'tool', executionId: cancelled && cancelled.executionId || undefined, callId: toolCallIdentity(toolCall.id), tool: func.name, mode: effectivePermissionMode(), status, ms: Date.now() - t0, args: argsPreview, result: sanitizeAuditLine(first).substring(0, 160) });
   finishRuntime(status, { id: func.name, message: status === 'ok' ? undefined : first, exitCode: res && res.data && res.data.exitCode });
   return res;
   } catch (error) {
-    if(error.code==='EOWNERUNKNOWN')audit({ts:new Date().toISOString(),type:'tool',callId:toolCallIdentity(toolCall.id),tool:toolCall.function.name,
+    if(error.code==='EOWNERUNKNOWN')audit({ts:new Date().toISOString(),type:'tool',executionId:cancelled&&cancelled.executionId||undefined,callId:toolCallIdentity(toolCall.id),tool:toolCall.function.name,
       mode:effectivePermissionMode(),status:'error',result:'Process outcome unknown; recovery required before further work.'});
     finishRuntime('error', error); throw error;
   }
@@ -8688,7 +8689,7 @@ function startHttpServer() {
         fs.mkdirSync(sdir, { recursive: true });
         if (Array.isArray(parsed.activities) && parsed.activities.length > 2000) throw new Error('session activity limit exceeded (2000); nothing was overwritten');
         const activities = Array.isArray(parsed.activities) ? parsed.activities.filter(a => a && typeof a.type === 'string')
-          .map(a => ({ type: a.type, callId: toolCallIdentity(a.callId) || undefined, turnId: a.turnId === undefined ? undefined : sessionMessageRecord({ turnId: a.turnId }).turnId, name: a.name ? String(a.name).substring(0, 80) : undefined,
+          .map(a => ({ type: a.type, executionId: executionIdentity(a.executionId), callId: toolCallIdentity(a.callId) || undefined, turnId: a.turnId === undefined ? undefined : sessionMessageRecord({ turnId: a.turnId }).turnId, name: a.name ? String(a.name).substring(0, 80) : undefined,
             status: a.status ? String(a.status).substring(0, 24) : undefined,
             text: a.text ? String(a.text).substring(0, 12000) : undefined,
             args: a.args && typeof a.args === 'object' ? sanitizeAuditArgs(a.args) : undefined,
@@ -8859,7 +8860,8 @@ function startHttpServer() {
     });
   }
   function hChat(req, res) {
-    try{checkExecution();}catch(error){
+    let executionId;
+    try{checkExecution();executionId=nextExecutionId();}catch(error){
       res.writeHead(503,{'Content-Type':'application/json'});
       res.end(JSON.stringify({error:{code:error.code,message:error.message}}));req.resume();return;
     }
@@ -8870,6 +8872,7 @@ function startHttpServer() {
       req.resume(); return;
     }
     const execution = createExecutionControl();
+    execution.executionId = executionId;
     let cleaned = false, bodyReceived = false;
     const cleanup = () => {
       if (cleaned) return;
@@ -8902,7 +8905,7 @@ function startHttpServer() {
 
         console.log('[WEB] HTTP request received from UI');
         preemptServerDream();
-        const responseId = 'chatcmpl-' + Date.now();
+        const responseId = 'chatcmpl-' + execution.executionId;
         const created = Math.floor(Date.now() / 1000);
 
         if (wantsStream) {
@@ -8955,12 +8958,12 @@ function startHttpServer() {
               const result = await processWithTools(tempMessages, {
                 onDelta: t => writeChunk({ content: t }, null), cancel: execution, modelContext,
                 onReasoning: t => writeChunk({ reasoning: t }, null),
-                onToolCall: (name, args, callId) => writeChunk({ tool_call: { callId: toolCallIdentity(callId), name: name, args: sanitizeAuditArgs(args) } }, null),
+                onToolCall: (name, args, callId) => writeChunk({ tool_call: { executionId: execution.executionId, callId: toolCallIdentity(callId), name: name, args: sanitizeAuditArgs(args) } }, null),
                 onToolResult: (name, args, output, callId) => {
                   const resultText = sanitizeAuditLine(toolResultText(output)).substring(0, 12000);
                   const resultStatus = toolResultStatus(output);
                   const status = resultStatus === 'ok' ? 'completed' : resultStatus;
-                  writeChunk({ tool_result: { callId: toolCallIdentity(callId), name: name, args: sanitizeAuditArgs(args), result: resultText, status: status } }, null);
+                  writeChunk({ tool_result: { executionId: execution.executionId, callId: toolCallIdentity(callId), name: name, args: sanitizeAuditArgs(args), result: resultText, status: status } }, null);
                 },
                 approvalBridge: approvalBridge
               });

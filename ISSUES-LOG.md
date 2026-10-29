@@ -2261,3 +2261,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 两场景均要求客户端response真实close、5秒内收敛（不等60秒自然结束），正文流另要求上游未正常finish而实际断开；任务/工具/请求数/正文bytes/任务门/排队/摘要active/pending/bytes全部归零，runtime任务为cancelled，sleep的唯一audit必须cancelled。随后同一Agent真实处理新JSON请求，完整精确回复与两次主模型history分离、零旧pending工具/额外请求/幽灵摘要。不重启服务来伪装恢复。
 - 新f-disconnect-oracles首版20项通过；实际首跑正文场景6/6，工具场景0业务断言时夹具误将SSE脱敏预览args.ms按数字60000判断，实际sanitizeAuditArgs给字符串"60000"。按真实预览契约修正，只验tool-preview2/2（含原数字不能冒充预览），只续RUN_ONLY=disconnect-cancel得到6/6，未重复正文6项及其余oracle。12个业务检查为6＋6分段，无skip；20初版与2定向有重叠，不冒算22个独立最终检查，未重跑最终默认20全套。
 - 移除旧600ms/2.5s/1.2s/9s固定等待，改阶段deadline与实际计数；client/fixture有输出/输入上限及关闭流程，失败诊断仅本测试私有数据，真实Agent保留句柄关闭。Node13语法/JSON/diff、默认专项及静态计数登记；无产品/native改动、真实模型/Win7/外部进程树/长稳/全套/打包。只覆盖模型流与内置等待工具，不能据此推断所有外部副作用均可取消；T22-06/07/33等继续部分完成。按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 HTTP执行身份贯穿响应、工具审计与页面历史
+
+- **Low已确认碰撞路径／Medium诊断关联缺口**：hChat原完成ID只取Date.now，同毫秒的请求可重号；模型工具callId在不同请求中复用时，单靠callId不能唯一关联审计。新增每进程96bit随机nonce＋单调base36序号，不依赖时钟、不维护历史ID集合；同源序号不重用，跨进程分离依赖随机nonce，不宣称数学绝对无碰撞。超出安全整数拒绝分配，分配发生在请求计费与控制器创建前。
+- HTTP executionId随原取消token进入工具／workflow子步骤；响应ID为chatcmpl-加该身份，SSE调用/结果、正常与所有权未知审计、页面活动及真实session保存/恢复保留同值。模型原callId与消息协议不改，以(executionId,callId)关联；内部workflow步骤没有模型ID时仍为null，旧历史／非法executionId不伪造。CLI、后台、runtime事件及所有子调用独立身份仍不在本批闭环范围，不将T22-33整体关闭。
+- 新execution-correlation首跑24/24：10,000个同源ID、nonce仅取一次、base36进位、禁用时钟、非法熵与字段；同一Agent实际接收并排队两个JSON任务，再完成两个流式任务（含workflow），四请求刻意复用同一callId，严格八次模型history与完整工具结果／五条权威audit／全部SSE响应ID／任务归零；原页面模拟DOM连接真实私有HTTP session，保存、恢复、重存保留执行与turn身份，旧记录不补造。原tool-correlation一次10/10保持长ID散列、成功/失败、内部nullID与历史保存行为。
+- 两专项均仅一次通过；之后只完善新专项超时路径的自有句柄清理，不重复已通过业务测试。Node13语法、JSON、diff与默认入口登记；未全套/真实模型/真实浏览器/Win7/长稳/打包，native不变。测试私有应用与归属manifest按隔离规则保留，不宣称Temp整目录全部删除。按授权本地提交后继续，不推送。
