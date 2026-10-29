@@ -96,6 +96,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'g-supply-oracles.js', args: [path.join(ROOT, 'test', 'g-supply-oracles.js')] },
     { name: 'g-differential-oracles.js', args: [path.join(ROOT, 'test', 'g-differential-oracles.js')] },
     { name: 'g-binary-oracles.js', args: [path.join(ROOT, 'test', 'g-binary-oracles.js')] },
+    { name: 'g-text-boundary-oracles.js', args: [path.join(ROOT, 'test', 'g-text-boundary-oracles.js')] },
     { name: 'tool-declaration-oracles.js', args: [path.join(ROOT, 'test', 'tool-declaration-oracles.js')] },
     { name: 'mock-protocol.js', args: [path.join(ROOT, 'test', 'mock-protocol.js')] },
     { name: 'endpoint-oracles.js', args: [path.join(ROOT, 'test', 'endpoint-oracles.js')] },

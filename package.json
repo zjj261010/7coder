@@ -131,6 +131,7 @@
     "test:g-supply-oracles": "node test/g-supply-oracles.js",
     "test:g-differential-oracles": "node test/g-differential-oracles.js",
     "test:g-binary-oracles": "node test/g-binary-oracles.js",
+    "test:g-text-boundary-oracles": "node test/g-text-boundary-oracles.js",
     "test:tool-declaration-oracles": "node test/tool-declaration-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",
