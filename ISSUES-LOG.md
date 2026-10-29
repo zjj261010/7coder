@@ -29,7 +29,7 @@
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
-| runner-f.js | 28 |
+| runner-f.js | 31 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
@@ -37,7 +37,7 @@
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **699** |
+| **合计** | **702** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2254,3 +2254,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新oracle首版17项通过；阅读实际callOpenAI接线发现子任务无onDelta走buffered、父CLI走stream，先修夹具transport并只验transport2项。F4实际首跑3/4，唯一完整transcript失败：SSE父tool-call accumulator的content为空字符串，而非夹具null；buffered子回复的null原样保留。修正仅父内容，content定向2/2；仅F_SUBAGENT_EVIDENCE_ONLY重建场景并完成原失败transcript1/1，不重复首跑另3项判定。当前四个业务判据为3＋1分段证据，不把初版17＋两组2重叠累计成21个独立最终用例，也未冒称最终默认oracle又全跑一次。
 - 保留测试协议反例：空/缺/多请求、父子/主轻混淆、错误参数/配对、摘要丢首文件尾、当前task丢失、保留读丢失、旧读重放、父子答复替换、audit缺失/重复/状态；原17中与新增transport/content正例依赖有关的最终证据由上述定向及真实请求比对补充，未重复其它套件。新测试含应用自身agent_tool流程，不是Codex多代理委派或真实模型任务。
 - Node13语法/JSON/diff、标准入口与静态计数登记；无产品/native改动、真实模型/桌面/Win7/长稳/全套/打包。不宣称含system和schema的实际请求被3500 weighted units完全容纳，原零进展保护仍允许保留大system/尾部；全请求有独立序列化准入。T22-33/真实模型质量仍部分完成，按授权本地提交，不推送。
+
+### 2026-10-29 —— T22-33 F5真实断线边界与核心恢复
+
+- F5旧场景在任意首块到达即断开、错误也当作到达、固定睡眠后只查200/回复词；首块可能是协议头或工具预览，不能证明模型正文/工具真的进行中，健康HTTP也不保证核心与资源恢复。新私有可控endpoint将正文流保持未完成，或返回60秒sleep调用；等待精确正文/调用预览及实际activeTasks/activeTools准入后才主动断线。
+- 两场景均要求客户端response真实close、5秒内收敛（不等60秒自然结束），正文流另要求上游未正常finish而实际断开；任务/工具/请求数/正文bytes/任务门/排队/摘要active/pending/bytes全部归零，runtime任务为cancelled，sleep的唯一audit必须cancelled。随后同一Agent真实处理新JSON请求，完整精确回复与两次主模型history分离、零旧pending工具/额外请求/幽灵摘要。不重启服务来伪装恢复。
+- 新f-disconnect-oracles首版20项通过；实际首跑正文场景6/6，工具场景0业务断言时夹具误将SSE脱敏预览args.ms按数字60000判断，实际sanitizeAuditArgs给字符串"60000"。按真实预览契约修正，只验tool-preview2/2（含原数字不能冒充预览），只续RUN_ONLY=disconnect-cancel得到6/6，未重复正文6项及其余oracle。12个业务检查为6＋6分段，无skip；20初版与2定向有重叠，不冒算22个独立最终检查，未重跑最终默认20全套。
+- 移除旧600ms/2.5s/1.2s/9s固定等待，改阶段deadline与实际计数；client/fixture有输出/输入上限及关闭流程，失败诊断仅本测试私有数据，真实Agent保留句柄关闭。Node13语法/JSON/diff、默认专项及静态计数登记；无产品/native改动、真实模型/Win7/外部进程树/长稳/全套/打包。只覆盖模型流与内置等待工具，不能据此推断所有外部副作用均可取消；T22-06/07/33等继续部分完成。按授权本地提交后继续，不推送。

@@ -83,6 +83,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'f-crash-oracles.js', args: [path.join(ROOT, 'test', 'f-crash-oracles.js')] },
     { name: 'f-journey-oracles.js', args: [path.join(ROOT, 'test', 'f-journey-oracles.js')] },
     { name: 'f-subagent-oracles.js', args: [path.join(ROOT, 'test', 'f-subagent-oracles.js')] },
+    { name: 'f-disconnect-oracles.js', args: [path.join(ROOT, 'test', 'f-disconnect-oracles.js')] },
     { name: 'tool-declaration-oracles.js', args: [path.join(ROOT, 'test', 'tool-declaration-oracles.js')] },
     { name: 'mock-protocol.js', args: [path.join(ROOT, 'test', 'mock-protocol.js')] },
     { name: 'endpoint-oracles.js', args: [path.join(ROOT, 'test', 'endpoint-oracles.js')] },

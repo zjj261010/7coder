@@ -10,6 +10,8 @@ const { pairingValid } = require('./_protocol');
 const FCrash = require('./_f-crash-fixture');
 const FJourney = require('./_f-journey-fixture');
 const FSubagent = require('./_f-subagent-fixture');
+const FDisconnect = require('./_f-disconnect-fixture');
+const { create: createEndpoint } = require('./_endpoint');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'F', wsPrefix: 'w-f-' });
@@ -208,76 +210,48 @@ scenarios.push({
   }
 });
 
-// --- F5: client disconnect mid-stream -> server survives ---
-scenarios.push({
-  name: 'disconnect',
+// --- F5/F5b: disconnect only after real body/tool admission, then reuse Agent ---
+for (const [scenario, kind] of [['disconnect', 'partial'], ['disconnect-cancel', 'tool']]) scenarios.push({
+  name: scenario,
   fn: async () => {
-    const cwd = freshCwd('f5');
-    const script = [];
-    for (let i = 0; i < 4; i++) script.push({ role: 'assistant', content: 'F5-REPLY-' + i });
-    const m = startMock(script);
-    await new Promise(r => setTimeout(r, 600));
-    const srvPort = port + 280;
-    const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
-      cwd, stdio: 'ignore'
-    });
-    await new Promise(r => setTimeout(r, 2500));
-    try {
-      await new Promise((resolve) => {
-        const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path: '/v1/chat/completions',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] })) } },
-          res => { res.once('data', () => { req.destroy(); resolve(); }); });
-        req.on('error', () => resolve());
-        req.write(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] }));
-        req.end();
-      });
-      await new Promise(r => setTimeout(r, 1200));
-      const after = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'still alive' }] });
-      record('disconnect: client abort mid-stream, server still serves', after.status === 200 && after.body.includes('F5-REPLY'), 'status=' + after.status);
-    } finally {
-      try { srv.kill(); } catch (e) {}
-      stopMock(m);
+    const cwd = freshCwd('f5-' + kind), fixture = await FDisconnect.start(kind);
+    const agent = createEndpoint({ suite: 'F-disconnect-' + kind, endpoint: fixture.endpoint, key: '', model: FDisconnect.model, permissionMode: 'bypass' });
+    let client, admitted;
+    const info = async () => JSON.parse((await agent.api('/api/info', null, 1000)).body);
+    async function until(predicate, label) {
+      const end = Date.now() + 6000;
+      while (Date.now() < end) { if (client && client.state.error) throw client.state.error; if (await predicate()) return; await new Promise(resolve => setTimeout(resolve, 15)); }
+      throw Error('F5 ' + kind + ' deadline: ' + label);
     }
-  }
-});
-
-// --- F5b: aborted stream cancels the run (no summary for a ghost client) ---
-scenarios.push({
-  name: 'disconnect-cancel',
-  fn: async () => {
-    const cwd = freshCwd('f5b');
-    // long sleep tool so the abort lands mid-task; the run would normally
-    // complete and write a summary afterwards
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'sl', type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":4000}' } }] },
-      { role: 'assistant', content: 'F5B-LATE' },
-      { role: 'assistant', content: 'F5B summary' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const srvPort = port + 285;
-    const srv = spawn(NODE_BIN, [IDX, '--server'], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', MAX_RETRIES: '1', HTTP_PORT: String(srvPort) }),
-      cwd, stdio: 'ignore'
-    });
-    await new Promise(r => setTimeout(r, 2500));
     try {
-      await new Promise((resolve) => {
-        const req = http.request({ host: '127.0.0.1', port: srvPort, method: 'POST', path: '/v1/chat/completions',
-          headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] })) } },
-          res => { res.once('data', () => { req.destroy(); resolve(); }); });
-        req.on('error', () => resolve());
-        req.write(JSON.stringify({ stream: true, messages: [{ role: 'user', content: 'x' }] }));
-        req.end();
-      });
-      await new Promise(r => setTimeout(r, 9000)); // let the sleep finish + cancellation stop the run
-      const md = fs.existsSync(path.join(cwd, '7CODER.md')) ? fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8') : null;
-      record('disconnect-cancel: aborted run writes NO 7CODER.md summary', md === null || !md.includes('F5B summary'), md ? md.substring(0, 60) : 'absent (correct)');
-      const after = await httpReq(srvPort, 'POST', '/v1/chat/completions', { messages: [{ role: 'user', content: 'alive' }] });
-      record('disconnect-cancel: server healthy after cancellation', after.status === 200, 'status=' + after.status);
+      await agent.start(cwd);
+      client = FDisconnect.openStream(agent.port, kind);
+      await until(async () => FDisconnect.observed(client.state.body, kind) && FDisconnect.active(admitted = await info(), kind), 'real output/tool admission');
+      record('disconnect/' + kind + ': exact unfinished SSE and live task/tool counters precede abort',
+        client.state.status === 200 && !client.state.closed && FDisconnect.observed(client.state.body, kind) && FDisconnect.active(admitted, kind), '');
+      const begin = process.hrtime(); client.abort();
+      await until(async () => client.state.closed && (kind !== 'partial' || fixture.upstreamAborted()) && FDisconnect.idle(await info()), 'closed transport and zero core/queue budgets');
+      const elapsed = process.hrtime(begin), ms = elapsed[0] * 1000 + elapsed[1] / 1e6;
+      record('disconnect/' + kind + ': actual client close and cancellation settle before natural completion',
+        client.state.aborted && client.state.closed && ms < 5000 && (kind !== 'partial' || fixture.upstreamAborted()), 'ms=' + Math.round(ms));
+      const beforeNext = await info();
+      record('disconnect/' + kind + ': authoritative cancellation and all task/tool/admission/summary counters reach zero',
+        FDisconnect.idle(beforeNext) && FDisconnect.cancellation(readLog(path.join(cwd, '.7coder', 'audit.jsonl')), readLog(path.join(cwd, '.7coder', 'runtime.jsonl')), kind), JSON.stringify(beforeNext.runtime));
+      record('disconnect/' + kind + ': abort creates no summary or extra model requests',
+        fixture.log.length === 1 && !fs.existsSync(path.join(cwd, '7CODER.md')), 'requests=' + fixture.log.length);
+      const next = JSON.parse((await agent.api('/v1/chat/completions', { messages: [{ role: 'user', content: FDisconnect.next(kind) }] }, 8000)).body);
+      record('disconnect/' + kind + ': same live Agent completes exact next JSON task',
+        next.choices[0].message.role === 'assistant' && next.choices[0].message.content === FDisconnect.done && !next.choices[0].message.tool_calls, '');
+      await until(async () => FDisconnect.idle(await info()), 'next task resources settled');
+      record('disconnect/' + kind + ': two strict complete requests retain separate histories without ghost work',
+        FDisconnect.transcript(fixture.log, kind) && !fs.existsSync(path.join(cwd, '7CODER.md')), 'requests=' + fixture.log.length);
+    } catch (error) {
+      console.error('F5 fixture diagnostics: ' + JSON.stringify({ kind, client: client && client.state, requests: fixture.log.map(body => ({ model: body.model, stream: body.stream, users: body.messages.filter(m => m.role === 'user').map(m => m.content) })) }).slice(-3500));
+      throw error;
     } finally {
-      try { srv.kill(); } catch (e) {}
-      stopMock(m);
+      if (client) client.abort();
+      try { await agent.stop(); }
+      finally { agent.S.cleanup(); await fixture.close(); }
     }
   }
 });
