@@ -30,14 +30,14 @@
 | runner-d.js | 25 |
 | runner-e.js | 22 |
 | runner-f.js | 42 |
-| runner-g.js | 36 |
+| runner-g.js | 42 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
 | runner-j.js | 18 |
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **719** |
+| **合计** | **725** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -630,7 +630,7 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 | ✅ | T22-30 | Low／确认＋后续High风险修复 | **搜索输入与扫描预算**：10-24单文件grep、实际访问/深度/不匹配预算、失败incomplete及旧sentinel保留；INC-24-04补grep正则期限。10-25 INC-25-04再补glob pattern4096/匹配100ms/opts扫描5s或更早deadline与取消，匹配失败明确error，不改无pattern备份遍历scope。新glob14/14＋扫描21/21本批首次单次；**/零目录/问号/Win分隔符原语义验证。同步IO/readdir分配仍无硬期限。 | R1 L03；P2-3、A2-20；各扫描/期限批记录 |
 | ✅ | T22-31 | Low／潜在风险 | **cron ID 唯一**：T22-15已用timestamp+cronSeq并拒绝显式重复ID；10-24新增固定时钟原函数专项9/9，两创建别名同毫秒独立Map/timer、各自执行/跳过重叠、独立删除/close/清timer，迟到回调不复活。此项不代替真实进程树/Win7长期验收。 | R1 L04；NEW-2不重开；本日cron身份批记录 |
 | ✅ | T22-32 | Improvement | **补最低运行诊断**：10-24 /api/info复用队列负载并补活动任务/工具、最后成功/错误和日志故障；CLI/HTTP终态、工具失败、background/cron真实close写UTF8 runtime.jsonl＋一个old，各1MiB，轮转失败不继续append；字段有界/常见token脱敏，errno/path/PID/exit可用时保留。新专项21/21、旧工具取消20/20、cron重叠6/6；进程内状态重启清零，早期配置失败仍stderr，非全链路runId/树退出证明。 | R1日志/长期运行；R2 N04；本日诊断批；DS-13/OPT-3仍暂缓 |
-| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例及B2–B7身份迁移见各批。10-29前后新增I3/I11完整压缩/JSON与HTTP错误恢复、I4正常请求结束后的摘要门控、I1 CMD实际退出码、I2真实worker close、I5完整原文/备份、I8上限与提前完成分离、I9自然到期与Job停止区分、元数据实际声明/guard接线；再补F1精确20轮/实际正文时延、F2真实创建/失败/编辑/成功、F3等待中强终止及重启、F4精确父子/摘要六请求、F5真实断线与同Agent恢复。HTTP执行身份现已贯穿响应/SSE/audit/页面历史/runtime故障，CLI任务/audit及HTTP解析/任务error身份已补；后台入口及子调用独立身份仍待补。每批首跑失败、受影响分段和未重跑部分保留文末，不合并重复断言冒充全套通过。仍待其它旧位置mock和真实模型质量验收；本地fixture不代替全套/Win7/真实端点。 | R1 §10.3；R2 N01/N02/N03；10-29各定向记录；HTTP身份475053c/deb31f9 |
+| 🔶 | T22-33 | 工程验证缺口 | **修测试假阳性与证据口径**：pshell/零轮/统计/D/stdio、完整配对/严格mock、K/R本地反例及B2–B7身份迁移见各批。10-29前后新增I3/I11完整压缩/JSON与HTTP错误恢复、I4正常请求结束后的摘要门控、I1 CMD实际退出码、I2真实worker close、I5完整原文/备份、I8上限与提前完成分离、I9自然到期与Job停止区分、元数据实际声明/guard接线；再补F1精确20轮/实际正文时延、F2真实创建/失败/编辑/成功、F3等待中强终止及重启、F4精确父子/摘要六请求、F5真实断线与同Agent恢复、F6逐块协议/F7真实路径/F8拒绝零任务；G1a活动命令/三草稿/退出与G1b/c输入边界/真实EOF自然收尾已补。HTTP执行身份现已贯穿响应/SSE/audit/页面历史/runtime故障，CLI任务/audit及HTTP解析/任务error身份已补；后台入口及子调用独立身份仍待补。每批首跑失败、受影响分段和未重跑部分保留文末，不合并重复断言冒充全套通过。仍待其它旧位置mock和真实模型质量验收；本地fixture不代替全套/Win7/真实端点。 | R1 §10.3；R2 N01/N02/N03；10-29各定向记录；HTTP身份475053c/deb31f9 |
 
 ### V22：验证与发布门槛（已有局部执行，整项尚未验收）
 
@@ -2318,3 +2318,11 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - quit先等真实sleep_tool的60秒等待执行诊断与唯一完整模型请求、尚无任务终态，才发大写/BYE；须由命令自身实际close、exit0、5秒内收敛且没有Slept自然完成，不能靠finally强杀冒充。唯一工具audit、工具runtime与CLI取消终态须按callId/executionId一致，零额外模型/摘要。finally只关闭保留的本测试CLI句柄和私有fixture sockets，不按保存PID清扫。
 - g-command-oracles21/21与仅RUN_ONLY=cmd-while-running10/10均首跑通过，无skip/INFO降级；反例包含缺/多请求、主轻/流混淆、历史丢失/篡改、摘要污染首/第三草稿、第二草稿丢marker、原note冒充摘要、虚构工具、Goodbye单词/重复回复、真实clear或少拒绝、错/重复/取消终态ID、清理强杀/慢close/未dispatch/自然结束、错取消audit及BTW重复/坏时间记录。保留G_COMMAND_ONLY=queue/quit供确有失败时定向诊断，本次未使用或重跑。
 - Node13语法/JSON/diff、默认入口和静态计数登记；未重复其它G/F、A–J/全套、真实模型/桌面/Win7/长稳/打包。只验证模型等待/内置sleep取消与草稿归属，不能外推外部子进程树退出。T22-33仍部分完成，按授权本地提交，不推送。
+
+### 2026-10-29 —— T22-33 G1b输入边界与G1c真实EOF后的自然收尾
+
+- 旧cmd-surface按固定延时发命令，主要凭输出词与/help子串，未完整证明空草稿不执行、裸/btw与未知/help不触发轻模型，以及存档不出现幽灵回合。旧eof-midtask的endMode参数未被共享runCli消费（该helper在stdinSteps后本就end），300ms等待＋EOF-DONE/exit0也不能证明Agent先处理EOF再完成任务。本批补真实时序与严格history，不把这些证据缺口冒报为产品Bug。
+- G1b使用实际ready/终态等待，分别发送CRLF空执行、仅空格再执行，两次明确No task entered后模型与任务终态仍零；随后裸/btw和/help须精确组成/btw\n/help，固定主模型唯一请求、零轻/摘要/工具/BTW副作用、精确答复恰一次与大写/BYE正常退出，完整CLI存档只保留实际任务/回复。零固定启动/完成睡眠，不重复G1a。
+- G1c先保持真实主模型首响应未完成，再结束stdin。只测试启用的--require观察器为真实stdin readline添加一次close监听，以独立fd3报告stdin.readableEnded=true；不关闭/伪造readline、不改产品状态/回调/计时，创建目标接口后即恢复createInterface。父端收到该真实事件、确认任务未完成且首响应仍挂起后，才放行sleep_tool 1500ms；实际工具成功后仍保持第二模型响应，验证EOF后核心继续推进，再放行精确最终正文，必须无/BYE/cleanup kill/信号、10秒内自然close、exit0、唯一ok任务与工具audit按executionId/callId关联、完整存档无孤立tool引用。
+- g-input-oracles22/22，RUN_ONLY=cmd-surface,eof-midtask共11/11均首跑通过，无skip/INFO；反例含空/缺/多请求、裸BTW被删/错路由、空白污染、重复或缺失警告/答复、EOF history/工具ID/时长/结果/主消息漂移、父端finish冒充子端EOF、非EOF/重复close、信号/强杀/慢close/非零exit、Goodbye/取消/关闭后prompt异常冒充自然完成、错/缺/重复终态和audit。不将22反例检查或静态record计数混成实机业务通过数。
+- 首跑之后仅将观察流预算从“当前未分行buffer”改为“累计4096字节”（防分行绕过），未重复通过的业务测试。Node13语法/JSON/diff、标准入口/静态计数登记；无产品/native改动、全套/真实模型/真实终端/Win7/长稳/打包。EOF发生在实际模型等待期间，sleep在确认EOF后执行，不宣称覆盖EOF恰发生在工具中途、审批pending、外部进程树或Win7控制台关闭。T22-33仍部分完成，按授权本地提交，不推送。

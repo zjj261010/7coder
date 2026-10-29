@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const GCommand = require('./_g-command-fixture'), GCommandDriver = require('./_g-command-driver');
+const GInput = require('./_g-input-fixture'), GInputDriver = require('./_g-input-driver');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -45,32 +46,13 @@ scenarios.push({
 scenarios.push({
   name: 'cmd-surface',
   fn: async () => {
-    const cwd = freshCwd('g1b');
-    const m = startMock([
-      { role: 'assistant', content: 'G1B-DONE' },
-      { role: 'assistant', content: 'G1B-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 30000,
-      stdinSteps: [
-        { t: '/execute-task-now\r\n', d: 400 },               // CRLF + empty -> No task entered
-        { t: '   \n', d: 200 },                                // whitespace-only line ignored
-        { t: '/btw\n', d: 300 },                               // /btw without space -> task text
-        { t: '/help\n', d: 200 },                              // unknown slash -> task text
-        { t: '/execute-task-now\n', d: 2500 },                 // runs with task text '/btw\n/help'
-        { t: '/BYE\n', d: 400 }                                // uppercase bye quits
-      ]
-    });
-    record('cmd: CRLF + empty exec rejected', r.out.includes('No task entered'), '');
-    record('cmd: /btw without note treated as task text', r.out.includes('Usage: /btw') === false && r.out.includes('G1B-DONE'), '');
-    record('cmd: unknown slash command /help lands in task prompt', (() => {
-      const reqs = readLog(m.log).filter(x => x.stream === true);
-      const first = reqs[0];
-      return !!first && first.messages.some(x => x.role === 'user' && String(x.content).includes('/help'));
-    })(), '');
-    record('cmd: /BYE uppercase quits', r.out.includes('Goodbye'), '');
-    stopMock(m);
+    const result = await GInputDriver.run(S, 'surface');
+    record('cmd: CRLF empty and whitespace-only drafts each reject without model or task execution', result.emptyProof, '');
+    record('cmd: bare BTW and unknown help reach one exact complete literal main task', GInput.transcript(result.log, 'surface') && result.errors.length === 0, 'requests=' + result.log.length);
+    record('cmd: two empty warnings one exact reply and uppercase quit with exit zero', GInput.surfaceOutput(result.output, result.code), 'exit=' + result.code);
+    record('cmd: one unique successful execution and no auxiliary note summary or tool effects', GInput.terminal(result.runtime) && !result.hasBTW && !result.hasWorklog && !result.audits.some(row => row.type === 'tool'), '');
+    const expected = result.log[0] && result.log[0].messages.concat({ role: 'assistant', content: GInput.surfaceReply });
+    record('cmd: archived session preserves exact slash input without empty phantom turns', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
   }
 });
 
@@ -78,20 +60,14 @@ scenarios.push({
 scenarios.push({
   name: 'eof-midtask',
   fn: async () => {
-    const cwd = freshCwd('g1c');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 's2', type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":1500}' } }] },
-      { role: 'assistant', content: 'EOF-DONE' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const t0 = Date.now();
-    const r = await runCli({
-      port: m.port, args: [], env: { PERMISSION_MODE: 'bypass' }, cwd, timeoutMs: 20000, endMode: 'eof',
-      stdinSteps: [{ t: 'task\n', d: 80 }, { t: '/execute-task-now\n', d: 300 }]
-    });
-    const elapsed = Date.now() - t0;
-    record('eof: stdin EOF mid-task -> process exits after completing task', r.code === 0 && r.out.includes('EOF-DONE') && elapsed < 15000, 'exit=' + r.code + ' elapsed=' + Math.round(elapsed / 1000) + 's');
-    stopMock(m);
+    const result = await GInputDriver.run(S, 'eof');
+    record('eof: stdin closes only after actual task admission while initial model response remains held', result.admittedProof && result.eofProof, '');
+    record('eof: actual child readline closes from ended stdin before model is released', GInput.observedEOF(result.events), '');
+    record('eof: actual sleep completes and full followup remains active after confirmed EOF', result.progressProof && GInput.transcript(result.log, 'eof') && result.errors.length === 0, 'requests=' + result.log.length);
+    record('eof: exact result prints once and process closes naturally without BYE kill or prompt-after-close', GInput.naturalEOF(result.code, result.signal, result.forced, result.elapsed, result.output), 'exit=' + result.code + ' ms=' + Math.round(result.elapsed));
+    record('eof: task and actual tool finish successfully with one matching execution identity', GInput.toolCompleted(result.audits, result.runtime) && !result.runtime.some(row => row.scope === 'tool') && !result.hasWorklog, '');
+    const expected = result.log[1] && result.log[1].messages.filter(message => message.role !== 'tool').map(message => message.tool_calls ? { role: 'assistant', content: message.content || '' } : message).concat({ role: 'assistant', content: GInput.eofReply });
+    record('eof: naturally exiting Agent saves complete CLI archive without orphan tool references', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
   }
 });
 
