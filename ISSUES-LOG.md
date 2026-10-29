@@ -29,7 +29,7 @@
 | runner-c.js | 36 |
 | runner-d.js | 25 |
 | runner-e.js | 22 |
-| runner-f.js | 23 |
+| runner-f.js | 26 |
 | runner-g.js | 30 |
 | runner-h.js | 27 |
 | runner-i.js | 80 |
@@ -37,7 +37,7 @@
 | runner-k.js | 13 |
 | runner-r.js | 12 |
 | runner.js | 60 |
-| **合计** | **694** |
+| **合计** | **697** |
 
 注：以上为静态断言点数（源码中 `record(` 调用次数，文件内 `function record` 定义已扣除），与套件实测通过数（套件运行输出统计）是两个口径，请勿混用。
 <!-- assert-count:end -->
@@ -2232,3 +2232,10 @@ P0 中 T22-03 属交付条件，T22-01 属验证前置；没有把二者伪装�
 - 新worklog-context首次0断言因夹具抽取终点误命名失败，读取实际HTTP边界后修正，15/15通过：缺失/空白、BOM/中文/CRLF/缩进/内部BOM、召回/访问错误、CLI准备及HTTP文本/多模态/空会话。没有重跑任何先前通过断言。此为实际函数VM路径，多模态未作浏览器真实图片调用。
 - 仅因本批改变模型内容，原I4/I5旧结果不再代表此版本：更新两个独立fixture为精确未trim正文后，定向RUN_ONLY=cancel-boundary,marker-isolation首跑12/12，真实Node13 HTTP stream/JSON和两任务REPL到本地严格endpoint，完整四请求与落盘/队列/备份/close均通过。未重复worklog29/state59/B2或其它通过套件，i-summary-oracles独立套件未重跑，不把其旧22项累计入本批。
 - Node13语法/JSON/diff、标准入口登记；native不变，无全套/真实模型/Win7/长稳/打包。本批不解决所有长期历史/模型语义质量及磁盘保留问题，按授权本地提交后继续，不推送。
+
+### 2026-10-29 —— T22-33 F3强终止边界与同工作区重启
+
+- 上批上下文修复已提交a950564。原F3固定睡3秒后kill、再等500ms，没有确认真实工具准入或进程close；“文件每非空行必须以-开头”与现有标记日志格式不符且无文件时空过。此为测试证据缺口，不据此声称产品必定损坏文件。
+- F3现在预置BOM/CRLF/中文/缩进原文和不同previous，严格固定主/摘要模型、完整任务/三请求，等待真实REPL就绪及sleep_tool绕过审批执行诊断，确认只有首请求、未完成工具/摘要，才对保留ChildProcess句柄SIGKILL。必须kill返回true、实际异常close且整个边界<15秒（sleep60秒），随后同一工作区新进程读完整原文、无旧工具链并完成新任务与唯一摘要，primary/previous逐字节核对。移除固定启动/强杀等待，失败清理仅保留句柄与本测试mock。
+- 新f-crash-oracles首版17/17，但实际F3首跑0业务断言时夹具错误等“Auto-executing safe”提示；sleep_tool未标autoSafe，bypass实际输出“[DANGER MODE] Executing tool”。读取元数据/分支后修正判据，仅F_CRASH_ONLY=admission重验受影响5/5，另12项旧证据不重跑，17为有效分段证据、不把重叠计22。随后仅RUN_ONLY=crash-recovery完成5/5、0skip，约2秒，真实异常关闭及新CLI摘要提交均完成。
+- 只证明内置等待工具中断后的原文保全/工作区锁释放与新任务，不是磁盘rename瞬间断电试验、外部进程树回收或已准入native进程未知结果自动恢复；这些仍由state-store/ownership专项及Win7实机门槛负责。无真实模型、GDI/SendKeys/桌面、Win7、关机/注销、长稳/全套/打包，本批产品/native无变更。标准入口/静态计数登记，按授权本地提交后继续，不推送。

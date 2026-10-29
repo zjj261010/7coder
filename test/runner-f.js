@@ -7,12 +7,13 @@ const fs = require('fs');
 const path = require('path');
 const http = require('http');
 const { pairingValid } = require('./_protocol');
+const FCrash = require('./_f-crash-fixture');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'F', wsPrefix: 'w-f-' });
 const { spawn, spawnSync, ROOT, IDX, NODE_BIN, RUN_ONLY, record, startProcessAt, freshCwd, runCli, httpReq, stopMock, readLog, toolResults, tr, rmrf } = S;
 let port = 18250;
-function startMock(scriptObj) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj); }
+function startMock(scriptObj, env) { port += 1; return startProcessAt(port, 'mock-server.js', scriptObj, env); }
 function assembleSSE(body) {
   let out = '';
   for (const line of body.split('\n')) {
@@ -106,39 +107,51 @@ scenarios.push({
   }
 });
 
-// --- F3: crash mid-task -> clean recovery ---
+// --- F3: actual force-close while sleep is admitted, then same-workspace restart ---
 scenarios.push({
   name: 'crash-recovery',
   fn: async () => {
-    const cwd = freshCwd('f3');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'sl', type: 'function', function: { name: 'sleep_tool', arguments: '{"ms":60000}' } }] },
-      { role: 'assistant', content: 'NEVER' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    // start REPL task and SIGKILL mid-tool
-    const p = spawn(NODE_BIN, [IDX], {
-      env: Object.assign({}, process.env, { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1', PERMISSION_MODE: 'bypass' }),
-      cwd
-    });
-    p.stdin.write('long task\n');
-    await new Promise(r => setTimeout(r, 100));
-    p.stdin.write('/execute-task-now\n');
-    await new Promise(r => setTimeout(r, 3000));
-    p.kill('SIGKILL');
-    await new Promise(r => setTimeout(r, 500));
-    const mdBefore = fs.existsSync(path.join(cwd, '7CODER.md')) ? fs.readFileSync(path.join(cwd, '7CODER.md'), 'utf8') : null;
-    record('crash: kill mid-task leaves 7CODER.md absent or intact (no partial file)', mdBefore === null || mdBefore.split('\n').filter(Boolean).every(l => l.startsWith('- ')), mdBefore ? mdBefore.substring(0, 60) : 'absent');
-    // fresh process completes a task in the same workspace
-    const m2 = startMock([
-      { role: 'assistant', content: 'RECOVERED-OK' },
-      { role: 'assistant', content: 'recovery summary' }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    const r = await runCli({ port: m2.port, args: ['--prompt', 'recover'], env: { PERMISSION_MODE: 'bypass' }, cwd });
-    record('crash: fresh process works in the same workspace', r.out.includes('RECOVERED-OK') && r.code === 0, '');
-    stopMock(m2);
-    stopMock(m);
+    const cwd = freshCwd('f3'), file = path.join(cwd, '7CODER.md');
+    fs.writeFileSync(file, FCrash.notes); fs.writeFileSync(file + '.7coder-prev', FCrash.previous);
+    const m = startMock(FCrash.script, { MOCK_STRICT: '1' });
+    const env = { OPENAI_API_KEY: 'x', OPENAI_ENDPOINT: 'http://127.0.0.1:' + m.port + '/v1',
+      HEAVY_MODEL: FCrash.main, LIGHT_MODEL: FCrash.summary, SUMMARY_MODEL: FCrash.summary, PERMISSION_MODE: 'bypass',
+      MAX_RETRIES: '1', DREAM_ALLOW: 'false', ENABLE_RALPH_MODE: 'false', ENABLE_CLAUDE_LIKE_RALPH_WIGGUM_MODE: 'false',
+      EXECUTION_TIMEOUT_MS: '90000', AUDIT_LOG: 'true' };
+    let child, closed = false, output = '', code, signal;
+    const begin = process.hrtime();
+    async function until(predicate, label, allowClosed = false) {
+      const end = Date.now() + 10000;
+      while (Date.now() < end) { if (await predicate()) return; if (closed && !allowClosed) throw Error('F3 closed early: ' + output.slice(-2000)); await new Promise(resolve => setTimeout(resolve, 15)); }
+      console.error(label + ': ' + output.slice(-2000));
+      throw Error(label);
+    }
+    try {
+      await until(async () => { if (m.child.exitCode !== null) throw Error('F3 mock exited'); try { return (await httpReq(m.port, 'GET', '/', null)).status === 200; } catch (e) { if (e.code !== 'ECONNREFUSED') throw e; return false; } }, 'F3 mock not ready');
+      child = spawn(NODE_BIN, [IDX], { cwd, env: Object.assign({}, process.env, env) });
+      for (const stream of [child.stdout, child.stderr]) { stream.setEncoding('utf8'); stream.on('data', value => { output = (output + value).slice(-16384); }); }
+      child.stdin.on('error', () => {}); child.once('close', (value, why) => { code = value; signal = why; closed = true; });
+      await until(() => output.includes('Commands:'), 'F3 REPL not ready');
+      child.stdin.write(FCrash.crashPrompt + '\n/execute-task-now\n');
+      await until(() => FCrash.admitted(readLog(m.log), output), 'F3 sleep dispatch not observed');
+      record('crash: exact first model call reaches sleep dispatch before any completion', FCrash.admitted(readLog(m.log), output), '');
+      const forced = child.kill('SIGKILL');
+      await until(() => closed, 'F3 actual force-close unconfirmed', true);
+      const elapsed = process.hrtime(begin), elapsedMs = elapsed[0] * 1000 + elapsed[1] / 1e6;
+      record('crash: retained Agent handle acknowledges force and closes abnormally before natural sleep end', FCrash.forcedClose(forced, closed, code, signal, elapsedMs), 'exit=' + code + ' signal=' + signal + ' ms=' + Math.round(elapsedMs));
+      record('crash: interrupted task preserves primary and distinct previous notes byte-for-byte',
+        fs.readFileSync(file).equals(Buffer.from(FCrash.notes)) && fs.readFileSync(file + '.7coder-prev').equals(Buffer.from(FCrash.previous)) &&
+        readLog(m.log).length === 1 && !readLog(path.join(cwd, '.7coder', 'audit.jsonl')).some(row => row.type === 'tool'), 'no completed tool or summary before restart');
+      const recovered = await runCli({ port: m.port, args: ['--prompt', FCrash.recoverPrompt], env, cwd, timeoutMs: 15000 });
+      record('crash: fresh process in same workspace completes exact new task and summary without old pending tool',
+        FCrash.recovered(readLog(m.log)) && recovered.code === 0 && recovered.out.split(FCrash.reply).length === 2 &&
+        !/MOCK_PROTOCOL|\[ERROR\]|Error writing to 7CODER|recovery required|EXECUTION_DEADLINE/.test(recovered.out), 'exit=' + recovered.code + ' requests=' + readLog(m.log).length);
+      record('crash: restart commits one complete summary with byte-exact preceding notes backup',
+        fs.readFileSync(file).equals(Buffer.from(FCrash.document)) && fs.readFileSync(file + '.7coder-prev').equals(Buffer.from(FCrash.notes)), '');
+    } finally {
+      if (child && !closed) { child.kill('SIGKILL'); await until(() => closed, 'F3 cleanup close unconfirmed', true); }
+      stopMock(m);
+    }
   }
 });
 

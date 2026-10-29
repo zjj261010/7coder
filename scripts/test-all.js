@@ -80,6 +80,7 @@ const targets = suites.map(name => ({ name, args: [path.join(ROOT, 'test', name)
     { name: 'i-cron-exit-oracles.js', args: [path.join(ROOT, 'test', 'i-cron-exit-oracles.js')] },
     { name: 'worklog-boundaries.js', args: [path.join(ROOT, 'test', 'worklog-boundaries.js')] },
     { name: 'worklog-context.js', args: [path.join(ROOT, 'test', 'worklog-context.js')] },
+    { name: 'f-crash-oracles.js', args: [path.join(ROOT, 'test', 'f-crash-oracles.js')] },
     { name: 'tool-declaration-oracles.js', args: [path.join(ROOT, 'test', 'tool-declaration-oracles.js')] },
     { name: 'mock-protocol.js', args: [path.join(ROOT, 'test', 'mock-protocol.js')] },
     { name: 'endpoint-oracles.js', args: [path.join(ROOT, 'test', 'endpoint-oracles.js')] },
