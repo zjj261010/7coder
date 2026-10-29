@@ -126,6 +126,7 @@
     "test:g-command-oracles": "node test/g-command-oracles.js",
     "test:g-input-oracles": "node test/g-input-oracles.js",
     "test:g-batch-oracles": "node test/g-batch-oracles.js",
+    "test:g-prototype-oracles": "node test/g-prototype-oracles.js",
     "test:tool-declaration-oracles": "node test/tool-declaration-oracles.js",
     "test:mock-protocol": "node test/mock-protocol.js",
     "test:endpoint-oracles": "node test/endpoint-oracles.js",

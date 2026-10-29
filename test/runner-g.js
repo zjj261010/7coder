@@ -9,6 +9,7 @@ const path = require('path');
 const GCommand = require('./_g-command-fixture'), GCommandDriver = require('./_g-command-driver');
 const GInput = require('./_g-input-fixture'), GInputDriver = require('./_g-input-driver');
 const GBatch = require('./_g-batch-fixture'), GBatchDriver = require('./_g-batch-driver');
+const GPrototype = require('./_g-prototype-fixture'), GPrototypeDriver = require('./_g-prototype-driver');
 
 // OPT-4: duplicated helpers now live in test/_shared.js (single implementation).
 const S = require('./_shared').create({ suite: 'G', wsPrefix: 'w-g-' });
@@ -90,25 +91,18 @@ scenarios.push({
   }
 });
 
-// --- G3: prototype pollution attempt via tool args ---
+// --- G3: literal special keys remain data through actual tools and next task ---
 scenarios.push({
   name: 'proto-pollution',
   fn: async () => {
-    const cwd = freshCwd('g3');
-    const m = startMock([
-      { role: 'assistant', content: null, tool_calls: [{ id: 'pp1', type: 'function', function: { name: 'write_file', arguments: '{"path":"pp.txt","content":"ok","__proto__":{"polluted":"PWNED"}}' } }] },
-      { role: 'assistant', content: null, tool_calls: [{ id: 'pp2', type: 'function', function: { name: 'read_file', arguments: '{"path":"pp.txt"}' } }] },
-      // AST-R1: padded so the summary light call still fires and stays the LAST
-      // logged payload - the assertion inspects that final request, which (unlike
-      // the history-bearing main requests) must carry no PWNED anywhere.
-      { role: 'assistant', content: 'PROTO-DONE ' + 'pollution-check padding so the summary call stays the final payload. '.repeat(4) }
-    ]);
-    await new Promise(r => setTimeout(r, 600));
-    await runCli({ port: m.port, args: ['--prompt', 't'], env: { PERMISSION_MODE: 'bypass' }, cwd });
-    const later = readLog(m.log).slice(-1)[0];
-    record('proto: pollution attempt does not leak into later payloads', !JSON.stringify(later).includes('PWNED'), JSON.stringify(later).substring(0, 100));
-    record('proto: file write itself unaffected', fs.readFileSync(path.join(cwd, 'pp.txt'), 'utf8') === 'ok', '');
-    stopMock(m);
+    const result = await GPrototypeDriver.run(S);
+    record('proto: literal special-key write append read finish with exact unchanged file bytes', result.firstProof && result.afterFirst === GPrototype.finalFile && result.finalFile === GPrototype.finalFile, '');
+    record('proto: six exact main requests retain literal args actual results and full recovery history', GPrototype.transcript(result.log) && result.errors.length === 0, 'requests=' + result.log.length);
+    record('proto: passive Agent-realm exit observer confirms baseline keys descriptors and ordinary object prototype', GPrototype.cleanObservation(result.observations), '');
+    record('proto: all four actual tool audit results join their two distinct successful task identities', GPrototype.audit(result.audits, result.runtime), '');
+    record('proto: same Agent completes clean next task then closes normally with each exact reply once', GPrototype.output(result.output, result.code) && result.signal === null && !result.hasWorklog, 'exit=' + result.code);
+    const expected = result.log[5] && result.log[5].messages.filter(message => message.role !== 'tool').map(message => message.tool_calls ? { role: 'assistant', content: message.content || '' } : message).concat({ role: 'assistant', content: GPrototype.recovered });
+    record('proto: final CLI archive preserves both complete tasks without orphan tool references', result.saved.kind === '7coder-cli-session-v1' && JSON.stringify(result.saved.messages) === JSON.stringify(expected), '');
   }
 });
 
